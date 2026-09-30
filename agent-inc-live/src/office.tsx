@@ -675,11 +675,6 @@ function LiveOffice() {
                 <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" /></svg>
               </button>
             </div>
-            {!selectedAgent && <div className="activity-summary" aria-label="Live office summary">
-              <span><strong>{activeAgents.length}</strong> in office</span>
-              <span><strong>{working}</strong> working</span>
-              <span><strong>{sdkRoom?.agents.filter(agent => agent.archived).length ?? 0}</strong> archived</span>
-            </div>}
           </div>
           {!selectedAgent && <nav className="activity-tabs" aria-label="Activity views">
             {([["office", "Overview"], ["agents", "Agents"]] as const).map(([item, label]) => (

@@ -289,7 +289,7 @@
   pointer-events: auto;
   transform: none;
 }
-.activity-header { flex: none; padding: 18px 18px 16px; border-bottom: 1px solid var(--office-border); }
+.activity-header { flex: none; padding: 14px 18px; border-bottom: 1px solid var(--office-border); }
 .activity-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .activity-title-row h2 {
   margin: 0;
@@ -312,15 +312,6 @@
   line-height: 1;
 }
 .sidebar-close svg { width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; }
-.activity-summary {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  margin-top: 16px;
-}
-.activity-summary span { min-width: 0; color: var(--office-secondary); font-size: 11px; white-space: nowrap; }
-.activity-summary span:not(:last-child) { border-right: 1px solid var(--office-border); }
-.activity-summary span:not(:first-child) { padding-left: 12px; }
-.activity-summary strong { margin-right: 4px; color: var(--office-text); font: 700 13px var(--mono); }
 .activity-tabs {
   flex: none;
   display: grid;
@@ -490,7 +481,7 @@
   .live-shell .theme-toggle { width: 26px; height: 26px; padding: 0 4px; }
   .live-shell .time-preview .time-icon, .live-shell .time-preview .time-arrow { width: 14px; }
   .live-shell .world-callout.live-callout { top: auto; }
-  .activity-header { padding: 16px; }
+  .activity-header { padding: 12px 16px; }
   .activity-tabs { padding: 0 16px; }
   .activity-scroll { padding: 16px; }
 }
