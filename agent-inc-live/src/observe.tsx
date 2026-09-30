@@ -1,9 +1,12 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../../agent-inc/app/styles.css";
+import "../live.css";
 import "../observe.css";
 import { Simulation, initialProgress, DESKS, COFFEE_SPOTS, type Agent, type Request } from "../../agent-inc/game/simulation";
 import { EXTRA_DESKS, LIVE_COFFEE_Z, MAX_LIVE_DESKS, MIN_LIVE_DESKS, assignLoungeSpots, routeAroundDividers } from "../../agent-inc/game/live-layout";
+import { sampleDaylight } from "../../agent-inc/game/lighting";
+import { AGENTCORP_LETTERS, AGENTCORP_MARK, AGENTCORP_WORDMARK } from "../../agent-inc/game/sprite-art";
 import { createWorld } from "../../agent-inc/game/world";
 import { agentName } from "./room";
 
@@ -13,6 +16,11 @@ type Observation = { root: string; sessions: Member[] };
 const desks = [...DESKS, ...EXTRA_DESKS];
 const coffee = COFFEE_SPOTS.map(({ x }) => ({ x, z: LIVE_COFFEE_Z + 0.75 }));
 const STEP = 1 / 30;
+const themeKey = "agentcorp-harness-theme";
+const wordmarkPaths = [...AGENTCORP_WORDMARK].map((letter, index) =>
+  AGENTCORP_LETTERS[letter].flatMap((row, y) =>
+    [...row].flatMap((bit, x) => bit === "1" ? [`M${index * 6 + x} ${y}h1v1h-1z`] : []),
+  ).join(""));
 
 function newAgent(id: number): Agent {
   return { id, state: "idle", x: 100, z: 100, target: { x: 100, z: 100 },
@@ -84,8 +92,63 @@ function Office() {
   const [state, setState] = useState<Observation | null>(null);
   const [error, setError] = useState("");
   const [sceneError, setSceneError] = useState("");
+  const [themeError, setThemeError] = useState("");
   const [selected, setSelected] = useState("");
+  const [panelOpen, setPanelOpen] = useState(false);
+  const [hover, setHover] = useState<{ name: string; x: number; y: number } | null>(null);
+  const hoverIndex = useRef<number | null>(null);
+  const hoverLabel = useRef<HTMLDivElement>(null);
+  const [previewOffset, setPreviewOffset] = useState(0);
+  const previewRef = useRef(0);
+  const [themePreference, setThemePreference] = useState<"system" | "light" | "dark">(() => {
+    const saved = localStorage.getItem(themeKey);
+    return saved === "light" || saved === "dark" ? saved : "system";
+  });
+  const [systemDark, setSystemDark] = useState(() => matchMedia("(prefers-color-scheme: dark)").matches);
   const selectedRef = useRef("");
+  const darkTheme = themePreference === "system" ? systemDark : themePreference === "dark";
+  useLayoutEffect(() => { document.documentElement.dataset.officeTheme = darkTheme ? "dark" : "light"; }, [darkTheme]);
+  useEffect(() => {
+    const media = matchMedia("(prefers-color-scheme: dark)");
+    const update = () => setSystemDark(media.matches);
+    media.addEventListener("change", update);
+    return () => media.removeEventListener("change", update);
+  }, []);
+  useEffect(() => {
+    if (!panelOpen) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setPanelOpen(false);
+        selectedRef.current = "";
+        setSelected("");
+        world.current?.focusAgent(null);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [panelOpen]);
+  const closePanel = () => {
+    setPanelOpen(false);
+    selectedRef.current = "";
+    setSelected("");
+    setHover(null);
+    world.current?.focusAgent(null);
+  };
+  const toggleTheme = () => {
+    const next = darkTheme ? "light" : "dark";
+    try {
+      localStorage.setItem(themeKey, next);
+      setThemePreference(next);
+      setThemeError("");
+    } catch (cause) {
+      setThemeError(`Theme preference could not be saved: ${cause instanceof Error ? cause.message : String(cause)}`);
+    }
+  };
+  const previewLight = () => {
+    previewRef.current = (previewRef.current + 0.25) % 1;
+    setPreviewOffset(previewRef.current);
+  };
   useEffect(() => {
     if (!host.current) return;
     const scene = new Simulation(initialProgress());
@@ -96,7 +159,17 @@ function Office() {
     const occupied = Array<boolean>(MAX_LIVE_DESKS).fill(false);
     try {
       world.current = createWorld(host.current, scene, "live", {
-        onAgentHover() {},
+        onAgentHover(index) {
+          if (selectedRef.current) {
+            const focused = members.current.findIndex(member => member.id === selectedRef.current && member.present);
+            index = focused < 0 ? null : focused;
+          }
+          if (hoverIndex.current === index) return;
+          hoverIndex.current = index;
+          const member = index === null ? undefined : members.current[index];
+          const point = index === null ? null : world.current?.projectAgent(index);
+          setHover(member?.present && point ? { name: agentName(member.id), ...point } : null);
+        },
         noticeActivityForStation(index) {
           const member = members.current[index];
           return member?.phase === "thinking" ? "thinking" :
@@ -108,9 +181,10 @@ function Office() {
           if (member?.present) {
             selectedRef.current = member.id;
             setSelected(member.id);
+            setPanelOpen(true);
           }
         },
-        onFocusCleared() { selectedRef.current = ""; setSelected(""); },
+        onFocusCleared() { selectedRef.current = ""; setSelected(""); setHover(null); },
       });
     } catch (cause) {
       host.current.classList.add("static-fallback");
@@ -152,7 +226,15 @@ function Office() {
           move(scene); scene.time += STEP;
           remainder -= STEP; advanced = true;
         }
-        world.current?.render(now / 1000, 0, remainder / STEP, advanced);
+        world.current?.render(now / 1000, previewRef.current, remainder / STEP, advanced);
+        if (hoverIndex.current !== null && hoverLabel.current) {
+          const point = world.current?.projectAgent(hoverIndex.current);
+          hoverLabel.current.hidden = !point;
+          if (point) {
+            hoverLabel.current.style.left = `${point.x}px`;
+            hoverLabel.current.style.top = `${point.y}px`;
+          }
+        }
       } else remainder = 0;
       frameId = requestAnimationFrame(frame);
     };
@@ -165,31 +247,143 @@ function Office() {
       world.current = null;
     };
   }, []);
-  const focused = state?.sessions.find(member => member.id === selected);
-  return <main className="observer">
-    <header><strong>agentcorp <span>· Live sessions</span></strong><span>Read-only · This session + enrolled descendants</span></header>
-    <div className="observer-layout">
-      <section className="world-host" ref={host} aria-label="AgentCorp 3D office">
-        <div className="world-callout" role="status">{sceneError || error || (state
-          ? `${state.sessions.filter(member => member.present).length} live · ${state.sessions.length} enrolled · up to 16 desks`
-          : "Connecting to this session…")}</div>
+  const sessions = state?.sessions ?? [];
+  const live = sessions.filter(member => member.present).length;
+  const working = sessions.filter(member => member.present && (member.phase === "thinking" || member.phase === "tool")).length;
+  const idle = sessions.filter(member => member.present && member.phase === "idle").length;
+  const blocked = sessions.filter(member => member.present && member.phase === "blocked").length;
+  const offline = sessions.length - live;
+  const visualError = error || sceneError || themeError;
+  const connected = !error && state !== null && sessions[0]?.present === true;
+  const statusKind = visualError ? "error" : !state ? "connecting" : connected ? "online" : "offline";
+  const statusLabel = visualError ? "Error" : !state ? "Connecting" : connected ? "Live" : "Offline";
+  const daylight = sampleDaylight(0, previewOffset);
+  return <main className={`shell live-shell observer-shell ${panelOpen ? "activity-visible" : ""}`}>
+    <header className="topbar">
+      <div className="identity">
+        <span className="brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 16 16" shapeRendering="crispEdges" focusable="false">
+            {AGENTCORP_MARK.flatMap(({ color, rects }, layer) =>
+              rects.map(([x, y, width, height], index) =>
+                <rect key={`${layer}-${index}`} x={x} y={y} width={width} height={height} fill={color} />))}
+          </svg>
+        </span>
+        <svg className="brand-wordmark" viewBox={`0 0 ${AGENTCORP_WORDMARK.length * 6 - 1} 7`}
+          role="img" aria-label="agentcorp" shapeRendering="crispEdges">
+          {wordmarkPaths.map((path, index) =>
+            <path key={index} d={path} fill={index < 5 ? "var(--office-text)" : "var(--office-purple)"} />)}
+        </svg>
+        <div className="identity-controls">
+          <button type="button" className="time-preview" onClick={previewLight}
+            title="Preview the next six hours of decorative office lighting"
+            aria-label={`Office lighting ${daylight.label}; preview next six hours`}>
+            <span className="time-icon" aria-hidden="true">{daylight.sun > 1 ? "☼" : daylight.moon > 0.2 ? "☾" : "◑"}</span>
+            <span className="time-value">{daylight.label}</span>
+            <span className="time-arrow" aria-hidden="true">↻</span>
+          </button>
+          <button type="button" className="theme-toggle" onClick={toggleTheme}
+            aria-label={`Switch to ${darkTheme ? "light" : "dark"} theme`}
+            title={`HUD appearance: ${themePreference === "system" ? "system" : themePreference}`}>
+            <span aria-hidden="true">{darkTheme ? "☼" : "☾"}</span>
+          </button>
+        </div>
+      </div>
+      <div className="top-stats" aria-hidden={panelOpen} inert={panelOpen}>
+        <span className="observer-count">{live} observed</span>
+        <button type="button" className="system-toggle" aria-expanded={panelOpen} aria-controls="system-panel"
+          aria-label={`Manage agents${blocked ? `: ${blocked} need attention` : ""}`}
+          onClick={() => setPanelOpen(true)}>Manage agents
+          {blocked > 0 && <span className="activity-attention" aria-hidden="true">{blocked}</span>}
+          <span className="toggle-chevron" aria-hidden="true" /></button>
+      </div>
+    </header>
+    <div className="layout">
+      <section className="world-panel" aria-label="Live Copilot office">
+        <div className="world-host" ref={host}>
+          {hover && <div ref={hoverLabel} className="agent-hover" style={{ left: hover.x, top: hover.y }}>{hover.name}</div>}
+          <div className="world-callout live-callout" role="status" aria-live="polite">
+            <button type="button" className={`office-status-link sdk-${statusKind}`}
+              aria-label={`Observation status: ${statusLabel}. Open office overview`}
+              title={visualError || "Read-only session activity"}
+              onClick={() => setPanelOpen(true)}>
+              <span className="sdk-status-dot" aria-hidden="true" /> {statusLabel}
+            </button>
+            <span className="callout-separator" aria-hidden="true" />
+            <span>{visualError || (!state ? "Connecting to this session…" :
+              `${working} working · ${idle} idle${blocked ? ` · ${blocked} need attention` : ""}${offline ? ` · ${offline} offline` : ""}`)}</span>
+          </div>
+        </div>
       </section>
-      <aside aria-label="Enrolled sessions">
-        <h2>Office roster</h2>
-        <p>Only sessions explicitly linked to this root appear here. An offline session has no current heartbeat; it is not shown as working.</p>
-        {state?.sessions.map((member, index) => <button key={member.id} type="button"
-          className={selected === member.id ? "selected" : ""}
-          onClick={() => {
-            if (!member.present) return;
-            selectedRef.current = member.id; setSelected(member.id);
-            world.current?.focusAgent(index);
-          }} disabled={!member.present}>
-          <span>{agentName(member.id)} {index === 0 ? "· root" : `· desk ${index + 1}`}</span>
-          <small>{member.phase}</small>
-        </button>)}
-        {focused && <div className="observer-focus">{agentName(focused.id)} · {focused.phase}<br />
-          <small>Observation only. Manage this session in its Copilot conversation.</small></div>}
-        <p>App-created children need explicit enrollment via the <code>add_descendant</code> canvas action. No repository-wide discovery.</p>
+      <aside id="system-panel" className={`sidebar activity-panel ${panelOpen ? "sidebar-open" : ""}`}
+        aria-label="Office overview" aria-hidden={!panelOpen} inert={!panelOpen}>
+        <div className="activity-header">
+          <div className="activity-title-row">
+            <h2>Activity</h2>
+            <button type="button" className="sidebar-close" onClick={closePanel} aria-label="Close activity">
+              <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" /></svg>
+            </button>
+          </div>
+        </div>
+        <nav className="activity-tabs" aria-label="Activity views">
+          <button type="button" aria-pressed="true">Overview</button>
+        </nav>
+        <div className="activity-scroll activity-list-scroll">
+          <section className="activity-view overview-list" aria-label="Office overview status">
+            <div className="activity-row activity-row-first">
+              <div className="activity-row-heading"><strong>Connection</strong>
+                <span className={`activity-tag ${connected ? "activity-tag-live" : "activity-tag-warning"}`}>
+                  {connected ? "Connected" : "Needs attention"}</span></div>
+              {error && <p role="alert">{error}</p>}
+              <div className="activity-chips"><span>{working} active</span><span>{idle} idle</span>
+                <span className={blocked ? "attention" : ""}>{blocked} need attention</span>
+                {offline > 0 && <span>{offline} offline</span>}</div>
+            </div>
+            {sceneError && <div className="activity-row">
+              <div className="activity-row-heading"><strong>3D scene</strong>
+                <span className="activity-tag activity-tag-warning">Unavailable</span></div>
+              <p>{sceneError} Session observations remain available below.</p>
+            </div>}
+            {themeError && <div className="activity-row">
+              <div className="activity-row-heading"><strong>HUD preference</strong>
+                <span className="activity-tag activity-tag-warning">Not saved</span></div>
+              <p>{themeError}</p>
+            </div>}
+            <div className="activity-row">
+              <div className="activity-row-heading"><strong>The office</strong>
+                <span className="activity-tag">{MAX_LIVE_DESKS} desks</span></div>
+              <p>Read-only view of this Copilot CLI session and explicitly enrolled descendants. Click a sprite to focus it; manage conversations and permissions in their own sessions.</p>
+            </div>
+            <div className="activity-row">
+              <div className="activity-row-heading"><strong>Observed agents</strong>
+                <span className="activity-tag">{sessions.length} enrolled</span></div>
+              {sessions.length ? <div className="activity-list">
+                {sessions.map((member, index) => <div key={member.id}
+                  className={`activity-worker-row ${selected === member.id ? "worker-selected" : ""}`}>
+                  <span className="worker-avatar" aria-hidden="true">{agentName(member.id).split(" ").map(part => part[0]).join("")}</span>
+                  <div className="activity-worker-info">
+                    <div className="activity-worker-title"><strong>{agentName(member.id)}</strong>
+                      <span className={`activity-tag status-${member.phase}`}>{member.phase}</span></div>
+                    <p className="activity-worker-meta">{index === 0 ? "This session · root" : `Enrolled descendant · desk ${index + 1}`}</p>
+                    {!member.present && <p className="activity-current">No recent heartbeat from this session.</p>}
+                  </div>
+                  {member.present && <button type="button" className="focus-button"
+                    aria-label={`Focus ${agentName(member.id)}`}
+                    aria-pressed={selected === member.id}
+                    onClick={() => {
+                      selectedRef.current = member.id;
+                      setSelected(member.id);
+                      world.current?.focusAgent(index);
+                    }}>Focus</button>}
+                </div>)}
+              </div> : <p className="activity-empty">Waiting for this session's activity.</p>}
+            </div>
+            <div className="activity-row">
+              <div className="activity-row-heading"><strong>Local observation</strong>
+                <span className="activity-tag">Read only</span></div>
+              <p>Sessions are linked explicitly, not discovered from repository or branch. App-created children require the root's add_descendant canvas action. Missing or expired heartbeats show offline, not guessed activity.</p>
+            </div>
+          </section>
+        </div>
       </aside>
     </div>
   </main>;
