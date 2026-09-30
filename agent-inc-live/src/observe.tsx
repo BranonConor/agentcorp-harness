@@ -318,15 +318,12 @@ function Office() {
         aria-label="Office overview" aria-hidden={!panelOpen} inert={!panelOpen}>
         <div className="activity-header">
           <div className="activity-title-row">
-            <h2>Activity</h2>
-            <button type="button" className="sidebar-close" onClick={closePanel} aria-label="Close activity">
+            <h2>Overview</h2>
+            <button type="button" className="sidebar-close" onClick={closePanel} aria-label="Close overview">
               <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" /></svg>
             </button>
           </div>
         </div>
-        <nav className="activity-tabs" aria-label="Activity views">
-          <button type="button" aria-pressed="true">Overview</button>
-        </nav>
         <div className="activity-scroll activity-list-scroll">
           <section className="activity-view overview-list" aria-label="Office overview status">
             <div className="activity-row activity-row-first">
@@ -349,11 +346,6 @@ function Office() {
               <p>{themeError}</p>
             </div>}
             <div className="activity-row">
-              <div className="activity-row-heading"><strong>The office</strong>
-                <span className="activity-tag">{MAX_LIVE_DESKS} desks</span></div>
-              <p>Read-only view of this Copilot CLI session and explicitly enrolled descendants. Click a sprite to focus it; manage conversations and permissions in their own sessions.</p>
-            </div>
-            <div className="activity-row">
               <div className="activity-row-heading"><strong>Observed agents</strong>
                 <span className="activity-tag">{sessions.length} enrolled</span></div>
               {sessions.length ? <div className="activity-list">
@@ -361,19 +353,21 @@ function Office() {
                   className={`activity-worker-row ${selected === member.id ? "worker-selected" : ""}`}>
                   <span className="worker-avatar" aria-hidden="true">{agentName(member.id).split(" ").map(part => part[0]).join("")}</span>
                   <div className="activity-worker-info">
-                    <div className="activity-worker-title"><strong>{agentName(member.id)}</strong>
-                      <span className={`activity-tag status-${member.phase}`}>{member.phase}</span></div>
+                    <div className="activity-worker-title"><strong>{agentName(member.id)}</strong></div>
                     <p className="activity-worker-meta">{index === 0 ? "This session · root" : `Enrolled descendant · desk ${index + 1}`}</p>
-                    {!member.present && <p className="activity-current">No recent heartbeat from this session.</p>}
+                    {!member.present && <p className="activity-current">No recent heartbeat from this session. Must have gone home for the day.</p>}
                   </div>
-                  {member.present && <button type="button" className="focus-button"
-                    aria-label={`Focus ${agentName(member.id)}`}
-                    aria-pressed={selected === member.id}
-                    onClick={() => {
-                      selectedRef.current = member.id;
-                      setSelected(member.id);
-                      world.current?.focusAgent(index);
-                    }}>Focus</button>}
+                  <div className="observer-worker-actions">
+                    <span className={`activity-tag status-${member.phase}`}>{member.phase}</span>
+                    {member.present && <button type="button" className="focus-button"
+                      aria-label={`Focus ${agentName(member.id)}`}
+                      aria-pressed={selected === member.id}
+                      onClick={() => {
+                        selectedRef.current = member.id;
+                        setSelected(member.id);
+                        world.current?.focusAgent(index);
+                      }}>Focus</button>}
+                  </div>
                 </div>)}
               </div> : <p className="activity-empty">Waiting for this session's activity.</p>}
             </div>

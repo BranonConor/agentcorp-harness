@@ -6,6 +6,7 @@
   "type": "module",
   "scripts": {
     "build": "vite build",
+    "package:observer": "vite build --config vite.observer.config.ts && node scripts/check-observer-package.mjs",
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test tests/*.test.ts tests/*.test.tsx",
     "dev": "npm run build && tsx server/main.ts",

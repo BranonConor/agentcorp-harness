@@ -20,13 +20,12 @@
   color: var(--office-warning);
   font: 700 10px var(--sans);
 }
-.observer-shell .activity-worker-row { align-items: center; }
-.observer-shell .activity-worker-title { justify-content: space-between; }
+.observer-shell .worker-avatar { align-self: flex-start; }
+.observer-worker-actions { flex: none; align-self: center; display: flex; align-items: center; gap: 8px; }
 .observer-shell .status-idle { background: var(--office-accent-bg); color: var(--office-accent); }
 .observer-shell .status-offline { background: var(--office-muted); color: var(--office-secondary); }
 .observer-shell .activity-current { margin: 7px 0 0; }
 .observer-shell .world-callout.live-callout { z-index: 3; }
-.observer-shell .activity-panel .activity-tabs { grid-template-columns: 1fr; }
 .observer-shell button:focus-visible { outline: 2px solid var(--office-accent); outline-offset: 2px; }
 @media (max-width: 700px) {
   .observer-shell .observer-count { display: none; }
