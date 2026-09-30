@@ -18,6 +18,7 @@ import { createWorld } from "../../agent-inc/game/world";
 import { noticeActivityForActor, roomActors } from "./room";
 import type { Actor, Room as OfficeRoom, Status } from "./room";
 import { SafeMarkdown } from "./markdown";
+import { greetingForPersona } from "./greeting";
 
 const LIVE_DESKS = [...DESKS, ...EXTRA_DESKS];
 const LIVE_COFFEE_SPOTS = COFFEE_SPOTS.map(({ x }) => ({ x, z: LIVE_COFFEE_Z + 0.75 }));
@@ -541,6 +542,10 @@ function LiveOffice() {
   const compactStatus = connected ? "Online" : sdkRoom?.error ? "Error" :
     signKind === "connecting" ? "Connecting" : "Offline";
   const selectedAgent = sdkRoom?.agents.find(agent => agent.sessionId === selected);
+  const displayedMessages = selectedAgent?.messages.length ? selectedAgent.messages :
+    selectedAgent && !selectedAgent.archived ?
+      [{ id: `greeting-${selectedAgent.id}`, role: "assistant" as const,
+        content: greetingForPersona(selectedAgent.persona ?? 0) }] : [];
   useEffect(() => {
     setCopiedId("");
   }, [selected]);
@@ -806,7 +811,7 @@ function LiveOffice() {
                       <span className="conversation-row-text">
                         <strong>{name}</strong>
                         <small>{last ? `${last.role === "user" ? "You: " : ""}${last.content.slice(0, 110)}` :
-                          "New conversation · say hello"}</small>
+                          agent.archived ? "New conversation" : greetingForPersona(agent.persona ?? 0)}</small>
                         <small>{agent.archived ? `Archived · former desk ${(agent.lastDeskIndex ?? 0) + 1}` :
                           `Desk ${agent.deskIndex! + 1} · ${agent.activity}`}</small>
                         {agent.repository && <small>{agent.repository.worktree ? "Worktree" : "Research"}: {agent.repository.name} · {agent.repository.scope === "task" ? "this task" : "this session"}</small>}
@@ -858,9 +863,9 @@ function LiveOffice() {
             {selectedAgent && (
               <section className="activity-view conversation-view" aria-label="SDK conversation">
                   <div className="conversation-messages">
-                    {selectedAgent.messages.length === 0 && <p className="activity-empty">
-                      {selectedAgent.archived ? "This archived agent has no messages yet." : "Say hello to your new office mate."}</p>}
-                    {selectedAgent.messages.map(message =>
+                    {selectedAgent.archived && selectedAgent.messages.length === 0 &&
+                      <p className="activity-empty conversation-empty">No messages yet.</p>}
+                    {displayedMessages.map(message =>
                       <div className={`conversation-message ${message.role}`} key={message.id}>
                         <span>{message.role === "user" ? "YOU" : message.role === "system" ? "OFFICE" : selectedActor?.name}{message.pending ? " · STREAMING" : ""}</span>
                         <div className="message-bubble">
