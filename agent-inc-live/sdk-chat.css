@@ -17,7 +17,7 @@
   background: var(--office-assistant-bubble);
 }
 .conversation-message .message-markdown {
-  padding: 35px 13px 11px;
+  padding: 11px 13px;
   line-height: 1.6;
   font-size: 13px;
   overflow-wrap: anywhere;
@@ -44,8 +44,8 @@
 .conversation-message.user > span { display: block; text-align: right; }
 .conversation-message.user .message-bubble { border-radius: 12px 3px 12px 12px; background: var(--office-accent-bg); }
 .conversation-message.assistant { margin-right: 24px; }
-.copy-message { position: absolute; top: 4px; left: 6px; display: grid; place-items: center; width: 29px; height: 29px; padding: 5px; border: 1px solid transparent; border-radius: 6px; background: var(--office-panel); color: var(--office-secondary); cursor: pointer; opacity: 0; }
-.conversation-message.user .copy-message { left: auto; right: 6px; }
+.copy-message { position: absolute; bottom: 5px; left: 6px; z-index: 1; display: grid; place-items: center; width: 27px; height: 27px; padding: 5px; border: 1px solid var(--office-border); border-radius: 6px; background: var(--office-panel); color: var(--office-secondary); cursor: pointer; opacity: 0; }
+.conversation-message.assistant .copy-message { left: auto; right: 6px; }
 .copy-message svg { width: 17px; height: 17px; stroke: currentColor; stroke-width: 1.6; }
 .conversation-message:hover .copy-message, .conversation-message:focus-within .copy-message, .copy-message:focus-visible { opacity: 1; border-color: var(--office-border); }
 .copy-message:focus-visible { outline: 2px solid var(--office-accent); }
@@ -75,6 +75,16 @@
 .chat-back { flex: none; width: 30px; height: 30px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font-size: 18px; cursor: pointer; }
 .activity-title-row h2 { flex: 1; }
 .chat-status { margin-left: auto; }
+.chat-options { position: relative; flex: none; }
+.chat-options-toggle { display: grid; place-items: center; width: 30px; height: 30px; padding: 0; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 700 19px/1 var(--sans); cursor: pointer; }
+.chat-options-toggle:hover, .chat-options-toggle[aria-expanded="true"] { background: var(--office-accent-bg); }
+.chat-options-toggle:focus-visible, .chat-options-menu button:focus-visible { outline: 2px solid var(--office-accent); outline-offset: 2px; }
+.chat-options-menu { position: absolute; z-index: 12; top: 38px; right: 0; box-sizing: border-box; width: min(300px, calc(100vw - 38px)); max-height: min(360px, 65dvh); overflow-y: auto; display: grid; gap: 7px; padding: 12px; border: 1px solid var(--office-border); border-radius: 8px; background: var(--office-panel); box-shadow: 0 12px 30px var(--office-shadow); font: 11px/1.4 var(--sans); }
+.chat-options-menu strong { font-size: 12px; }
+.chat-options-menu span, .chat-options-menu small { color: var(--office-secondary); }
+.chat-options-menu code { overflow-wrap: anywhere; user-select: text; font: 10px/1.4 var(--mono); }
+.chat-options-menu button { justify-self: start; min-height: 30px; padding: 5px 9px; border: 1px solid var(--office-border); border-radius: 6px; background: var(--office-muted); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
+.chat-options-menu button:disabled { opacity: .5; cursor: not-allowed; }
 .activity-attention { display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 11px; background: var(--office-warning-bg); color: var(--office-warning); font: 700 10px var(--sans); }
 .live-shell .top-stats .add-agent-button, .live-shell .top-stats .system-toggle {
   box-sizing: border-box;
@@ -117,30 +127,27 @@
 .conversation-composer button:hover:not(:disabled) { background: var(--office-accent-bg); }
 .conversation-composer .stop-turn { background: var(--office-warning-bg); color: var(--office-warning); border-color: var(--office-warning); font-size: 11px; cursor: pointer; }
 .conversation-composer button:disabled { opacity: .4; cursor: default; }
-.repo-attachment { flex: none; padding: 10px 16px; border-top: 1px solid var(--office-border); background: var(--office-panel); }
-.repo-attachment label, .repo-attachment strong { display: block; margin-bottom: 6px; color: var(--office-text); font: 650 11px var(--sans); }
-.repo-attachment form > div { display: flex; gap: 6px; }
-.repo-attachment input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 11px var(--sans); }
-.repo-attachment button { flex: none; min-height: 32px; padding: 6px 10px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-accent-bg); color: var(--office-accent); font: 650 11px var(--sans); cursor: pointer; }
-.repo-attachment button:disabled { opacity: .5; cursor: not-allowed; }
-.repo-attachment small { display: block; margin-top: 6px; color: var(--office-secondary); font-size: 10px; line-height: 1.4; }
-.repo-grant { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
-.repo-grant strong { flex: 1; margin: 0; }
-.repo-grant code { flex-basis: 100%; color: var(--office-secondary); font: 10px var(--mono); overflow-wrap: anywhere; }
-.conversation-messages .access-card { margin: 10px 0 18px; max-height: none; overflow: visible; }
-.access-card form label, .access-card > label { display: block; margin: 10px 0 5px; font: 650 11px var(--sans); }
-.access-card .access-lookup { display: flex; gap: 6px; }
-.access-card input[type="text"], .access-card select { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-panel); color: var(--office-text); font: 11px var(--mono); }
+.access-message { margin-top: 16px; }
+.access-card { padding: 13px; font: 12px/1.45 var(--sans); }
+.access-card .access-question { margin: 0 0 5px; font-size: 13px; }
+.access-card .access-purpose { margin: 0 0 8px; }
+.access-card .access-source { margin: 0 0 11px; color: var(--office-secondary); font: 10px var(--mono); }
+.access-picker { display: grid; gap: 5px; margin: 8px 0; }
+.access-card .access-lookup { display: flex; gap: 6px; margin: 8px 0; }
+.access-card input[type="text"], .access-card select { box-sizing: border-box; min-width: 0; width: 100%; padding: 7px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-panel); color: var(--office-text); font: 11px var(--mono); }
 .access-card .access-lookup button { border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-panel); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
-.access-identity { display: grid; gap: 5px; margin: 12px 0; padding: 9px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-panel); overflow-wrap: anywhere; font: 11px/1.45 var(--sans); }
-.access-identity strong { margin: 0; }
-.access-identity label { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
-.access-identity input { accent-color: var(--office-accent); }
-.access-card .access-error { margin-top: 8px; color: var(--office-warning); overflow-wrap: anywhere; }
-.access-actions { flex-wrap: wrap; }
-.access-actions button { flex: 1 1 auto; cursor: pointer; }
-.guided-repo { padding: 10px 3px; color: var(--office-secondary); font-size: 11px; }
-.guided-repo button { margin-left: 4px; border: 0; background: transparent; color: var(--office-accent); font: 650 11px var(--sans); text-decoration: underline; cursor: pointer; }
+.access-change { margin: 0 0 6px; padding: 0; border: 0; background: transparent; color: var(--office-accent); font: 11px var(--sans); text-decoration: underline; cursor: pointer; }
+.access-card small { display: block; margin: 5px 0; font-size: 10px; }
+.access-card .access-error { color: var(--office-warning); overflow-wrap: anywhere; }
+.access-actions { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0 0; }
+.access-actions button { flex: 1 1 auto; min-height: 32px; padding: 6px 8px; border: 1px solid var(--office-border); border-radius: 6px; background: var(--office-panel); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
+.access-actions button:last-child:not(:first-child) { background: var(--office-accent-bg); color: var(--office-accent); }
+.access-actions button:disabled { opacity: .5; cursor: not-allowed; }
+.access-details { margin-top: 9px; color: var(--office-secondary); font: 10px/1.45 var(--sans); }
+.access-details summary { width: max-content; cursor: pointer; }
+.access-details span { display: block; margin-top: 5px; overflow-wrap: anywhere; }
+.access-details label { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
+.access-details input { accent-color: var(--office-accent); }
 .permission-buttons button:disabled { opacity: .5; cursor: not-allowed; }
 .worker-avatar { width: 42px; height: 42px; overflow: hidden; }
 .worker-avatar img { width: 100%; height: 100%; image-rendering: pixelated; }
