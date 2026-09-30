@@ -16,6 +16,7 @@ export class RoomController {
   private saving: Promise<void> = Promise.resolve();
   private connecting: Promise<void> | null = null;
   private creating = new Set<number>();
+  private lifecycle = new Set<string>();
 
   private constructor(private readonly adapter: Adapter, private readonly store: Store, state: Room) {
     this.state = state;
@@ -29,16 +30,23 @@ export class RoomController {
     const state: Room = saved
       ? "agents" in saved
         ? saved
-        : { agents: saved.agent ? [{ ...saved.agent, deskIndex: 0, workspace, workspaceKind: "root", createdAt: now, updatedAt: now }] : [], error: saved.error, connected: saved.connected, workspace, revision: saved.revision }
+        : { agents: saved.agent ? [{ ...saved.agent, deskIndex: 0, archived: false, workspace, workspaceKind: "root", createdAt: now, updatedAt: now }] : [], error: saved.error, connected: saved.connected, workspace, revision: saved.revision }
       : { agents: [], error: null, connected: false, workspace, revision: 0 };
-    if (!Array.isArray(state.agents) || state.agents.length > MAX_AGENTS ||
+    if (Array.isArray(state.agents)) {
+      for (const agent of state.agents) agent.archived ??= false;
+    }
+    if (!Array.isArray(state.agents) || state.agents.filter(agent => !agent.archived).length > MAX_AGENTS ||
       state.agents.some((agent, index) => !agent.id || !agent.sessionId || !agent.workspace ||
-        !(agent.workspaceKind === "root" && agent.workspace === workspace && agent.deskIndex === 0 ||
+        !(agent.workspaceKind === "root" && agent.workspace === workspace ||
           agent.workspaceKind === "scratch" && /^[0-9a-f-]{36}$/.test(agent.id) &&
           agent.workspace === join(workspace, "agents", agent.id)) ||
-        !Number.isInteger(agent.deskIndex) || agent.deskIndex < 0 || agent.deskIndex >= MAX_AGENTS ||
-        state.agents.findIndex(other => other.deskIndex === agent.deskIndex ||
-          other.id === agent.id || other.sessionId === agent.sessionId) !== index)) {
+        (agent.archived ? agent.deskIndex !== null :
+          !Number.isInteger(agent.deskIndex) || agent.deskIndex === null ||
+          agent.deskIndex < 0 || agent.deskIndex >= MAX_AGENTS) ||
+        (agent.lastDeskIndex !== undefined && (!Number.isInteger(agent.lastDeskIndex) ||
+          agent.lastDeskIndex < 0 || agent.lastDeskIndex >= MAX_AGENTS)) ||
+        state.agents.findIndex(other => other.id === agent.id || other.sessionId === agent.sessionId ||
+          !agent.archived && !other.archived && other.deskIndex === agent.deskIndex) !== index)) {
       throw new Error("Saved agent roster is invalid; state was not changed.");
     }
     const room = new RoomController(adapter, store, state);
@@ -46,6 +54,7 @@ export class RoomController {
     room.state.error = null;
     for (const agent of room.state.agents) {
       agent.review = undefined;
+      if (agent.archived) continue;
       if (["thinking", "working", "permission"].includes(agent.phase)) {
         agent.phase = "interrupted";
         agent.activity = "Turn interrupted by restart";
@@ -104,6 +113,7 @@ export class RoomController {
       throw error;
     }
     for (const agent of this.state.agents) {
+      if (agent.archived) continue;
       if (this.sessions.has(agent.id) && agent.phase !== "error") continue;
       try {
         if (this.sessions.has(agent.id)) {
@@ -112,19 +122,7 @@ export class RoomController {
           this.sessions.delete(agent.id);
           this.unsubscribers.delete(agent.id);
         }
-        let session: LiveSession;
-        try {
-          session = await this.adapter.resume(agent.sessionId, agent.workspace, request => this.permission(agent.id, request));
-        } catch (error) {
-          if (agent.messages.length !== 0 || !(error instanceof Error) ||
-            !error.message.includes(`Session not found: ${agent.sessionId}`)) throw error;
-          session = await this.adapter.create(agent.workspace, request => this.permission(agent.id, request), agent.sessionId);
-          if (session.sessionId !== agent.sessionId) {
-            await session.disconnect();
-            throw new Error("SDK returned a different identity for the empty-session recovery.");
-          }
-          agent.activity = "Empty session restored; no messages lost";
-        }
+        const session = await this.resumeAgent(agent);
         this.attach(agent.id, session);
         if (agent.phase === "error") {
           agent.phase = "idle";
@@ -137,10 +135,33 @@ export class RoomController {
     await this.publish();
   }
 
+  private async resumeAgent(agent: Agent): Promise<LiveSession> {
+    try {
+      return await this.adapter.resume(agent.sessionId, agent.workspace, request => this.permission(agent.id, request));
+    } catch (error) {
+      if (agent.messages.length !== 0 || !(error instanceof Error) ||
+        !error.message.includes(`Session not found: ${agent.sessionId}`)) throw error;
+      const session = await this.adapter.create(agent.workspace, request => this.permission(agent.id, request), agent.sessionId);
+      if (session.sessionId !== agent.sessionId) {
+        await session.disconnect();
+        throw new Error("SDK returned a different identity for the empty-session recovery.");
+      }
+      agent.activity = "Empty session restored; no messages lost";
+      return session;
+    }
+  }
+
+  private availableDesk(preferred?: number): number | null {
+    const occupied = new Set(this.state.agents.filter(agent => !agent.archived).map(agent => agent.deskIndex));
+    for (const reserved of this.creating) occupied.add(reserved);
+    if (preferred !== undefined && !occupied.has(preferred)) return preferred;
+    return Array.from({ length: MAX_AGENTS }, (_, index) => index).find(index => !occupied.has(index)) ?? null;
+  }
+
   async create(deskIndex: number): Promise<Agent> {
     if (!Number.isInteger(deskIndex) || deskIndex < 0 || deskIndex >= MAX_AGENTS) throw new Error("Invalid desk.");
-    if (this.state.agents.length >= MAX_AGENTS) throw new Error("All office desks are occupied.");
-    if (this.state.agents.some(agent => agent.deskIndex === deskIndex) || this.creating.has(deskIndex)) throw new Error("This desk is already occupied.");
+    if (this.state.agents.filter(agent => !agent.archived).length + this.creating.size >= MAX_AGENTS) throw new Error("All office desks are occupied.");
+    if (this.availableDesk(deskIndex) !== deskIndex) throw new Error("This desk is already occupied.");
     this.creating.add(deskIndex);
     const id = randomUUID();
     try {
@@ -150,7 +171,7 @@ export class RoomController {
         throw new Error("SDK returned a session identity already assigned to another agent.");
       }
       const now = Date.now();
-      const agent: Agent = { id, deskIndex, workspace, workspaceKind: "scratch", createdAt: now, updatedAt: now, sessionId: session.sessionId,
+      const agent: Agent = { id, deskIndex, archived: false, workspace, workspaceKind: "scratch", createdAt: now, updatedAt: now, sessionId: session.sessionId,
         phase: "idle", activity: "Ready to chat", messages: [] };
       this.state.agents.push(agent);
       this.attach(id, session);
@@ -176,8 +197,86 @@ export class RoomController {
     return agent;
   }
 
+  private availableForLifecycle(agent: Agent): void {
+    if (this.lifecycle.has(agent.id)) throw new Error("This agent is already being archived, restored or sent home.");
+    if (agent.review || ["thinking", "working", "permission"].includes(agent.phase)) {
+      throw new Error("Wait for the turn to finish or decide the pending permission before changing this agent.");
+    }
+  }
+
+  async archive(agentId: string): Promise<void> {
+    const agent = this.agent(agentId);
+    if (agent.archived) throw new Error("This agent is already archived.");
+    this.availableForLifecycle(agent);
+    this.lifecycle.add(agentId);
+    try {
+      await this.sessions.get(agentId)?.disconnect();
+      this.unsubscribers.get(agentId)?.();
+      this.unsubscribers.delete(agentId);
+      this.sessions.delete(agentId);
+      agent.lastDeskIndex = agent.deskIndex!;
+      agent.deskIndex = null;
+      agent.archived = true;
+      agent.archivedAt = Date.now();
+      agent.activity = "Archived; conversation and SDK session preserved";
+      agent.updatedAt = Date.now();
+      await this.publish();
+    } finally {
+      this.lifecycle.delete(agentId);
+    }
+  }
+
+  async restore(agentId: string): Promise<void> {
+    const agent = this.agent(agentId);
+    if (!agent.archived) throw new Error("This agent is already in the office.");
+    this.availableForLifecycle(agent);
+    if (this.availableDesk(agent.lastDeskIndex) === null) throw new Error("Office full (16 desks). Archive an agent before restoring this one.");
+    this.lifecycle.add(agentId);
+    try {
+      const session = await this.resumeAgent(agent);
+      const deskIndex = this.availableDesk(agent.lastDeskIndex);
+      if (deskIndex === null) {
+        await session.disconnect();
+        throw new Error("Office full (16 desks). Archive an agent before restoring this one.");
+      }
+      agent.deskIndex = deskIndex;
+      agent.archived = false;
+      agent.archivedAt = undefined;
+      agent.phase = "idle";
+      agent.activity = "Ready to chat";
+      agent.updatedAt = Date.now();
+      this.attach(agentId, session);
+      await this.publish();
+    } finally {
+      this.lifecycle.delete(agentId);
+    }
+  }
+
+  async sendHome(agentId: string): Promise<void> {
+    const agent = this.agent(agentId);
+    this.availableForLifecycle(agent);
+    this.lifecycle.add(agentId);
+    try {
+      await this.sessions.get(agentId)?.disconnect();
+      this.unsubscribers.get(agentId)?.();
+      this.unsubscribers.delete(agentId);
+      this.sessions.delete(agentId);
+      try {
+        await this.adapter.deleteSession(agent.sessionId);
+      } catch (error) {
+        this.report(error, agent);
+        throw error;
+      }
+      this.state.agents.splice(this.state.agents.indexOf(agent), 1);
+      await this.publish();
+    } finally {
+      this.lifecycle.delete(agentId);
+    }
+  }
+
   async send(agentId: string, text: string): Promise<void> {
     const agent = this.agent(agentId);
+    if (agent.archived || this.lifecycle.has(agentId)) throw new Error("This agent is not active in the office.");
     const session = this.sessions.get(agentId);
     if (!session) throw new Error("Session unavailable. Retry connection before sending.");
     const prompt = text.trim();
@@ -199,6 +298,7 @@ export class RoomController {
 
   private event(agentId: string, event: SessionEvent): void {
     const agent = this.agent(agentId);
+    if (agent.archived) return;
     switch (event.type) {
       case "assistant.message_delta": {
         const delta = event.data.deltaContent;
@@ -248,7 +348,9 @@ export class RoomController {
 
   private permission(agentId: string, request: PermissionRequest): Promise<PermissionRequestResult> {
     const agent = this.state.agents.find(item => item.id === agentId);
-    if (!this.listeners.size || !agent || agent.review) return Promise.resolve({ kind: "user-not-available" });
+    if (!this.listeners.size || !agent || agent.archived || this.lifecycle.has(agentId) || agent.review) {
+      return Promise.resolve({ kind: "user-not-available" });
+    }
     const id = randomUUID();
     const review: Review = {
       id,

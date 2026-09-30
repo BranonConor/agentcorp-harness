@@ -73,6 +73,10 @@ export class SdkAdapter implements Adapter {
     return this.wrap(session);
   }
 
+  async deleteSession(id: string): Promise<void> {
+    await (await this.ready()).deleteSession(id);
+  }
+
   private wrap(session: Awaited<ReturnType<CopilotClient["createSession"]>>): LiveSession {
     return {
       sessionId: session.sessionId,

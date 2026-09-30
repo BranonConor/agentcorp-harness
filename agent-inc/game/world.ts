@@ -327,6 +327,7 @@ export type World = {
   focusAgent: (index: number | null) => void;
   projectDesk: (index: number) => { x: number; y: number } | null;
   projectAgent: (index: number) => { x: number; y: number } | null;
+  projectSignStatus: () => { x: number; y: number } | null;
   dispose: () => void;
 };
 
@@ -767,8 +768,19 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
     const model = createAgent(id, shadowTexture, frames);
     const mugSteam = steamMap ? addSteam(model.group, 0.35, 0.62, 0.12, 0.24, 0.38) : null;
     if (mugSteam) mugSteam.visible = false;
+    const halo = isLive ? new THREE.Mesh(
+      new THREE.RingGeometry(0.37, 0.49, 48),
+      new THREE.MeshBasicMaterial({ color: 0xffcf89, transparent: true, opacity: 0,
+        depthWrite: false, side: THREE.DoubleSide, toneMapped: false }),
+    ) : null;
+    if (halo) {
+      halo.rotation.x = -Math.PI / 2;
+      halo.renderOrder = 4;
+      halo.visible = false;
+      scene.add(halo);
+    }
     scene.add(model.group, model.shadow);
-    return { ...model, mugSteam };
+    return { ...model, mugSteam, halo };
   };
   const agentMeshes = simulation.agents.map((agent) => makeAgentModel(agent.id));
   let previousPositions = simulation.agents.map(({ x, z }) => ({ x, z }));
@@ -1116,6 +1128,9 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
       return agent && index < simulation.progress.capacity && agent.x < 50 ?
         projectPoint(agent.x, 1.15, agent.z) : null;
     },
+    projectSignStatus() {
+      return isLive ? projectPoint(0, 4.23, room.back + 0.4) : null;
+    },
     render(elapsed: number, previewOffset: number, alpha: number, advanced: boolean) {
       const now = performance.now() / 1000;
       const frameDelta = Math.max(0, Math.min(0.05, now - lastRenderTime));
@@ -1306,6 +1321,15 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
         model.shadow.scale.setScalar(index === selectedAgent && isLive ? 1.22 : 1);
         (model.shadow.material as THREE.MeshBasicMaterial).opacity =
           (index === selectedAgent && isLive ? 0.7 : 0.54) * (0.72 + daylightShadow * 0.28);
+        if (model.halo) {
+          model.halo.visible = index === selectedAgent && agent.x < 50;
+          if (model.halo.visible) {
+            model.halo.position.set(position.x, 0.105, position.z);
+            model.halo.scale.setScalar(reducedMotion ? 1 : 1 + Math.sin(animationTime * 2.4) * 0.045);
+            (model.halo.material as THREE.MeshBasicMaterial).opacity =
+              reducedMotion ? 0.4 : 0.35 + Math.sin(animationTime * 2.4) * 0.11;
+          }
+        }
         if (agent.state === "idle") {
           model.facing = index < DESKS.length ? index < 2 ? "right" : "left" :
             (index - DESKS.length) % 2 === 0 ? "right" : "left";

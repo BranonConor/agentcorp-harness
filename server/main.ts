@@ -98,6 +98,26 @@ const server = createServer(async (request, response) => {
         await room.connect();
         return json(response, 200, room.state);
       }
+      if (url.pathname === "/api/archive" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string") throw new Error("Choose an agent to archive.");
+        await room.archive(body.agentId);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/restore" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string") throw new Error("Choose an agent to restore.");
+        await room.restore(body.agentId);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/send-home" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string" || body.confirmedAgentId !== body.agentId) {
+          throw new Error("Explicit confirmation for this agent is required.");
+        }
+        await room.sendHome(body.agentId);
+        return json(response, 200, room.state);
+      }
       return json(response, 404, { error: "Unknown API route." });
     }
     if (request.method !== "GET" || url.pathname.includes("..")) return json(response, 404, { error: "Not found." });

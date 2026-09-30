@@ -12,6 +12,7 @@ class MemoryStore implements Store {
 }
 class MockSession implements LiveSession {
   sent: string[] = [];
+  disconnects = 0;
   handler: ((event: SessionEvent) => void) | null = null;
   constructor(readonly sessionId: string) {}
   async send(prompt: string): Promise<void> { this.sent.push(prompt); }
@@ -20,7 +21,7 @@ class MockSession implements LiveSession {
     return () => { this.handler = null; };
   }
   emit(event: SessionEvent): void { this.handler?.(event); }
-  async disconnect(): Promise<void> {}
+  async disconnect(): Promise<void> { this.disconnects++; }
 }
 class MockAdapter implements Adapter {
   sessions = new Map<string, MockSession>();
@@ -31,6 +32,8 @@ class MockAdapter implements Adapter {
   recreated: string | undefined;
   failResume = new Set<string>();
   missing = new Set<string>();
+  deleted: string[] = [];
+  deleteError: Error | null = null;
   async probe(): Promise<void> {}
   async prepareWorkspace(root: string, agentId: string): Promise<string> {
     this.prepared.push(agentId);
@@ -52,6 +55,11 @@ class MockAdapter implements Adapter {
     if (this.workspaces.get(id) !== workspace) throw new Error("Wrong agent workspace");
     this.permissions.set(id, permission);
     return this.sessions.get(id)!;
+  }
+  async deleteSession(id: string): Promise<void> {
+    if (this.deleteError) throw this.deleteError;
+    this.deleted.push(id);
+    this.sessions.delete(id);
   }
   async stop(): Promise<void> {}
 }
@@ -156,6 +164,105 @@ test("a full office and occupied desks refuse extra sessions", async () => {
   for (let deskIndex = 1; deskIndex < MAX_AGENTS; deskIndex++) await room.create(deskIndex);
   assert.equal(room.state.agents.length, MAX_AGENTS);
   await assert.rejects(room.create(0), /occupied|All office desks/);
+  await room.close();
+});
+
+test("archive frees its desk without deleting session, keeps history on restart, and restore resumes it", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  const original = await room.create(3);
+  await room.send(original.id, "Keep my work");
+  adapter.sessions.get(original.sessionId)!.emit(event("assistant.message", { content: "Kept" }));
+  adapter.sessions.get(original.sessionId)!.emit(event("session.idle"));
+  const originalWorkspace = original.workspace;
+  await room.archive(original.id);
+  assert.equal(original.archived, true);
+  assert.equal(original.deskIndex, null);
+  assert.equal(original.lastDeskIndex, 3);
+  assert.equal(original.workspace, originalWorkspace);
+  assert.deepEqual(adapter.deleted, []);
+  await assert.rejects(room.send(original.id, "Not while archived"), /not active/);
+  const newcomer = await room.create(3);
+  assert.equal(newcomer.deskIndex, 3);
+  await room.close();
+
+  const recovered = await RoomController.open(adapter, store, "/dedicated");
+  await recovered.connect();
+  assert.equal(recovered.state.agents.find(agent => agent.id === original.id)?.archived, true);
+  assert.equal(adapter.resumed.includes(original.sessionId), false);
+  await recovered.restore(original.id);
+  const restored = recovered.state.agents.find(agent => agent.id === original.id)!;
+  assert.equal(restored.archived, false);
+  assert.equal(restored.deskIndex, 0);
+  assert.equal(restored.workspace, originalWorkspace);
+  assert.deepEqual(restored.messages.map(message => message.content), ["Keep my work", "Kept"]);
+  assert.deepEqual(adapter.resumed, [newcomer.sessionId, original.sessionId]);
+  await recovered.close();
+});
+
+test("restore refuses a full office without resuming or changing an archived record", async () => {
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated");
+  const archived = await room.create(0);
+  await room.archive(archived.id);
+  for (let index = 0; index < MAX_AGENTS; index++) await room.create(index);
+  await assert.rejects(room.restore(archived.id), /Office full/);
+  assert.equal(archived.archived, true);
+  assert.equal(archived.deskIndex, null);
+  assert.equal(adapter.resumed.includes(archived.sessionId), false);
+  await room.close();
+});
+
+test("send home deletes exactly the selected SDK session and record, never its scratch path", async () => {
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated");
+  const a = await room.create(0);
+  const b = await room.create(1);
+  const keptWorkspace = a.workspace;
+  await room.sendHome(b.id);
+  assert.deepEqual(adapter.deleted, [b.sessionId]);
+  assert.deepEqual(room.state.agents.map(agent => agent.id), [a.id]);
+  assert.equal(a.workspace, keptWorkspace);
+  assert.equal(adapter.workspaces.get(b.sessionId), b.workspace);
+  await room.close();
+});
+
+test("SDK deletion failure retains the record and exposes an error for retry", async () => {
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated");
+  const agent = await room.create(0);
+  adapter.deleteError = new Error("SDK refused deletion");
+  await assert.rejects(room.sendHome(agent.id), /SDK refused deletion/);
+  assert.equal(room.state.agents.length, 1);
+  assert.equal(room.state.agents[0].sessionId, agent.sessionId);
+  assert.equal(room.state.agents[0].phase, "error");
+  assert.deepEqual(adapter.deleted, []);
+  adapter.deleteError = null;
+  await room.sendHome(agent.id);
+  assert.deepEqual(adapter.deleted, [agent.sessionId]);
+  assert.equal(room.state.agents.length, 0);
+  await room.close();
+});
+
+test("an active turn and pending permission block archive and permanent send home", async () => {
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated");
+  const agent = await room.create(0);
+  await room.send(agent.id, "A task");
+  await assert.rejects(room.archive(agent.id), /Wait for the turn/);
+  await assert.rejects(room.sendHome(agent.id), /Wait for the turn/);
+  const unsubscribe = room.subscribe(() => {});
+  const pending = adapter.permissions.get(agent.sessionId)!(request);
+  assert.ok(agent.review);
+  await assert.rejects(room.archive(agent.id), /Wait for the turn/);
+  await assert.rejects(room.sendHome(agent.id), /Wait for the turn/);
+  room.decide(agent.id, agent.review!.id, false);
+  await pending;
+  adapter.sessions.get(agent.sessionId)!.emit(event("session.idle"));
+  await room.archive(agent.id);
+  assert.equal(agent.archived, true);
+  unsubscribe();
   await room.close();
 });
 

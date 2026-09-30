@@ -4,7 +4,10 @@ export type Review = { id: string; kind: string; detail: string; tool: string };
 export const MAX_AGENTS = 16;
 export type Agent = {
   id: string;
-  deskIndex: number;
+  deskIndex: number | null;
+  archived: boolean;
+  archivedAt?: number;
+  lastDeskIndex?: number;
   workspace: string;
   workspaceKind: "root" | "scratch";
   createdAt: number;
@@ -17,7 +20,7 @@ export type Agent = {
 };
 export type Room = { agents: Agent[]; error: string | null; connected: boolean; workspace: string; revision: number };
 export type LegacyRoom = {
-  agent: (Omit<Agent, "deskIndex" | "workspace" | "workspaceKind" | "createdAt" | "updatedAt"> & { x: number; y: number }) | null;
+  agent: (Omit<Agent, "deskIndex" | "archived" | "archivedAt" | "lastDeskIndex" | "workspace" | "workspaceKind" | "createdAt" | "updatedAt"> & { x: number; y: number }) | null;
   error: string | null;
   connected: boolean;
   workspace: string;
@@ -35,5 +38,6 @@ export interface Adapter {
   prepareWorkspace(root: string, agentId: string): Promise<string>;
   create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string): Promise<LiveSession>;
   resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>): Promise<LiveSession>;
+  deleteSession(id: string): Promise<void>;
   stop(): Promise<void>;
 }
