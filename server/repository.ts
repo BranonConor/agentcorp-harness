@@ -5,12 +5,14 @@ import { lstat, mkdir, open, realpath } from "node:fs/promises";
 import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Tool } from "@github/copilot-sdk";
+import type { RepositorySnapshot } from "./github-repositories.js";
 
 const git = promisify(execFile);
 const MAX_FILE = 64 * 1024;
 const forbidden = /(^\.|^node_modules$|^vendor$|^dist$|^build$|^(?:private|secrets?|credentials?|tokens?)(?:[._-]|$)|^id_(?:rsa|ed25519)(?:[._-]|$)|\.env(?:\.|$)|\.(?:pem|p12|pfx|key|keystore)$)/i;
 
-export type RepositoryGrant = { path: string; name: string; scope?: "task" | "session" | "edit"; worktree?: { path: string; branch: string } };
+export type RepositoryGrant = { path: string; name: string; scope?: "task" | "session" | "edit";
+  worktree?: { path: string; branch: string }; remote?: RepositorySnapshot };
 export type AccessIntent = { repoHint: string; purpose: string; scope: "read" | "edit" };
 
 export async function createResearchWorktree(root: string, grant: RepositoryGrant, agentId: string): Promise<RepositoryGrant> {
@@ -24,7 +26,7 @@ export async function createResearchWorktree(root: string, grant: RepositoryGran
   await git("git", ["-C", grant.path, "worktree", "add", "-b", branch, destination, "HEAD"], { timeout: 15000 });
   const actual = await realpath(destination);
   if (actual !== destination) throw new Error(`Worktree was created at ${actual}, not the expected path. Inspect it manually; no files were deleted.`);
-  return { ...checked, scope: "edit", worktree: { path: actual, branch } };
+  return { ...grant, scope: "edit", worktree: { path: actual, branch } };
 }
 
 export async function validateResearchWorktree(grant: RepositoryGrant): Promise<void> {
@@ -154,7 +156,7 @@ export function repositoryTool(getGrant: () => RepositoryGrant | undefined): Too
 export function repositoryRequestTool(request: (intent: AccessIntent) => Promise<string>): Tool {
   return {
     name: "request_repository_access",
-    description: "Ask the local user for access to a Git repository when a task needs one. Provide a repository hint/name, specific purpose, and intended scope read or edit. Never guess a path or claim access before the user chooses a repository and approves. Edit requests create a separate Git worktree; all shell/write calls still require individual permission.",
+    description: "When a task needs an unavailable GitHub repository, call this tool immediately rather than saying it is unavailable. Provide an owner/repo or repository name hint, specific purpose, and intended read/edit scope. The user reviews verified GitHub identity, branch and privacy before any automatic clone into this app's ignored cache. Never guess a local path or claim access before approval. Edit creates an isolated worktree; all shell/write calls still require individual permission.",
     parameters: {
       type: "object",
       properties: {

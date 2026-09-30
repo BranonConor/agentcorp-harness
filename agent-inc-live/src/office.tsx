@@ -192,8 +192,9 @@ function LiveOffice() {
   const [selected, setSelected] = useState("");
   const [hover, setHover] = useState<{ name: string; x: number; y: number } | null>(null);
   const [draft, setDraft] = useState("");
-  const [repoPath, setRepoPath] = useState("");
-  const [accessChoice, setAccessChoice] = useState<"task" | "session" | "edit">("task");
+  const [repoHint, setRepoHint] = useState("");
+  const [selectedRepository, setSelectedRepository] = useState("");
+  const [freshSnapshot, setFreshSnapshot] = useState(false);
   const [copiedId, setCopiedId] = useState("");
   const [actionError, setActionError] = useState("");
   const [menuAgentId, setMenuAgentId] = useState<string | null>(null);
@@ -526,13 +527,18 @@ function LiveOffice() {
     signKind === "connecting" ? "Connecting" : "Offline";
   const selectedAgent = sdkRoom?.agents.find(agent => agent.sessionId === selected);
   useEffect(() => {
-    setRepoPath(selectedAgent?.repository?.path ?? "");
     setCopiedId("");
-  }, [selected, selectedAgent?.repository?.path]);
+  }, [selected]);
   useEffect(() => {
-    setAccessChoice(selectedAgent?.accessRequest?.scope === "edit" ? "edit" : "task");
-    setRepoPath(selectedAgent?.repository?.path ?? "");
+    setRepoHint(selectedAgent?.accessRequest?.repoHint ?? "");
+    setSelectedRepository("");
+    setFreshSnapshot(false);
   }, [selectedAgent?.accessRequest?.id]);
+  const candidates = selectedAgent?.accessRequest?.candidates ?? [];
+  const chosenRepository = candidates.find(item => item.fullName === selectedRepository) ??
+    (candidates.length === 1 ? candidates[0] : undefined);
+  const cachedSnapshot = sdkRoom?.snapshots?.find(item => item.fullName === chosenRepository?.fullName &&
+    item.ref === chosenRepository.defaultBranch);
   const selectedActor = actors.find(actor => actor.key === selected);
   const confirmAgent = sdkRoom?.agents.find(agent => agent.id === confirmAgentId);
   const confirmName = actors.find(actor => actor.key === confirmAgent?.sessionId)?.name ?? "this agent";
@@ -818,7 +824,7 @@ function LiveOffice() {
                     {selectedAgent.messages.map(message =>
                       <div className={`conversation-message ${message.role}`} key={message.id}>
                         <span>{message.role === "user" ? "YOU" : message.role === "system" ? "OFFICE" : selectedActor?.name}{message.pending ? " · STREAMING" : ""}</span>
-                        <div className="message-markdown"><SafeMarkdown content={message.content} /></div>
+                        <div className="message-bubble">
                         <button type="button" className="copy-message" aria-label={`${copiedId === message.id ? "Copied" : "Copy"} ${message.role} message as Markdown`}
                           title={copiedId === message.id ? "Copied" : "Copy Markdown"}
                           onClick={() => void navigator.clipboard.writeText(message.content).then(() => setCopiedId(message.id))
@@ -826,54 +832,86 @@ function LiveOffice() {
                           <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="7" y="6" width="10" height="11" rx="1.5" />
                             <path d="M13 6V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3" /></svg>
                         </button>
+                        <div className="message-markdown"><SafeMarkdown content={message.content} /></div>
+                        </div>
                         {copiedId === message.id && <span className="sr-only" role="status">Message copied</span>}
                       </div>)}
+                    {selectedAgent.accessRequest && <section className="permission-card access-card" role="group"
+                      aria-label={`Repository access request from ${selectedActor?.name ?? "agent"}`}>
+                      <strong>{selectedActor?.name} requests {selectedAgent.accessRequest.scope} access</strong>
+                      <span>{selectedAgent.accessRequest.purpose}</span>
+                      <small>For this agent only. GitHub metadata is checked to display identity; no clone/fetch occurs before approval.</small>
+                      <form onSubmit={event => {
+                        event.preventDefault();
+                        void act("access-lookup", { agentId: selectedAgent.id, id: selectedAgent.accessRequest!.id, hint: repoHint.trim() });
+                      }}>
+                        <label htmlFor="repo-hint">GitHub repository name or owner/repo</label>
+                        <div className="access-lookup">
+                          <input id="repo-hint" type="text" value={repoHint} onChange={event => setRepoHint(event.target.value)}
+                            placeholder="owner/repo" maxLength={150} disabled={selectedAgent.accessRequest.status === "cloning"} />
+                          <button type="submit" disabled={!repoHint.trim() || ["resolving", "cloning"].includes(selectedAgent.accessRequest.status ?? "")}>Look up</button>
+                        </div>
+                      </form>
+                      {selectedAgent.accessRequest.progress && <small role="status">{selectedAgent.accessRequest.progress}</small>}
+                      {selectedAgent.accessRequest.error && <small className="access-error" role="alert">{selectedAgent.accessRequest.error}</small>}
+                      {candidates.length > 1 && <label htmlFor="access-candidate">Choose exact repository
+                        <select id="access-candidate" value={selectedRepository} onChange={event => setSelectedRepository(event.target.value)}>
+                          <option value="">Select owner/repo…</option>
+                          {candidates.map(item => <option key={item.fullName} value={item.fullName}>{item.fullName} · {item.privacy}</option>)}
+                        </select>
+                      </label>}
+                      {chosenRepository && <div className="access-identity">
+                        <strong>{chosenRepository.fullName}</strong>
+                        <span>Source: github.com · {chosenRepository.privacy} · default branch: {chosenRepository.defaultBranch}</span>
+                        <span>Clone: {chosenRepository.url} · reported size: {chosenRepository.sizeKiB.toLocaleString()} KiB</span>
+                        <span>{cachedSnapshot ?
+                          `Cached ${new Date(cachedSnapshot.fetchedAt).toLocaleString()} at ${cachedSnapshot.commit.slice(0, 12)}. Reused for up to 6 hours; older snapshots are freshly cloned.` :
+                          "Approval starts a new shallow clone of the remote default branch."}
+                          {" "}Local unpushed commits or working changes in another checkout are not included.</span>
+                        {cachedSnapshot && <label><input type="checkbox" checked={freshSnapshot}
+                          disabled={selectedAgent.accessRequest.status === "cloning"}
+                          onChange={event => setFreshSnapshot(event.target.checked)} /> Fetch fresh snapshot on approval</label>}
+                      </div>}
+                      <div className="permission-buttons access-actions">
+                        <button type="button" disabled={selectedAgent.accessRequest.status === "cloning"}
+                          onClick={() => void act("access-decision", {
+                            agentId: selectedAgent.id, id: selectedAgent.accessRequest!.id, choice: "deny" })}>Deny</button>
+                        {([["task", "Read for this task"], ["session", "Read for this agent session"],
+                          ...(selectedAgent.accessRequest.scope === "edit" ? [["edit", "Edit in isolated worktree"]] : [])] as const)
+                          .map(([choice, label]) => <button key={choice} type="button"
+                            disabled={!chosenRepository || selectedAgent.accessRequest?.status !== "review" ||
+                              chosenRepository.sizeKiB > 100_000}
+                            onClick={() => void act("access-decision", { agentId: selectedAgent.id,
+                              id: selectedAgent.accessRequest!.id, choice, repository: chosenRepository!.fullName,
+                              fresh: freshSnapshot })}>{label}</button>)}
+                      </div>
+                      {chosenRepository && chosenRepository.sizeKiB > 100_000 &&
+                        <small className="access-error">Repository exceeds the 100 MB clone limit; no clone will be attempted.</small>}
+                      <small>90 seconds is the pending decision timeout, not a grant lifetime. Read uses bounded tracked text only; worktrees are not OS sandboxes. Every shell/write still requires separate approval.</small>
+                    </section>}
+                    {!selectedAgent.repository && !selectedAgent.accessRequest && !selectedAgent.archived &&
+                      <div className="guided-repo">
+                        <span>Need a repository? Ask this agent to request it here. If it only reports one unavailable,</span>
+                        <button type="button" disabled={lifecycleBusy(selectedAgent)}
+                          onClick={() => void act("access-request", { agentId: selectedAgent.id })}>
+                          find a GitHub repository…</button>
+                      </div>}
                   </div>
               </section>
             )}
           </div>
-          {selectedAgent && <section className="repo-attachment" aria-label={`Repository access for ${selectedActor?.name ?? "agent"}`}>
-            {selectedAgent.repository ? <div className="repo-grant">
+          {selectedAgent?.repository && <section className="repo-attachment" aria-label={`Repository access for ${selectedActor?.name ?? "agent"}`}>
+            <div className="repo-grant">
               <strong>{selectedAgent.repository.name} · {selectedAgent.repository.worktree ? "isolated worktree edit" :
                 selectedAgent.repository.scope === "task" ? "read this task" : "read this session"}</strong>
               <code>{selectedAgent.repository.path}</code>
+              {selectedAgent.repository.remote && <code>GitHub snapshot: {selectedAgent.repository.remote.ref} @ {selectedAgent.repository.remote.commit.slice(0, 12)}
+                {" · "}{new Date(selectedAgent.repository.remote.fetchedAt).toLocaleString()}</code>}
               {selectedAgent.repository.worktree && <code>Worktree: {selectedAgent.repository.worktree.path} · {selectedAgent.repository.worktree.branch}</code>}
               <button type="button" disabled={lifecycleBusy(selectedAgent)}
                 onClick={() => void act("access-revoke", { agentId: selectedAgent.id })}>Revoke access</button>
-            </div> : !selectedAgent.accessRequest && !selectedAgent.archived ?
-              <button type="button" disabled={lifecycleBusy(selectedAgent)}
-                onClick={() => void act("access-request", { agentId: selectedAgent.id })}>
-                Guided repository access…</button> : null}
-            <small>Ask this agent to request repository access for a task. If it only reports a missing repo, use Guided access. Reads use tracked, bounded text only; shell/writes always need separate per-call approval.</small>
+            </div>
           </section>}
-          {selectedAgent?.accessRequest && <form className="permission-card access-card" role="group"
-            aria-label={`Repository access request from ${selectedActor?.name ?? "agent"}`}
-            onSubmit={event => {
-              event.preventDefault();
-              void act("access-decision", { agentId: selectedAgent.id, id: selectedAgent.accessRequest!.id,
-                choice: accessChoice, path: repoPath.trim() });
-            }}>
-            <strong>{selectedActor?.name} requests {selectedAgent.accessRequest.scope} access</strong>
-            <span>Hint: {selectedAgent.accessRequest.repoHint || "Choose a local Git repo"} · {selectedAgent.accessRequest.purpose}</span>
-            <label htmlFor="repo-path">Choose an absolute local Git root for this agent only</label>
-            <input id="repo-path" list="known-repositories" type="text" value={repoPath}
-              onChange={event => setRepoPath(event.target.value)} placeholder="/absolute/path/to/local/git-repo"
-              aria-label="Absolute local Git repository root" />
-            <datalist id="known-repositories">{(sdkRoom?.knownRepositories ?? []).map(path => <option key={path} value={path} />)}</datalist>
-            <div className="access-scopes" role="group" aria-label="Repository scope">
-              {([["task", "Read for this task"], ["session", "Read for this agent session"],
-                ...(selectedAgent.accessRequest.scope === "edit" ? [["edit", "Edit in isolated worktree"]] : [])] as const).map(([scope, label]) =>
-                <label key={scope}><input type="radio" name="access-scope" checked={accessChoice === scope}
-                  onChange={() => setAccessChoice(scope as "task" | "session" | "edit")} />{label}</label>)}
-            </div>
-            <div className="permission-buttons">
-              <button type="button" onClick={() => void act("access-decision", {
-                agentId: selectedAgent.id, id: selectedAgent.accessRequest!.id, choice: "deny" })}>Deny</button>
-              <button type="submit" disabled={!repoPath.trim()}>Grant selected scope</button>
-            </div>
-            <small>Read scopes use the guarded tool. Edit creates a branch/worktree, not an OS sandbox.
-              No shell/write is automatically approved. Agent requests expire after 90 seconds; grants do not.</small>
-          </form>}
           {selectedAgent?.review && !selectedAgent.archived && <div className="permission-card" role="alertdialog"
             aria-label={`Tool permission request for ${selectedActor?.name ?? "agent"}`}>
             <strong>{selectedActor?.name} · permission needed · {selectedAgent.review.kind}</strong>

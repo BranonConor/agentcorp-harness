@@ -1,7 +1,10 @@
 export type Phase = "idle" | "thinking" | "working" | "permission" | "interrupted" | "error";
 export type Message = { id: string; role: "user" | "assistant" | "system"; content: string; pending?: boolean };
 export type Review = { id: string; kind: string; detail: string; tool: string };
-export type RepositoryRequest = { id: string; repoHint: string; purpose: string; scope: "read" | "edit" };
+import type { RemoteRepository, RepositorySnapshot } from "./github-repositories.js";
+export type RepositoryRequest = { id: string; repoHint: string; purpose: string; scope: "read" | "edit";
+  status?: "resolving" | "review" | "cloning" | "error"; candidates?: RemoteRepository[];
+  error?: string; progress?: string };
 export type UsageSummary = { status: "ready" | "partial" | "unavailable"; measured: number; total: number; tokens: number; calls: number; filesChanged: number; startedAt?: string; updatedAt: number; stale?: boolean };
 export const MAX_AGENTS = 16;
 export type Agent = {
@@ -26,6 +29,7 @@ export type Agent = {
 };
 export type Room = { agents: Agent[]; error: string | null; connected: boolean; workspace: string; revision: number;
   knownRepositories?: string[]; usage?: UsageSummary;
+  snapshots?: RepositorySnapshot[];
   worktrees?: { agentId: string; repository: string; path: string; branch: string }[] };
 export type LegacyRoom = {
   agent: (Omit<Agent, "deskIndex" | "archived" | "archivedAt" | "lastDeskIndex" | "workspace" | "workspaceKind" | "createdAt" | "updatedAt"> & { x: number; y: number }) | null;

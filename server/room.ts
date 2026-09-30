@@ -5,6 +5,7 @@ import { MAX_AGENTS, type Adapter, type Agent, type LiveSession, type Review, ty
 import type { Store } from "./storage.js";
 import { createResearchWorktree, validateRepository, type AccessIntent, type RepositoryGrant } from "./repository.js";
 import { agentName } from "../agent-inc-live/src/room.js";
+import { CACHE_AGE_MS, type RemoteRepository, type RepositorySnapshot, type RepositorySource } from "./github-repositories.js";
 
 const EXPIRE_MS = 90_000;
 type Pending = { agentId: string; resolve: (decision: PermissionRequestResult) => void; timer: NodeJS.Timeout };
@@ -23,12 +24,15 @@ export class RoomController {
   private lifecycle = new Set<string>();
   private stopped = new Set<string>();
   private armedTaskGrants = new Set<string>();
+  private clones = new Map<string, AbortController>();
 
-  private constructor(private readonly adapter: Adapter, private readonly store: Store, state: Room, private readonly worktreeRoot: string) {
+  private constructor(private readonly adapter: Adapter, private readonly store: Store, state: Room,
+    private readonly worktreeRoot: string, private readonly repositories?: RepositorySource) {
     this.state = state;
   }
 
-  static async open(adapter: Adapter, store: Store, workspace: string, worktreeRoot = resolve(".local/worktrees")): Promise<RoomController> {
+  static async open(adapter: Adapter, store: Store, workspace: string, worktreeRoot = resolve(".local/worktrees"),
+    repositories?: RepositorySource): Promise<RoomController> {
     const saved = await store.read();
     if (saved && saved.workspace !== workspace) throw new Error(`Saved sessions belong to ${saved.workspace}. Choose that workspace or move .local/state.json aside deliberately.`);
     if (saved && !("agents" in saved) && !("agent" in saved)) throw new Error("Unrecognized saved room format; state was not changed.");
@@ -55,12 +59,13 @@ export class RoomController {
           !agent.archived && !other.archived && other.deskIndex === agent.deskIndex) !== index)) {
       throw new Error("Saved agent roster is invalid; state was not changed.");
     }
-    const room = new RoomController(adapter, store, state, worktreeRoot);
+    const room = new RoomController(adapter, store, state, worktreeRoot, repositories);
     room.state.connected = false;
     room.state.error = null;
     if (room.state.usage) room.state.usage.stale = true;
     room.state.knownRepositories ??= [];
     room.state.worktrees ??= [];
+    room.state.snapshots ??= [];
     const used = new Set<number>();
     const names = new Set<string>();
     for (const agent of [...room.state.agents].sort((a, b) => Number(a.archived) - Number(b.archived) || (a.deskIndex ?? a.lastDeskIndex ?? 0) - (b.deskIndex ?? b.lastDeskIndex ?? 0))) {
@@ -73,7 +78,14 @@ export class RoomController {
       if (names.has(name)) throw new Error("Saved agent names collide; state was not changed.");
       agent.name = name;
       names.add(name);
-      agent.accessRequest = undefined;
+      if (agent.accessRequest && agent.phase === "idle") {
+        agent.accessRequest = { ...agent.accessRequest, status: "error", candidates: undefined, progress: undefined,
+          purpose: agent.accessRequest.purpose === "Research or work on a local repository" ?
+            "Research or edit a GitHub repository" : agent.accessRequest.purpose,
+          error: "Recheck the GitHub owner/repo after restart; no clone has started." };
+      } else {
+        agent.accessRequest = undefined;
+      }
       if (agent.repository?.scope === "task") agent.repository = undefined;
       if (agent.repository && !room.state.knownRepositories.includes(agent.repository.path)) room.state.knownRepositories.push(agent.repository.path);
     }
@@ -162,6 +174,10 @@ export class RoomController {
 
   private async resumeAgent(agent: Agent, repository: RepositoryGrant | null = agent.repository ?? null): Promise<LiveSession> {
     const grant = repository ?? undefined;
+    if (grant?.remote) {
+      if (!this.repositories) throw new Error("GitHub cache verifier unavailable; cannot resume a repository grant.");
+      await this.repositories.verify(grant.remote);
+    }
     try {
       const session = await this.adapter.resume(agent.sessionId, agent.workspace, request => this.permission(agent.id, request), grant,
         intent => this.requestAccess(agent.id, intent), () => this.agent(agent.id).repository);
@@ -332,15 +348,24 @@ export class RoomController {
       return Promise.resolve(JSON.stringify({ status: "denied", reason: "No available browser or another request is pending." }));
     }
     const id = randomUUID();
-    agent.accessRequest = { id, repoHint: intent.repoHint.slice(0, 150), purpose: intent.purpose.slice(0, 500), scope: intent.scope };
+    agent.accessRequest = { id, repoHint: intent.repoHint.slice(0, 150), purpose: intent.purpose.slice(0, 500),
+      scope: intent.scope, status: "resolving", progress: "Checking GitHub identity (no clone yet)" };
     agent.phase = "permission";
     agent.activity = "Waiting for repository access decision";
     agent.updatedAt = Date.now();
     void this.publish().catch(error => console.error("Cannot save access request:", error));
-    return new Promise(resolveResult => {
+    const decision = new Promise<string>(resolveResult => {
       const timer = setTimeout(() => this.resolveAccess(agentId, id, "denied", "Repository request timed out."), EXPIRE_MS);
       this.access.set(id, { agentId, resolve: resolveResult, timer });
     });
+    void this.findRepository(agentId, id, intent.repoHint).catch(error => {
+      if (agent.accessRequest?.id !== id) return;
+      agent.accessRequest.status = "error";
+      agent.accessRequest.error = error instanceof Error ? error.message : String(error);
+      agent.accessRequest.progress = undefined;
+      void this.publish().catch(cause => console.error("Cannot save access lookup failure:", cause));
+    });
+    return decision;
   }
 
   guidedAccess(agentId: string): RepositoryRequest {
@@ -349,10 +374,57 @@ export class RoomController {
       ["thinking", "working", "permission"].includes(agent.phase)) {
       throw new Error("This agent cannot request repository access right now.");
     }
-    const request: RepositoryRequest = { id: randomUUID(), repoHint: "", purpose: "Research or work on a local repository", scope: "edit" };
+    const request: RepositoryRequest = { id: randomUUID(), repoHint: "", purpose: "Research or edit a GitHub repository",
+      scope: "edit", status: "error", error: "Enter an owner/repo or repository name to look up; no clone has started." };
     agent.accessRequest = request;
     void this.publish().catch(error => console.error("Cannot save guided request:", error));
     return request;
+  }
+
+  async findRepository(agentId: string, id: string, hint: string): Promise<void> {
+    const agent = this.agent(agentId);
+    const request = agent.accessRequest;
+    if (!request || request.id !== id || this.lifecycle.has(agentId) || request.status === "cloning") {
+      throw new Error("Repository request is stale or already being provisioned.");
+    }
+    if (!this.repositories) throw new Error("GitHub repository discovery is unavailable.");
+    request.repoHint = hint;
+    request.status = "resolving";
+    request.error = undefined;
+    request.candidates = undefined;
+    request.progress = "Checking GitHub identity (no clone yet)";
+    await this.publish();
+    try {
+      const candidates = await this.repositories.lookup(hint);
+      if (agent.accessRequest !== request || request.status !== "resolving") return;
+      request.candidates = candidates;
+      request.status = "review";
+      request.progress = candidates.length > 1 ? "Choose the exact owner/repo before approving." : "Ready for your decision; no clone yet.";
+    } catch (error) {
+      if (agent.accessRequest !== request || request.status !== "resolving") return;
+      request.status = "error";
+      request.error = error instanceof Error ? error.message : String(error);
+      request.progress = undefined;
+    }
+    await this.publish();
+  }
+
+  private async snapshotFor(repository: RemoteRepository, fresh: boolean, signal: AbortSignal): Promise<RepositorySnapshot> {
+    if (!this.repositories) throw new Error("GitHub clone service unavailable.");
+    const key = repository.fullName.toLowerCase();
+    const cached = !fresh && this.state.snapshots?.find(snapshot =>
+      snapshot.fullName.toLowerCase() === key && snapshot.ref === repository.defaultBranch &&
+      snapshot.privacy === repository.privacy && snapshot.url === repository.url &&
+      Date.now() - snapshot.fetchedAt < CACHE_AGE_MS);
+    if (cached) {
+      await this.repositories.verify(cached);
+      return cached;
+    }
+    const snapshot = await this.repositories.provision(repository, signal);
+    if (signal.aborted) throw new Error("Repository clone cancelled; no access granted.");
+    this.state.snapshots!.unshift(snapshot);
+    await this.publish();
+    return snapshot;
   }
 
   private resolveAccess(agentId: string, id: string, status: string, reason?: string, grant?: RepositoryGrant): void {
@@ -372,41 +444,84 @@ export class RoomController {
     void this.publish().catch(error => console.error("Cannot save access decision:", error));
   }
 
-  async decideAccess(agentId: string, id: string, choice: "deny" | "task" | "session" | "edit", path?: string): Promise<void> {
+  async decideAccess(agentId: string, id: string, choice: "deny" | "task" | "session" | "edit",
+    fullName?: string, fresh = false): Promise<void> {
     const agent = this.agent(agentId);
     const request = agent.accessRequest;
     if (!request || request.id !== id || this.lifecycle.has(agentId)) throw new Error("Repository request is stale or belongs to another agent.");
     if (choice === "deny") {
+      if (request.status === "cloning") throw new Error("Clone is in progress; use Stop to cancel this turn.");
       this.resolveAccess(agentId, id, "denied", "User denied repository access.");
       return;
     }
-    if (!path) throw new Error("Choose an absolute local Git repository root.");
+    if (request.status !== "review" || !fullName || !request.candidates?.length) {
+      throw new Error("Choose a verified GitHub repository before granting access.");
+    }
     if (choice === "edit" && request.scope !== "edit") throw new Error("This agent requested read access, not edit access.");
-    const grant = await validateRepository(path);
+    const candidate = request.candidates.find(item => item.fullName === fullName);
+    if (!candidate) throw new Error("Repository identity was not offered in this agent's request.");
     const session = this.sessions.get(agentId);
     if (!session || agent.archived) throw new Error("This agent must be connected before access can be granted.");
+    const controller = new AbortController();
+    this.clones.set(agentId, controller);
+    const pending = this.access.get(id);
+    if (pending) clearTimeout(pending.timer);
+    request.status = "cloning";
+    request.progress = `Preparing ${candidate.fullName} · ${candidate.defaultBranch} in the app-managed cache…`;
     this.lifecycle.add(agentId);
+    let switchedDirectory = false;
+    let committed = false;
+    const previousRepository = agent.repository;
     try {
-      let next: RepositoryGrant = { ...grant, scope: choice === "task" ? "task" : "session" };
+      await this.publish();
+      const snapshot = await this.snapshotFor(candidate, fresh, controller.signal);
+      if (controller.signal.aborted || agent.accessRequest !== request) return;
+      const grant = await validateRepository(snapshot.path);
+      let next: RepositoryGrant = { ...grant, name: snapshot.fullName,
+        remote: snapshot, scope: choice === "task" ? "task" : "session" };
       if (choice === "edit") {
         next = await createResearchWorktree(this.worktreeRoot, grant, agentId);
-        this.state.worktrees!.push({ agentId, repository: grant.path, path: next.worktree!.path, branch: next.worktree!.branch });
+        this.state.worktrees!.push({ agentId, repository: snapshot.fullName, path: next.worktree!.path, branch: next.worktree!.branch });
         await this.publish();
+        if (controller.signal.aborted || agent.accessRequest !== request) return;
         try {
+          switchedDirectory = true;
           await session.setWorkingDirectory(next.worktree!.path);
         } catch (error) {
           throw new Error(`Created worktree at ${next.worktree!.path} (branch ${next.worktree!.branch}), but SDK could not change this session's working directory. Worktree preserved for manual inspection. ${String(error)}`);
         }
       } else if (agent.repository?.worktree) {
+        switchedDirectory = true;
         await session.setWorkingDirectory(agent.workspace);
       }
+      if (controller.signal.aborted || agent.accessRequest !== request) return;
       agent.repository = next;
       if (choice === "task" && agent.phase === "idle") this.armedTaskGrants.add(agentId);
       else this.armedTaskGrants.delete(agentId);
-      if (!this.state.knownRepositories!.includes(grant.path)) this.state.knownRepositories!.push(grant.path);
       await this.publish();
+      committed = true;
       this.resolveAccess(agentId, id, "approved", undefined, next);
+    } catch (error) {
+      if (!committed) agent.repository = previousRepository;
+      if (agent.accessRequest === request) {
+        request.status = "error";
+        request.error = error instanceof Error ? error.message : String(error);
+        request.progress = undefined;
+        const waiting = this.access.get(id);
+        if (waiting) waiting.timer = setTimeout(() =>
+          this.resolveAccess(agentId, id, "denied", "Repository request timed out."), EXPIRE_MS);
+        await this.publish();
+      }
+      throw error;
     } finally {
+      if (switchedDirectory && !committed) {
+        try {
+          await session.setWorkingDirectory(previousRepository?.worktree?.path ?? agent.workspace);
+        } catch (error) {
+          this.report(new Error(`Could not restore the prior SDK working directory after repository access failed. ${String(error)}`), agent);
+        }
+      }
+      this.clones.delete(agentId);
       this.lifecycle.delete(agentId);
     }
   }
@@ -493,13 +608,15 @@ export class RoomController {
 
   async stop(agentId: string): Promise<void> {
     const agent = this.agent(agentId);
-    if (agent.archived || this.lifecycle.has(agentId) || !["thinking", "working", "permission"].includes(agent.phase)) {
+    if (agent.archived || (this.lifecycle.has(agentId) && agent.accessRequest?.status !== "cloning") ||
+      !["thinking", "working", "permission"].includes(agent.phase)) {
       throw new Error("No active turn to stop for this agent.");
     }
     const session = this.sessions.get(agentId);
     if (!session) throw new Error("Agent SDK session is unavailable; cannot confirm cancellation.");
     this.lifecycle.add(agentId);
     try {
+      this.clones.get(agentId)?.abort();
       const abort = session.abort();
       for (const [id, pending] of this.pending) {
         if (pending.agentId !== agentId) continue;
@@ -651,6 +768,7 @@ export class RoomController {
   }
 
   private denyPending(): void {
+    for (const controller of this.clones.values()) controller.abort();
     for (const [id, pending] of this.access) {
       this.resolveAccess(pending.agentId, id, "denied", "No browser available; request denied.");
     }

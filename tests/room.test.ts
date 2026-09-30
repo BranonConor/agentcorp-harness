@@ -9,6 +9,7 @@ import { RoomController } from "../server/room.js";
 import { validateResearchWorktree, type RepositoryGrant } from "../server/repository.js";
 import { MAX_AGENTS, type Adapter, type LegacyRoom, type LiveSession, type Room } from "../server/types.js";
 import type { Store } from "../server/storage.js";
+import { canonicalGitHubUrl, type RemoteRepository, type RepositorySnapshot, type RepositorySource } from "../server/github-repositories.js";
 
 class MemoryStore implements Store {
   saved: Room | LegacyRoom | null = null;
@@ -84,6 +85,28 @@ class MockAdapter implements Adapter {
 }
 const event = (type: string, data: Record<string, unknown> = {}): SessionEvent => ({ type, data } as SessionEvent);
 const request = { kind: "shell", toolCallId: "call-1", fullCommandText: "rm -rf important" } as PermissionRequest;
+class FixtureSource implements RepositorySource {
+  lookups = 0;
+  clones = 0;
+  constructor(readonly path: string) {}
+  async lookup(hint: string): Promise<RemoteRepository[]> {
+    this.lookups++;
+    return [{ fullName: `Fixture/${hint}`, url: canonicalGitHubUrl(`Fixture/${hint}`),
+      defaultBranch: "main", privacy: "public", sizeKiB: 4 }];
+  }
+  async provision(repo: RemoteRepository, _signal?: AbortSignal): Promise<RepositorySnapshot> {
+    this.clones++;
+    return { fullName: repo.fullName, path: this.path, url: repo.url, ref: repo.defaultBranch,
+      commit: "fixture-commit", privacy: repo.privacy, fetchedAt: Date.now() };
+  }
+  async verify(): Promise<void> {}
+}
+async function ready(agent: { accessRequest?: { status?: string } }): Promise<void> {
+  for (let i = 0; i < 100 && agent.accessRequest?.status === "resolving"; i++) {
+    await new Promise(resolve => setTimeout(resolve, 1));
+  }
+  assert.equal(agent.accessRequest?.status, "review");
+}
 
 test("migrates the existing agent without changing its session, transcript or root workspace", async () => {
   const store = new MemoryStore();
@@ -507,20 +530,24 @@ test("two agents: request denial, task expiry, session persistence and permissio
     execFileSync("git", ["init", "-q", repo]);
     const adapter = new MockAdapter();
     const store = new MemoryStore();
-    const room = await RoomController.open(adapter, store, "/dedicated");
+    const source = new FixtureSource(repo);
+    const room = await RoomController.open(adapter, store, "/dedicated", join(fixture, "worktrees"), source);
     const first = await room.create(0);
     const second = await room.create(1);
     const unsubscribe = room.subscribe(() => {});
     assert.deepEqual(await adapter.permissions.get(first.sessionId)!({ kind: "custom-tool", toolCallId: "ask",
       toolName: "request_repository_access", toolDescription: "Ask", args: {} } as PermissionRequest), { kind: "approve-once" });
     const denied = room.requestAccess(first.id, { repoHint: "fixture", purpose: "Inspect docs", scope: "read" });
+    await ready(first);
     assert.throws(() => room.decide(second.id, first.accessRequest!.id, true), /stale|another agent/);
     await room.decideAccess(first.id, first.accessRequest!.id, "deny");
     assert.match(await denied, /denied/);
+    assert.equal(source.clones, 0, "denial never clones");
     assert.equal(first.repository, undefined);
     adapter.sessions.get(first.sessionId)!.emit(event("session.idle"));
     const task = room.guidedAccess(first.id);
-    await room.decideAccess(first.id, task.id, "task", repo);
+    await room.findRepository(first.id, task.id, "fixture");
+    await room.decideAccess(first.id, task.id, "task", "Fixture/fixture");
     assert.equal(room.state.agents[0].repository?.scope, "task");
     assert.equal(second.repository, undefined);
     const read = { kind: "custom-tool", toolCallId: "research-1",
@@ -538,8 +565,10 @@ test("two agents: request denial, task expiry, session persistence and permissio
     assert.deepEqual(await adapter.permissions.get(first.sessionId)!(read),
       { kind: "reject", feedback: "No active repository research grant." });
     const saved = room.requestAccess(first.id, { repoHint: "fixture", purpose: "Study project", scope: "read" });
-    await room.decideAccess(first.id, first.accessRequest!.id, "session", repo);
+    await ready(first);
+    await room.decideAccess(first.id, first.accessRequest!.id, "session", "Fixture/fixture");
     await saved;
+    assert.equal(source.clones, 1, "fresh cache is reused for the second approval");
     assert.equal(room.state.agents[0].repository?.scope, "session");
     const shell = adapter.permissions.get(first.sessionId)!(request);
     assert.equal(first.review?.kind, "shell", "shell requires an individual review even after the read grant");
@@ -547,7 +576,7 @@ test("two agents: request denial, task expiry, session persistence and permissio
     assert.deepEqual(await shell, { kind: "reject", feedback: "User denied this action." });
     unsubscribe();
     await room.close();
-    const recovered = await RoomController.open(adapter, store, "/dedicated");
+    const recovered = await RoomController.open(adapter, store, "/dedicated", join(fixture, "worktrees"), source);
     await recovered.connect();
     assert.equal(recovered.state.agents[0].repository?.scope, "session");
     assert.equal(recovered.state.agents[1].repository, undefined);
@@ -555,16 +584,90 @@ test("two agents: request denial, task expiry, session persistence and permissio
     assert.equal(recovered.state.agents[0].repository, undefined);
     const again = recovered.subscribe(() => {});
     const pendingTask = recovered.requestAccess(first.id, { repoHint: "fixture", purpose: "Next turn", scope: "read" });
-    await recovered.decideAccess(first.id, recovered.state.agents[0].accessRequest!.id, "task", repo);
+    await ready(recovered.state.agents[0]);
+    await recovered.decideAccess(first.id, recovered.state.agents[0].accessRequest!.id, "task", "Fixture/fixture");
     await pendingTask;
     await recovered.close();
     again();
-    const restarted = await RoomController.open(adapter, store, "/dedicated");
+    const restarted = await RoomController.open(adapter, store, "/dedicated", join(fixture, "worktrees"), source);
     assert.equal(restarted.state.agents[0].repository, undefined, "task grants do not survive restart");
     await restarted.close();
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
+});
+
+test("a guided request survives restart for explicit re-lookup without granting or cloning", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const source = new FixtureSource("/unused");
+  const room = await RoomController.open(adapter, store, "/dedicated", "/unused/worktrees", source);
+  const agent = await room.create(0);
+  const unsubscribe = room.subscribe(() => {});
+  const guided = room.guidedAccess(agent.id);
+  assert.equal(guided.repoHint, "");
+  await room.close();
+  const recovered = await RoomController.open(adapter, store, "/dedicated", "/unused/worktrees", source);
+  assert.equal(recovered.state.agents[0].accessRequest?.id, guided.id);
+  assert.equal(recovered.state.agents[0].accessRequest?.status, "error");
+  assert.match(recovered.state.agents[0].accessRequest?.error ?? "", /Recheck/);
+  assert.equal(source.clones, 0);
+  await recovered.connect();
+  await recovered.decideAccess(agent.id, guided.id, "deny");
+  assert.equal(recovered.state.agents[0].accessRequest, undefined);
+  await recovered.close();
+  unsubscribe();
+});
+
+test("Stop cancels only the approving agent's clone and grants no repository access", async () => {
+  const adapter = new MockAdapter();
+  const source = new FixtureSource("/unused");
+  let cloning!: () => void;
+  const started = new Promise<void>(resolve => { cloning = resolve; });
+  source.provision = async (_repo, signal) => {
+    cloning();
+    await new Promise<void>((_, reject) => signal?.addEventListener("abort", () =>
+      reject(new Error("Clone aborted")), { once: true }));
+    throw new Error("Unexpected completed clone.");
+  };
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated", "/unused/worktrees", source);
+  const first = await room.create(0);
+  const other = await room.create(1);
+  const unsubscribe = room.subscribe(() => {});
+  const decision = room.requestAccess(first.id, { repoHint: "docs", purpose: "Read docs", scope: "read" });
+  await ready(first);
+  const approval = room.decideAccess(first.id, first.accessRequest!.id, "session", "Fixture/docs");
+  await started;
+  await room.stop(first.id);
+  await assert.rejects(approval, /Clone aborted/);
+  assert.match(await decision, /denied/);
+  assert.equal(first.repository, undefined);
+  assert.equal(other.repository, undefined);
+  assert.equal(room.state.snapshots?.length, 0);
+  assert.equal(adapter.sessions.get(other.sessionId)?.aborts, 0);
+  unsubscribe();
+  await room.close();
+});
+
+test("clone failure stays inline, leaves the prior agent grant untouched and allows denial", async () => {
+  const adapter = new MockAdapter();
+  const source = new FixtureSource("/unused");
+  source.provision = async () => { throw new Error("Network unavailable; no clone"); };
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated", "/unused/worktrees", source);
+  const agent = await room.create(0);
+  const unsubscribe = room.subscribe(() => {});
+  const decision = room.requestAccess(agent.id, { repoHint: "docs", purpose: "Read docs", scope: "read" });
+  await ready(agent);
+  await assert.rejects(room.decideAccess(agent.id, agent.accessRequest!.id, "session", "Fixture/docs"),
+    /Network unavailable/);
+  assert.equal(agent.accessRequest?.status, "error");
+  assert.match(agent.accessRequest.error ?? "", /Network unavailable/);
+  assert.equal(agent.repository, undefined);
+  assert.equal(room.state.snapshots?.length, 0);
+  await room.decideAccess(agent.id, agent.accessRequest!.id, "deny");
+  assert.match(await decision, /denied/);
+  unsubscribe();
+  await room.close();
 });
 
 test("edit approval creates a unique worktree, persists location, and never auto-approves shell", async () => {
@@ -578,13 +681,15 @@ test("edit approval creates a unique worktree, persists location, and never auto
     execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
     const store = new MemoryStore();
     const adapter = new MockAdapter();
-    const room = await RoomController.open(adapter, store, "/dedicated", trees);
+    const source = new FixtureSource(repo);
+    const room = await RoomController.open(adapter, store, "/dedicated", trees, source);
     const agent = await room.create(0);
     const unsubscribe = room.subscribe(() => {});
     const access = room.requestAccess(agent.id, { repoHint: "fixture", purpose: "Make a change", scope: "edit" });
-    await assert.rejects(room.decideAccess(agent.id, agent.accessRequest!.id, "edit", "/missing-repo"), /ENOENT/);
+    await ready(agent);
+    await assert.rejects(room.decideAccess(agent.id, agent.accessRequest!.id, "edit", "Fixture/other"), /not offered/);
     assert.ok(agent.accessRequest, "failed validation leaves decision available");
-    await room.decideAccess(agent.id, agent.accessRequest!.id, "edit", repo);
+    await room.decideAccess(agent.id, agent.accessRequest!.id, "edit", "Fixture/fixture");
     assert.match(await access, /approved/);
     assert.equal(adapter.sessions.get(agent.sessionId)?.directory, agent.repository?.worktree?.path);
     assert.match(agent.repository!.worktree!.branch, new RegExp(`^agentcorp/${agent.id}/`));
@@ -600,7 +705,7 @@ test("edit approval creates a unique worktree, persists location, and never auto
     adapter.sessions.get(agent.sessionId)!.emit(event("session.idle"));
     await room.archive(agent.id);
     await room.close();
-    const reloaded = await RoomController.open(adapter, store, "/dedicated", trees);
+    const reloaded = await RoomController.open(adapter, store, "/dedicated", trees, source);
     await reloaded.connect();
     assert.equal(reloaded.state.agents[0].repository?.worktree?.path, agent.repository?.worktree?.path);
     await reloaded.restore(agent.id);

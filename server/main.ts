@@ -7,6 +7,7 @@ import { fileURLToPath } from "node:url";
 import { FileStore } from "./storage.js";
 import { SdkAdapter } from "./sdk.js";
 import { RoomController } from "./room.js";
+import { GitHubRepositories } from "./github-repositories.js";
 
 const args = process.argv.slice(2);
 const value = (flag: string): string | undefined => {
@@ -30,7 +31,9 @@ const port = Number(value("--port") ?? "4173");
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Port must be 1–65535.");
 const root = dirname(fileURLToPath(import.meta.url));
 const staticDir = resolve(root, "../dist");
-const room = await RoomController.open(new SdkAdapter(workspace), new FileStore(resolve(value("--state") ?? resolve(root, "../.local/state.json"))), workspace);
+const room = await RoomController.open(new SdkAdapter(workspace), new FileStore(resolve(value("--state") ?? resolve(root, "../.local/state.json"))),
+  workspace, resolve(root, "../.local/worktrees"),
+  await GitHubRepositories.open(resolve(root, "../.local/repos"), resolve(root, "..")));
 const token = randomBytes(32).toString("hex");
 const origin = `http://127.0.0.1:${port}`;
 
@@ -130,12 +133,20 @@ const server = createServer(async (request, response) => {
         room.guidedAccess(body.agentId);
         return json(response, 200, room.state);
       }
+      if (url.pathname === "/api/access-lookup" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string" || typeof body.id !== "string" || typeof body.hint !== "string") throw new Error("Invalid repository lookup.");
+        await room.findRepository(body.agentId, body.id, body.hint);
+        return json(response, 200, room.state);
+      }
       if (url.pathname === "/api/access-decision" && request.method === "POST") {
         const body = await payload(request);
         if (typeof body.agentId !== "string" || typeof body.id !== "string" ||
           !["deny", "task", "session", "edit"].includes(String(body.choice)) ||
-          !(body.path === undefined || typeof body.path === "string")) throw new Error("Invalid repository decision.");
-        await room.decideAccess(body.agentId, body.id, body.choice as "deny" | "task" | "session" | "edit", body.path);
+          !(body.repository === undefined || typeof body.repository === "string") ||
+          !(body.fresh === undefined || typeof body.fresh === "boolean")) throw new Error("Invalid repository decision.");
+        await room.decideAccess(body.agentId, body.id, body.choice as "deny" | "task" | "session" | "edit",
+          body.repository, body.fresh === true);
         return json(response, 200, room.state);
       }
       if (url.pathname === "/api/access-revoke" && request.method === "POST") {

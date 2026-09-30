@@ -7,14 +7,17 @@
 .live-shell .conversation-scroll { display: flex; flex-direction: column; }
 .conversation-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .conversation-messages { flex: 1; min-height: 180px; padding: 2px 0 36px; }
-.conversation-message { margin: 0 0 20px; }
+.conversation-message { margin: 0 0 13px; }
 .conversation-message > span { font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--office-secondary); }
-.conversation-message .message-markdown {
+.conversation-message .message-bubble {
+  position: relative;
   margin-top: 6px;
-  padding: 11px 13px;
   border: 1px solid var(--office-border);
   border-radius: 3px 12px 12px 12px;
   background: var(--office-assistant-bubble);
+}
+.conversation-message .message-markdown {
+  padding: 35px 13px 11px;
   line-height: 1.6;
   font-size: 13px;
   overflow-wrap: anywhere;
@@ -39,10 +42,10 @@
 .message-markdown img { max-width: 100%; }
 .conversation-message.user { margin-left: 24px; }
 .conversation-message.user > span { display: block; text-align: right; }
-.conversation-message.user .message-markdown { border-radius: 12px 3px 12px 12px; background: var(--office-accent-bg); }
+.conversation-message.user .message-bubble { border-radius: 12px 3px 12px 12px; background: var(--office-accent-bg); }
 .conversation-message.assistant { margin-right: 24px; }
-.copy-message { display: grid; place-items: center; margin: 5px auto 0 0; width: 32px; height: 32px; padding: 6px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--office-secondary); cursor: pointer; opacity: 0; }
-.conversation-message.user .copy-message { margin-left: auto; margin-right: 0; }
+.copy-message { position: absolute; top: 4px; left: 6px; display: grid; place-items: center; width: 29px; height: 29px; padding: 5px; border: 1px solid transparent; border-radius: 6px; background: var(--office-panel); color: var(--office-secondary); cursor: pointer; opacity: 0; }
+.conversation-message.user .copy-message { left: auto; right: 6px; }
 .copy-message svg { width: 17px; height: 17px; stroke: currentColor; stroke-width: 1.6; }
 .conversation-message:hover .copy-message, .conversation-message:focus-within .copy-message, .copy-message:focus-visible { opacity: 1; border-color: var(--office-border); }
 .copy-message:focus-visible { outline: 2px solid var(--office-accent); }
@@ -124,12 +127,20 @@
 .repo-grant { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
 .repo-grant strong { flex: 1; margin: 0; }
 .repo-grant code { flex-basis: 100%; color: var(--office-secondary); font: 10px var(--mono); overflow-wrap: anywhere; }
-.access-card { max-height: min(350px, 46dvh); overflow-y: auto; }
-.access-card > label { display: block; margin: 9px 0 5px; font: 650 11px var(--sans); }
-.access-card > input { box-sizing: border-box; width: 100%; padding: 8px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-panel); color: var(--office-text); font: 11px var(--mono); }
-.access-scopes { display: grid; gap: 7px; margin-top: 10px; }
-.access-scopes label { display: flex; align-items: center; gap: 7px; font: 11px var(--sans); cursor: pointer; }
-.access-scopes input { accent-color: var(--office-accent); }
+.conversation-messages .access-card { margin: 10px 0 18px; max-height: none; overflow: visible; }
+.access-card form label, .access-card > label { display: block; margin: 10px 0 5px; font: 650 11px var(--sans); }
+.access-card .access-lookup { display: flex; gap: 6px; }
+.access-card input[type="text"], .access-card select { box-sizing: border-box; min-width: 0; width: 100%; padding: 8px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-panel); color: var(--office-text); font: 11px var(--mono); }
+.access-card .access-lookup button { border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-panel); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
+.access-identity { display: grid; gap: 5px; margin: 12px 0; padding: 9px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-panel); overflow-wrap: anywhere; font: 11px/1.45 var(--sans); }
+.access-identity strong { margin: 0; }
+.access-identity label { display: flex; align-items: center; gap: 6px; margin-top: 4px; }
+.access-identity input { accent-color: var(--office-accent); }
+.access-card .access-error { margin-top: 8px; color: var(--office-warning); overflow-wrap: anywhere; }
+.access-actions { flex-wrap: wrap; }
+.access-actions button { flex: 1 1 auto; cursor: pointer; }
+.guided-repo { padding: 10px 3px; color: var(--office-secondary); font-size: 11px; }
+.guided-repo button { margin-left: 4px; border: 0; background: transparent; color: var(--office-accent); font: 650 11px var(--sans); text-decoration: underline; cursor: pointer; }
 .permission-buttons button:disabled { opacity: .5; cursor: not-allowed; }
 .worker-avatar { width: 42px; height: 42px; overflow: hidden; }
 .worker-avatar img { width: 100%; height: 100%; image-rendering: pixelated; }
