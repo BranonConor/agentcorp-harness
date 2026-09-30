@@ -1,0 +1,30 @@
+{
+  "name": "agentcorp-sdk-office",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "vite build",
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test tests/*.test.ts",
+    "dev": "npm run build && tsx server/main.ts",
+    "start": "tsx server/main.ts"
+  },
+  "dependencies": {
+    "@github/copilot-sdk": "1.0.15",
+    "react": "19.3.0",
+    "react-dom": "19.3.0",
+    "three": "0.180.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.0",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@types/three": "^0.180.0",
+    "playwright-core": "^1.56.0",
+    "tsx": "^4.20.0",
+    "typescript": "^5.8.3",
+    "vite": "^6.3.0"
+  }
+}

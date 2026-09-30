@@ -1,0 +1,32 @@
+.live-shell .conversation-scroll { display: flex; flex-direction: column; }
+.conversation-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+.conversation-person { display: flex; align-items: center; gap: 10px; padding-bottom: 15px; border-bottom: 1px solid var(--office-border); }
+.conversation-person > span:nth-child(2) { display: flex; flex-direction: column; min-width: 0; flex: 1; gap: 3px; }
+.conversation-person strong { font-size: 13px; }
+.conversation-person small { color: var(--office-secondary); font-size: 11px; }
+.conversation-messages { flex: 1; min-height: 180px; padding-top: 16px; }
+.conversation-message { margin: 0 0 20px; }
+.conversation-message > span { font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--office-secondary); }
+.conversation-message p { margin: 6px 0 0; line-height: 1.6; font-size: 13px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.conversation-message.user { margin-left: 18px; }
+.conversation-message.user p { padding: 10px 12px; border-radius: 10px 10px 2px 10px; background: var(--office-accent-bg); }
+.conversation-message.assistant p { padding-left: 12px; border-left: 2px solid var(--office-accent); }
+.conversation-composer { flex: none; padding: 12px 16px 15px; border-top: 1px solid var(--office-border); background: var(--office-panel); }
+.conversation-composer label { display: block; margin-bottom: 8px; color: var(--office-secondary); font: 700 10px var(--mono); letter-spacing: .04em; }
+.conversation-composer > div { display: flex; align-items: center; gap: 6px; padding: 5px; border: 1px solid var(--office-border); border-radius: 8px; background: var(--office-muted); }
+.conversation-composer textarea { flex: 1; min-width: 0; resize: vertical; border: 0; outline: 0; padding: 6px; color: var(--office-text); background: transparent; font: 12px var(--sans); }
+.conversation-composer button { align-self: center; width: 34px; height: 34px; border: 0; border-radius: 6px; color: #fff; background: #316b60; font-size: 22px; }
+.conversation-composer button:disabled { opacity: .4; cursor: default; }
+.conversation-composer small { display: block; margin-top: 7px; color: var(--office-secondary); font-size: 10px; }
+.permission-card { flex: none; margin: 0 12px 10px; padding: 11px; border: 1px solid #c78777; border-radius: 9px; background: var(--office-warning-bg); color: var(--office-text); }
+.permission-card strong, .permission-card > span, .permission-card small { display: block; font-size: 11px; line-height: 1.45; }
+.permission-card strong { font-size: 13px; margin-bottom: 5px; }
+.permission-card pre { max-height: 145px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; padding: 9px; border: 1px solid var(--office-border); border-radius: 5px; background: var(--office-panel); font: 10px/1.4 var(--mono); user-select: text; }
+.permission-buttons { display: flex; gap: 8px; margin: 9px 0; }
+.permission-buttons button, .storage-error button { padding: 7px 11px; border: 1px solid var(--office-border); border-radius: 6px; font: 700 11px var(--sans); background: var(--office-panel); color: var(--office-text); }
+.permission-buttons button:last-child { background: #316b60; color: #fff; border-color: #316b60; }
+.workspace-path { overflow-wrap: anywhere; font-family: var(--mono); user-select: text; }
+.live-shell .storage-error button { white-space: nowrap; background: #fff; color: #593e44; font-size: 11px; }
+.live-shell .workspace-chip { position: fixed; z-index: 2; right: 16px; bottom: 59px; max-width: min(390px, calc(100vw - 32px)); padding: 7px 10px; border: 1px solid var(--office-border); border-radius: 8px; background: var(--office-surface); box-shadow: 0 6px 22px var(--office-shadow); color: var(--office-secondary); font: 11px var(--sans); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.workspace-chip strong { color: var(--office-text); }
+@media (max-width: 700px) { .live-shell .workspace-chip { bottom: 10px; right: 10px; max-width: calc(100vw - 20px); font-size: 10px; } }
