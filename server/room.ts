@@ -1,12 +1,14 @@
 import { randomUUID } from "node:crypto";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
 import type { PermissionRequest, PermissionRequestResult, SessionEvent } from "@github/copilot-sdk";
-import { MAX_AGENTS, type Adapter, type Agent, type LiveSession, type Review, type Room } from "./types.js";
+import { MAX_AGENTS, type Adapter, type Agent, type LiveSession, type Review, type Room, type RepositoryRequest } from "./types.js";
 import type { Store } from "./storage.js";
-import { validateRepository, type RepositoryGrant } from "./repository.js";
+import { createResearchWorktree, validateRepository, type AccessIntent, type RepositoryGrant } from "./repository.js";
+import { agentName } from "../agent-inc-live/src/room.js";
 
 const EXPIRE_MS = 90_000;
 type Pending = { agentId: string; resolve: (decision: PermissionRequestResult) => void; timer: NodeJS.Timeout };
+type PendingAccess = { agentId: string; resolve: (result: string) => void; timer: NodeJS.Timeout };
 
 export class RoomController {
   readonly state: Room;
@@ -14,17 +16,19 @@ export class RoomController {
   private unsubscribers = new Map<string, () => void>();
   private listeners = new Set<(room: Room) => void>();
   private pending = new Map<string, Pending>();
+  private access = new Map<string, PendingAccess>();
   private saving: Promise<void> = Promise.resolve();
   private connecting: Promise<void> | null = null;
   private creating = new Set<number>();
   private lifecycle = new Set<string>();
   private stopped = new Set<string>();
+  private armedTaskGrants = new Set<string>();
 
-  private constructor(private readonly adapter: Adapter, private readonly store: Store, state: Room) {
+  private constructor(private readonly adapter: Adapter, private readonly store: Store, state: Room, private readonly worktreeRoot: string) {
     this.state = state;
   }
 
-  static async open(adapter: Adapter, store: Store, workspace: string): Promise<RoomController> {
+  static async open(adapter: Adapter, store: Store, workspace: string, worktreeRoot = resolve(".local/worktrees")): Promise<RoomController> {
     const saved = await store.read();
     if (saved && saved.workspace !== workspace) throw new Error(`Saved sessions belong to ${saved.workspace}. Choose that workspace or move .local/state.json aside deliberately.`);
     if (saved && !("agents" in saved) && !("agent" in saved)) throw new Error("Unrecognized saved room format; state was not changed.");
@@ -51,9 +55,28 @@ export class RoomController {
           !agent.archived && !other.archived && other.deskIndex === agent.deskIndex) !== index)) {
       throw new Error("Saved agent roster is invalid; state was not changed.");
     }
-    const room = new RoomController(adapter, store, state);
+    const room = new RoomController(adapter, store, state, worktreeRoot);
     room.state.connected = false;
     room.state.error = null;
+    if (room.state.usage) room.state.usage.stale = true;
+    room.state.knownRepositories ??= [];
+    room.state.worktrees ??= [];
+    const used = new Set<number>();
+    const names = new Set<string>();
+    for (const agent of [...room.state.agents].sort((a, b) => Number(a.archived) - Number(b.archived) || (a.deskIndex ?? a.lastDeskIndex ?? 0) - (b.deskIndex ?? b.lastDeskIndex ?? 0))) {
+      if (agent.persona === undefined) agent.persona = Array.from({ length: MAX_AGENTS }, (_, i) => i).find(i => !used.has(i)) ?? (agent.lastDeskIndex ?? 0);
+      if (!Number.isInteger(agent.persona) || agent.persona < 0 || agent.persona >= MAX_AGENTS ||
+        (!agent.archived && used.has(agent.persona))) throw new Error("Saved sprite personas collide or are invalid; state was not changed.");
+      if (!agent.archived) used.add(agent.persona);
+      let name = agent.name ?? agentName(agent.sessionId);
+      if (!agent.name) for (let suffix = 2; names.has(name); suffix++) name = `${agentName(agent.sessionId)} ${suffix}`;
+      if (names.has(name)) throw new Error("Saved agent names collide; state was not changed.");
+      agent.name = name;
+      names.add(name);
+      agent.accessRequest = undefined;
+      if (agent.repository?.scope === "task") agent.repository = undefined;
+      if (agent.repository && !room.state.knownRepositories.includes(agent.repository.path)) room.state.knownRepositories.push(agent.repository.path);
+    }
     for (const agent of room.state.agents) {
       agent.review = undefined;
       if (agent.archived) continue;
@@ -140,7 +163,8 @@ export class RoomController {
   private async resumeAgent(agent: Agent, repository: RepositoryGrant | null = agent.repository ?? null): Promise<LiveSession> {
     const grant = repository ?? undefined;
     try {
-      const session = await this.adapter.resume(agent.sessionId, agent.workspace, request => this.permission(agent.id, request), grant);
+      const session = await this.adapter.resume(agent.sessionId, agent.workspace, request => this.permission(agent.id, request), grant,
+        intent => this.requestAccess(agent.id, intent), () => this.agent(agent.id).repository);
       if (session.sessionId !== agent.sessionId) {
         await session.disconnect();
         throw new Error("SDK resumed a different session identity; repository access was not changed.");
@@ -149,7 +173,8 @@ export class RoomController {
     } catch (error) {
       if (agent.messages.length !== 0 || !(error instanceof Error) ||
         !error.message.includes(`Session not found: ${agent.sessionId}`)) throw error;
-      const session = await this.adapter.create(agent.workspace, request => this.permission(agent.id, request), agent.sessionId, grant);
+      const session = await this.adapter.create(agent.workspace, request => this.permission(agent.id, request), agent.sessionId, grant,
+        intent => this.requestAccess(agent.id, intent), () => this.agent(agent.id).repository);
       if (session.sessionId !== agent.sessionId) {
         await session.disconnect();
         throw new Error("SDK returned a different identity for the empty-session recovery.");
@@ -174,14 +199,27 @@ export class RoomController {
     const id = randomUUID();
     try {
       const workspace = await this.adapter.prepareWorkspace(this.state.workspace, id);
-      const session = await this.adapter.create(workspace, request => this.permission(id, request));
+      const session = await this.adapter.create(workspace, request => this.permission(id, request), undefined, undefined,
+        intent => this.requestAccess(id, intent), () => this.agent(id).repository);
       if (this.state.agents.some(agent => agent.sessionId === session.sessionId)) {
         throw new Error("SDK returned a session identity already assigned to another agent.");
       }
       const now = Date.now();
-      const agent: Agent = { id, deskIndex, archived: false, workspace, workspaceKind: "scratch", createdAt: now, updatedAt: now, sessionId: session.sessionId,
+      const occupied = new Set(this.state.agents.map(item => item.persona));
+      const all = Array.from({ length: MAX_AGENTS }, (_, index) => index);
+      const choices = all.filter(index => !occupied.has(index));
+      if (!choices.length) {
+        const active = new Set(this.state.agents.filter(item => !item.archived).map(item => item.persona));
+        choices.push(...all.filter(index => !active.has(index)));
+      }
+      const persona = choices[Math.floor(Math.random() * choices.length)];
+      const original = agentName(session.sessionId);
+      let name = original;
+      for (let suffix = 2; this.state.agents.some(item => item.name === name); suffix++) name = `${original} ${suffix}`;
+      const agent: Agent = { id, deskIndex, archived: false, workspace, workspaceKind: "scratch", createdAt: now, updatedAt: now, sessionId: session.sessionId, persona, name,
         phase: "idle", activity: "Ready to chat", messages: [] };
       this.state.agents.push(agent);
+      if (this.state.usage) this.state.usage.stale = true;
       this.attach(id, session);
       this.state.connected = true;
       this.state.error = null;
@@ -207,7 +245,7 @@ export class RoomController {
 
   private availableForLifecycle(agent: Agent): void {
     if (this.lifecycle.has(agent.id)) throw new Error("This agent is already being archived, restored or sent home.");
-    if (agent.review || ["thinking", "working", "permission"].includes(agent.phase)) {
+    if (agent.review || agent.accessRequest || ["thinking", "working", "permission"].includes(agent.phase)) {
       throw new Error("Wait for the turn to finish or decide the pending permission before changing this agent.");
     }
   }
@@ -228,6 +266,7 @@ export class RoomController {
       agent.archivedAt = Date.now();
       agent.activity = "Archived; conversation and SDK session preserved";
       agent.updatedAt = Date.now();
+      if (this.state.usage) this.state.usage.stale = true;
       await this.publish();
     } finally {
       this.lifecycle.delete(agentId);
@@ -239,6 +278,9 @@ export class RoomController {
     if (!agent.archived) throw new Error("This agent is already in the office.");
     this.availableForLifecycle(agent);
     if (this.availableDesk(agent.lastDeskIndex) === null) throw new Error("Office full (16 desks). Archive an agent before restoring this one.");
+    if (this.state.agents.some(other => !other.archived && other.persona === agent.persona)) {
+      throw new Error("This agent's sprite persona is in use by another office agent. Archive that agent before restoring; identity was not changed.");
+    }
     this.lifecycle.add(agentId);
     try {
       const session = await this.resumeAgent(agent);
@@ -253,6 +295,7 @@ export class RoomController {
       agent.phase = "idle";
       agent.activity = "Ready to chat";
       agent.updatedAt = Date.now();
+      if (this.state.usage) this.state.usage.stale = true;
       this.attach(agentId, session);
       await this.publish();
     } finally {
@@ -276,10 +319,143 @@ export class RoomController {
         throw error;
       }
       this.state.agents.splice(this.state.agents.indexOf(agent), 1);
+      if (this.state.usage) this.state.usage.stale = true;
       await this.publish();
     } finally {
       this.lifecycle.delete(agentId);
     }
+  }
+
+  requestAccess(agentId: string, intent: AccessIntent): Promise<string> {
+    const agent = this.agent(agentId);
+    if (agent.archived || !this.listeners.size || agent.accessRequest || agent.review || this.lifecycle.has(agentId)) {
+      return Promise.resolve(JSON.stringify({ status: "denied", reason: "No available browser or another request is pending." }));
+    }
+    const id = randomUUID();
+    agent.accessRequest = { id, repoHint: intent.repoHint.slice(0, 150), purpose: intent.purpose.slice(0, 500), scope: intent.scope };
+    agent.phase = "permission";
+    agent.activity = "Waiting for repository access decision";
+    agent.updatedAt = Date.now();
+    void this.publish().catch(error => console.error("Cannot save access request:", error));
+    return new Promise(resolveResult => {
+      const timer = setTimeout(() => this.resolveAccess(agentId, id, "denied", "Repository request timed out."), EXPIRE_MS);
+      this.access.set(id, { agentId, resolve: resolveResult, timer });
+    });
+  }
+
+  guidedAccess(agentId: string): RepositoryRequest {
+    const agent = this.agent(agentId);
+    if (agent.archived || agent.accessRequest || agent.review || this.lifecycle.has(agentId) || !this.listeners.size ||
+      ["thinking", "working", "permission"].includes(agent.phase)) {
+      throw new Error("This agent cannot request repository access right now.");
+    }
+    const request: RepositoryRequest = { id: randomUUID(), repoHint: "", purpose: "Research or work on a local repository", scope: "edit" };
+    agent.accessRequest = request;
+    void this.publish().catch(error => console.error("Cannot save guided request:", error));
+    return request;
+  }
+
+  private resolveAccess(agentId: string, id: string, status: string, reason?: string, grant?: RepositoryGrant): void {
+    const agent = this.agent(agentId);
+    if (agent.accessRequest?.id !== id) throw new Error("Repository request is stale or belongs to another agent.");
+    const pending = this.access.get(id);
+    if (pending) {
+      clearTimeout(pending.timer);
+      this.access.delete(id);
+      pending.resolve(JSON.stringify({ status, reason, repository: grant?.name, scope: grant?.scope,
+        worktree: grant?.worktree?.path }));
+    }
+    agent.accessRequest = undefined;
+    agent.updatedAt = Date.now();
+    if (agent.phase === "permission") agent.phase = "thinking";
+    agent.activity = status === "approved" ? `Repository access: ${grant?.name}` : reason ?? "Repository access denied";
+    void this.publish().catch(error => console.error("Cannot save access decision:", error));
+  }
+
+  async decideAccess(agentId: string, id: string, choice: "deny" | "task" | "session" | "edit", path?: string): Promise<void> {
+    const agent = this.agent(agentId);
+    const request = agent.accessRequest;
+    if (!request || request.id !== id || this.lifecycle.has(agentId)) throw new Error("Repository request is stale or belongs to another agent.");
+    if (choice === "deny") {
+      this.resolveAccess(agentId, id, "denied", "User denied repository access.");
+      return;
+    }
+    if (!path) throw new Error("Choose an absolute local Git repository root.");
+    if (choice === "edit" && request.scope !== "edit") throw new Error("This agent requested read access, not edit access.");
+    const grant = await validateRepository(path);
+    const session = this.sessions.get(agentId);
+    if (!session || agent.archived) throw new Error("This agent must be connected before access can be granted.");
+    this.lifecycle.add(agentId);
+    try {
+      let next: RepositoryGrant = { ...grant, scope: choice === "task" ? "task" : "session" };
+      if (choice === "edit") {
+        next = await createResearchWorktree(this.worktreeRoot, grant, agentId);
+        this.state.worktrees!.push({ agentId, repository: grant.path, path: next.worktree!.path, branch: next.worktree!.branch });
+        await this.publish();
+        try {
+          await session.setWorkingDirectory(next.worktree!.path);
+        } catch (error) {
+          throw new Error(`Created worktree at ${next.worktree!.path} (branch ${next.worktree!.branch}), but SDK could not change this session's working directory. Worktree preserved for manual inspection. ${String(error)}`);
+        }
+      } else if (agent.repository?.worktree) {
+        await session.setWorkingDirectory(agent.workspace);
+      }
+      agent.repository = next;
+      if (choice === "task" && agent.phase === "idle") this.armedTaskGrants.add(agentId);
+      else this.armedTaskGrants.delete(agentId);
+      if (!this.state.knownRepositories!.includes(grant.path)) this.state.knownRepositories!.push(grant.path);
+      await this.publish();
+      this.resolveAccess(agentId, id, "approved", undefined, next);
+    } finally {
+      this.lifecycle.delete(agentId);
+    }
+  }
+
+  async revokeRepository(agentId: string): Promise<void> {
+    const agent = this.agent(agentId);
+    this.availableForLifecycle(agent);
+    this.lifecycle.add(agentId);
+    try {
+      if (agent.repository?.worktree && !agent.archived) {
+        const session = this.sessions.get(agentId);
+        if (!session) throw new Error("SDK session unavailable; could not leave the worktree.");
+        await session.setWorkingDirectory(agent.workspace);
+      }
+      const preserved = agent.repository?.worktree?.path;
+      agent.repository = undefined;
+      this.armedTaskGrants.delete(agentId);
+      agent.activity = preserved ? `Access revoked; worktree preserved at ${preserved}` : "Repository access revoked";
+      await this.publish();
+    } finally {
+      this.lifecycle.delete(agentId);
+    }
+  }
+
+  async refreshUsage(): Promise<void> {
+    if (!this.state.connected) throw new Error("Connect to the SDK before loading usage.");
+    let tokens = 0, calls = 0, filesChanged = 0, measured = 0;
+    let startedAt: string | undefined;
+    for (const agent of this.state.agents) {
+      let temporary: LiveSession | undefined;
+      try {
+        if (agent.archived) temporary = await this.resumeAgent(agent);
+        const metrics = await (temporary ?? this.sessions.get(agent.id))?.getUsage();
+        if (!metrics) continue;
+        measured++;
+        tokens += metrics.tokens;
+        calls += metrics.calls;
+        filesChanged += metrics.filesChanged;
+        if (!startedAt || metrics.startedAt < startedAt) startedAt = metrics.startedAt;
+      } catch (error) {
+        console.error(`Usage unavailable for agent ${agent.id}:`, error);
+      } finally {
+        if (temporary) await temporary.disconnect();
+      }
+    }
+    const total = this.state.agents.length;
+    this.state.usage = { status: measured === 0 ? "unavailable" : measured === total ? "ready" : "partial",
+      measured, total, tokens, calls, filesChanged, startedAt, updatedAt: Date.now() };
+    await this.publish();
   }
 
   async setRepository(agentId: string, path: string | null): Promise<void> {
@@ -331,6 +507,9 @@ export class RoomController {
         pending.resolve({ kind: "reject", feedback: "Turn stopped by user." });
         this.pending.delete(id);
       }
+      if (agent.accessRequest) this.resolveAccess(agentId, agent.accessRequest.id, "denied", "Turn stopped by user.");
+      if (agent.repository?.scope === "task") agent.repository = undefined;
+      this.armedTaskGrants.delete(agentId);
       await abort;
       agent.review = undefined;
       const last = agent.messages.at(-1);
@@ -358,7 +537,9 @@ export class RoomController {
     if (!prompt || prompt.length > 12000) throw new Error("Prompt must contain 1–12000 characters.");
     if (["thinking", "working", "permission"].includes(agent.phase)) throw new Error("Wait for the current turn to finish.");
     this.stopped.delete(agentId);
+    this.armedTaskGrants.delete(agentId);
     agent.messages.push({ id: randomUUID(), role: "user", content: prompt });
+    if (this.state.usage) this.state.usage.stale = true;
     agent.phase = "thinking";
     agent.activity = "Thinking";
     agent.updatedAt = Date.now();
@@ -409,6 +590,7 @@ export class RoomController {
         agent.activity = event.data.error ? "Tool finished with an error" : "Tool finished";
         break;
       case "session.idle":
+        if (agent.repository?.scope === "task" && !this.armedTaskGrants.has(agentId)) agent.repository = undefined;
         agent.phase = "idle";
         agent.activity = this.stopped.has(agentId) ? "Turn stopped by user · ready to chat" : "Ready to chat";
         break;
@@ -428,6 +610,10 @@ export class RoomController {
     if (request.kind === "custom-tool" && request.toolName === "research_attached_repository") {
       return Promise.resolve(agent?.repository && !agent.archived && !this.lifecycle.has(agentId) ?
         { kind: "approve-once" } : { kind: "reject", feedback: "No active repository research grant." });
+    }
+    if (request.kind === "custom-tool" && request.toolName === "request_repository_access") {
+      return Promise.resolve(agent && !agent.archived && !this.lifecycle.has(agentId) ? { kind: "approve-once" } :
+        { kind: "reject", feedback: "Agent unavailable." });
     }
     if (!this.listeners.size || !agent || agent.archived || this.lifecycle.has(agentId) || agent.review) {
       return Promise.resolve({ kind: "user-not-available" });
@@ -465,6 +651,9 @@ export class RoomController {
   }
 
   private denyPending(): void {
+    for (const [id, pending] of this.access) {
+      this.resolveAccess(pending.agentId, id, "denied", "No browser available; request denied.");
+    }
     if (!this.pending.size) return;
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);

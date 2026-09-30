@@ -48,6 +48,10 @@ test("research tool reads only bounded tracked text, refuses secrets, untracked 
     }
     await assert.rejects(validateRepository(join(root, "src")), /root/);
     await assert.rejects(validateRepository("relative/repo"), /absolute/);
+    const alias = join(parent, "repo-alias");
+    await symlink(root, alias);
+    assert.equal((await validateRepository(alias)).path, await realpath(root));
+    await assert.rejects(researchRepository({ path: alias, name: "alias" }, "list", ""), /symlink/);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }

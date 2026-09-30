@@ -124,6 +124,31 @@ const server = createServer(async (request, response) => {
         await room.setRepository(body.agentId, body.path);
         return json(response, 200, room.state);
       }
+      if (url.pathname === "/api/access-request" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string") throw new Error("Choose an agent.");
+        room.guidedAccess(body.agentId);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/access-decision" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string" || typeof body.id !== "string" ||
+          !["deny", "task", "session", "edit"].includes(String(body.choice)) ||
+          !(body.path === undefined || typeof body.path === "string")) throw new Error("Invalid repository decision.");
+        await room.decideAccess(body.agentId, body.id, body.choice as "deny" | "task" | "session" | "edit", body.path);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/access-revoke" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string") throw new Error("Choose an agent.");
+        await room.revokeRepository(body.agentId);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/usage" && request.method === "POST") {
+        await payload(request);
+        await room.refreshUsage();
+        return json(response, 200, room.state);
+      }
       if (url.pathname === "/api/stop" && request.method === "POST") {
         const body = await payload(request);
         if (typeof body.agentId !== "string") throw new Error("Choose an agent to stop.");

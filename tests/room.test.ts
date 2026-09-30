@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { execFileSync } from "node:child_process";
-import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PermissionRequest, PermissionRequestResult, SessionEvent } from "@github/copilot-sdk";
 import { RoomController } from "../server/room.js";
-import type { RepositoryGrant } from "../server/repository.js";
+import { validateResearchWorktree, type RepositoryGrant } from "../server/repository.js";
 import { MAX_AGENTS, type Adapter, type LegacyRoom, type LiveSession, type Room } from "../server/types.js";
 import type { Store } from "../server/storage.js";
 
@@ -20,12 +20,17 @@ class MockSession implements LiveSession {
   aborts = 0;
   abortError: Error | null = null;
   disconnects = 0;
+  directory = "";
   handler: ((event: SessionEvent) => void) | null = null;
   constructor(readonly sessionId: string) {}
   async send(prompt: string): Promise<void> { this.sent.push(prompt); }
   async abort(): Promise<void> {
     if (this.abortError) throw this.abortError;
     this.aborts++;
+  }
+  async setWorkingDirectory(path: string): Promise<void> { this.directory = path; }
+  async getUsage(): Promise<{ tokens: number; calls: number; filesChanged: number; startedAt: string }> {
+    return { tokens: 100, calls: 2, filesChanged: 1, startedAt: "2026-01-01T00:00:00Z" };
   }
   onEvent(handler: (event: SessionEvent) => void): () => void {
     this.handler = handler;
@@ -99,6 +104,8 @@ test("migrates the existing agent without changing its session, transcript or ro
   assert.equal(room.state.agents[0].deskIndex, 0);
   assert.deepEqual(room.state.agents[0].messages, originalMessages);
   assert.equal(room.state.agents.length, 1);
+  assert.equal(room.state.agents.filter(agent => !agent.archived).length, 1);
+  assert.equal(MAX_AGENTS - room.state.agents.filter(agent => !agent.archived).length, 15);
   await room.connect();
   assert.deepEqual(adapter.resumed, ["old-sdk-session"]);
   assert.equal(adapter.prepared.length, 0);
@@ -112,6 +119,7 @@ test("migrates the existing agent without changing its session, transcript or ro
   const next = await reloaded.create(1);
   assert.equal(next.workspace, `/dedicated/agents/${next.id}`);
   assert.equal(reloaded.state.agents.length, 2);
+  assert.notEqual(reloaded.state.agents[0].persona, reloaded.state.agents[1].persona);
   assert.equal(adapter.prepared.length, 1);
   assert.equal(reloaded.state.agents[0].workspace, "/dedicated");
   await reloaded.close();
@@ -177,8 +185,34 @@ test("a full office and occupied desks refuse extra sessions", async () => {
   await assert.rejects(room.create(MAX_AGENTS), /Invalid desk/);
   for (let deskIndex = 1; deskIndex < MAX_AGENTS; deskIndex++) await room.create(deskIndex);
   assert.equal(room.state.agents.length, MAX_AGENTS);
+  assert.equal(new Set(room.state.agents.map(agent => agent.persona)).size, MAX_AGENTS);
+  assert.equal(new Set(room.state.agents.map(agent => agent.name)).size, MAX_AGENTS);
   await assert.rejects(room.create(0), /occupied|All office desks/);
   await room.close();
+});
+
+test("archived sprite identity stays fixed and a conflicting restore is refused without changing it", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  const original = await room.create(0);
+  const persona = original.persona;
+  await room.archive(original.id);
+  for (let i = 0; i < MAX_AGENTS; i++) await room.create(i);
+  const conflicting = room.state.agents.find(a => !a.archived && a.persona === persona)!;
+  const other = room.state.agents.find(a => !a.archived && a.id !== conflicting.id)!;
+  await room.archive(other.id);
+  await assert.rejects(room.restore(original.id), /sprite persona is in use/);
+  assert.equal(original.persona, persona);
+  assert.equal(original.archived, true);
+  await room.archive(conflicting.id);
+  await room.restore(original.id);
+  assert.equal(original.persona, persona);
+  assert.equal(original.archived, false);
+  await room.close();
+  const recovered = await RoomController.open(adapter, store, "/dedicated");
+  assert.equal(recovered.state.agents.find(a => a.id === original.id)?.persona, persona);
+  await recovered.close();
 });
 
 test("archive frees its desk without deleting session, keeps history on restart, and restore resumes it", async () => {
@@ -464,4 +498,138 @@ test("explicit research grant authorizes only its own read-only SDK tool, never 
   } finally {
     await rm(root, { recursive: true, force: true });
   }
+});
+
+test("two agents: request denial, task expiry, session persistence and permission boundaries", async () => {
+  const fixture = await mkdtemp(join(tmpdir(), "agentcorp-access-"));
+  try {
+    const repo = join(fixture, "repo");
+    execFileSync("git", ["init", "-q", repo]);
+    const adapter = new MockAdapter();
+    const store = new MemoryStore();
+    const room = await RoomController.open(adapter, store, "/dedicated");
+    const first = await room.create(0);
+    const second = await room.create(1);
+    const unsubscribe = room.subscribe(() => {});
+    assert.deepEqual(await adapter.permissions.get(first.sessionId)!({ kind: "custom-tool", toolCallId: "ask",
+      toolName: "request_repository_access", toolDescription: "Ask", args: {} } as PermissionRequest), { kind: "approve-once" });
+    const denied = room.requestAccess(first.id, { repoHint: "fixture", purpose: "Inspect docs", scope: "read" });
+    assert.throws(() => room.decide(second.id, first.accessRequest!.id, true), /stale|another agent/);
+    await room.decideAccess(first.id, first.accessRequest!.id, "deny");
+    assert.match(await denied, /denied/);
+    assert.equal(first.repository, undefined);
+    adapter.sessions.get(first.sessionId)!.emit(event("session.idle"));
+    const task = room.guidedAccess(first.id);
+    await room.decideAccess(first.id, task.id, "task", repo);
+    assert.equal(room.state.agents[0].repository?.scope, "task");
+    assert.equal(second.repository, undefined);
+    const read = { kind: "custom-tool", toolCallId: "research-1",
+      toolName: "research_attached_repository", toolDescription: "Bounded tracked research",
+      args: { action: "read", path: "README.md" } } as PermissionRequest;
+    assert.deepEqual(await adapter.permissions.get(first.sessionId)!(read), { kind: "approve-once" });
+    assert.deepEqual(await adapter.permissions.get(first.sessionId)!(read), { kind: "approve-once" });
+    assert.deepEqual(await adapter.permissions.get(second.sessionId)!(read),
+      { kind: "reject", feedback: "No active repository research grant." });
+    adapter.sessions.get(first.sessionId)!.emit(event("session.idle"));
+    assert.equal(room.state.agents[0].repository?.scope, "task", "guided task grant waits for the next turn");
+    await room.send(first.id, "Research the approved fixture");
+    adapter.sessions.get(first.sessionId)!.emit(event("session.idle"));
+    assert.equal(first.repository, undefined);
+    assert.deepEqual(await adapter.permissions.get(first.sessionId)!(read),
+      { kind: "reject", feedback: "No active repository research grant." });
+    const saved = room.requestAccess(first.id, { repoHint: "fixture", purpose: "Study project", scope: "read" });
+    await room.decideAccess(first.id, first.accessRequest!.id, "session", repo);
+    await saved;
+    assert.equal(room.state.agents[0].repository?.scope, "session");
+    const shell = adapter.permissions.get(first.sessionId)!(request);
+    assert.equal(first.review?.kind, "shell", "shell requires an individual review even after the read grant");
+    room.decide(first.id, first.review!.id, false);
+    assert.deepEqual(await shell, { kind: "reject", feedback: "User denied this action." });
+    unsubscribe();
+    await room.close();
+    const recovered = await RoomController.open(adapter, store, "/dedicated");
+    await recovered.connect();
+    assert.equal(recovered.state.agents[0].repository?.scope, "session");
+    assert.equal(recovered.state.agents[1].repository, undefined);
+    await recovered.revokeRepository(first.id);
+    assert.equal(recovered.state.agents[0].repository, undefined);
+    const again = recovered.subscribe(() => {});
+    const pendingTask = recovered.requestAccess(first.id, { repoHint: "fixture", purpose: "Next turn", scope: "read" });
+    await recovered.decideAccess(first.id, recovered.state.agents[0].accessRequest!.id, "task", repo);
+    await pendingTask;
+    await recovered.close();
+    again();
+    const restarted = await RoomController.open(adapter, store, "/dedicated");
+    assert.equal(restarted.state.agents[0].repository, undefined, "task grants do not survive restart");
+    await restarted.close();
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("edit approval creates a unique worktree, persists location, and never auto-approves shell", async () => {
+  const fixture = await realpath(await mkdtemp(join(tmpdir(), "agentcorp-edit-")));
+  const repo = join(fixture, "repo");
+  const trees = join(fixture, "worktrees");
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    await writeFile(join(repo, "README.md"), "Original checkout\n");
+    execFileSync("git", ["-C", repo, "add", "README.md"]);
+    execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
+    const store = new MemoryStore();
+    const adapter = new MockAdapter();
+    const room = await RoomController.open(adapter, store, "/dedicated", trees);
+    const agent = await room.create(0);
+    const unsubscribe = room.subscribe(() => {});
+    const access = room.requestAccess(agent.id, { repoHint: "fixture", purpose: "Make a change", scope: "edit" });
+    await assert.rejects(room.decideAccess(agent.id, agent.accessRequest!.id, "edit", "/missing-repo"), /ENOENT/);
+    assert.ok(agent.accessRequest, "failed validation leaves decision available");
+    await room.decideAccess(agent.id, agent.accessRequest!.id, "edit", repo);
+    assert.match(await access, /approved/);
+    assert.equal(adapter.sessions.get(agent.sessionId)?.directory, agent.repository?.worktree?.path);
+    assert.match(agent.repository!.worktree!.branch, new RegExp(`^agentcorp/${agent.id}/`));
+    await validateResearchWorktree(agent.repository!);
+    await assert.rejects(validateResearchWorktree({ ...agent.repository!,
+      worktree: { ...agent.repository!.worktree!, branch: "unapproved-branch" } }), /approved repository\/branch/);
+    assert.equal(execFileSync("git", ["-C", repo, "status", "--porcelain"], { encoding: "utf8" }), "");
+    assert.equal(await readFile(join(repo, "README.md"), "utf8"), "Original checkout\n");
+    const pending = adapter.permissions.get(agent.sessionId)!(request);
+    assert.equal(agent.review?.kind, "shell");
+    room.decide(agent.id, agent.review!.id, false);
+    assert.deepEqual(await pending, { kind: "reject", feedback: "User denied this action." });
+    adapter.sessions.get(agent.sessionId)!.emit(event("session.idle"));
+    await room.archive(agent.id);
+    await room.close();
+    const reloaded = await RoomController.open(adapter, store, "/dedicated", trees);
+    await reloaded.connect();
+    assert.equal(reloaded.state.agents[0].repository?.worktree?.path, agent.repository?.worktree?.path);
+    await reloaded.restore(agent.id);
+    await reloaded.revokeRepository(agent.id);
+    assert.equal(adapter.sessions.get(agent.sessionId)?.directory, agent.workspace);
+    assert.equal(reloaded.state.worktrees?.length, 1);
+    await reloaded.close();
+    unsubscribe();
+    execFileSync("git", ["-C", repo, "worktree", "remove", agent.repository?.worktree?.path ?? reloaded.state.worktrees![0].path]);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("usage aggregates SDK session snapshots including archived agents, marks partial data", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  const first = await room.create(0);
+  const archived = await room.create(1);
+  await room.archive(archived.id);
+  await room.refreshUsage();
+  assert.deepEqual(room.state.usage && [room.state.usage.status, room.state.usage.measured,
+    room.state.usage.total, room.state.usage.tokens, room.state.usage.calls, room.state.usage.filesChanged],
+  ["ready", 2, 2, 200, 4, 2]);
+  adapter.failResume.add(archived.sessionId);
+  await room.refreshUsage();
+  assert.equal(room.state.usage?.status, "partial");
+  assert.equal(room.state.usage?.measured, 1);
+  assert.equal(room.state.agents[0].id, first.id);
+  await room.close();
 });

@@ -325,6 +325,7 @@ export type World = {
   capturePositions: () => void;
   render: (elapsed: number, previewOffset: number, alpha: number, advanced: boolean) => void;
   focusAgent: (index: number | null) => void;
+  setAgentPersona: (index: number, persona: number) => void;
   projectDesk: (index: number) => { x: number; y: number } | null;
   projectAgent: (index: number) => { x: number; y: number } | null;
   dispose: () => void;
@@ -782,6 +783,19 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
     return { ...model, mugSteam, halo };
   };
   const agentMeshes = simulation.agents.map((agent) => makeAgentModel(agent.id));
+  const personas = agentMeshes.map((_, index) => index);
+  const setAgentPersona = (index: number, persona: number) => {
+    while (agentMeshes.length <= index) {
+      agentMeshes.push(makeAgentModel(agentMeshes.length));
+      personas.push(agentMeshes.length - 1);
+    }
+    const model = agentMeshes[index];
+    if (!model || personas[index] === persona) return;
+    const frames = agentArt(persona);
+    Object.values(frames).flatMap(directions => Object.values(directions)).forEach(track);
+    model.frames = frames;
+    personas[index] = persona;
+  };
   let previousPositions = simulation.agents.map(({ x, z }) => ({ x, z }));
   const contextRoom = new THREE.Group();
   contextRoom.visible = !isLive && simulation.progress.context;
@@ -1102,6 +1116,7 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
   };
 
   return {
+    setAgentPersona,
     capturePositions() {
       previousPositions = simulation.agents.map(({ x, z }) => ({ x, z }));
     },
@@ -1234,6 +1249,7 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
       }
       while (agentMeshes.length < simulation.agents.length) {
         agentMeshes.push(makeAgentModel(agentMeshes.length));
+        personas.push(agentMeshes.length - 1);
       }
       const busy = simulation.agents.some((a) => a.taskId !== undefined);
       if (core) {

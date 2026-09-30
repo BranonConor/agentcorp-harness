@@ -13,7 +13,7 @@ import {
   EXTRA_DESKS, LIVE_COFFEE_Z, MAX_LIVE_DESKS, MIN_LIVE_DESKS,
   assignLoungeSpots, routeAroundDividers,
 } from "../../agent-inc/game/live-layout";
-import { AGENTCORP_LETTERS, AGENTCORP_MARK, AGENTCORP_WORDMARK } from "../../agent-inc/game/sprite-art";
+import { AGENTCORP_LETTERS, AGENTCORP_MARK, AGENTCORP_WORDMARK, agentPortrait } from "../../agent-inc/game/sprite-art";
 import { createWorld } from "../../agent-inc/game/world";
 import { noticeActivityForActor, roomActors } from "./room";
 import type { Actor, Room as OfficeRoom, Status } from "./room";
@@ -58,7 +58,10 @@ function officeRoom(room: SdkRoom | null): OfficeRoom {
 }
 
 function deskActors(room: SdkRoom): (Actor | null)[] {
-  const bySession = new Map(roomActors(officeRoom(room)).map(actor => [actor.key, actor]));
+  const names = new Map(room.agents.map(agent => [agent.sessionId, agent.name]));
+  const bySession = new Map(roomActors(officeRoom(room)).map(actor => [actor.key, {
+    ...actor, name: names.get(actor.key) ?? actor.name
+  }]));
   const active = room.agents.filter(isActive);
   const slots: (Actor | null)[] = Array.from({ length: Math.max(0, ...active.map(agent => agent.deskIndex + 1)) }, () => null);
   for (const agent of active) slots[agent.deskIndex] = bySession.get(agent.sessionId) ?? null;
@@ -150,6 +153,13 @@ function applyRoom(scene: Simulation, actors: (Actor | null)[], occupied: boolea
   occupied.length = scene.agents.length;
 }
 
+function updatePersonas(world: ReturnType<typeof createWorld> | undefined, room: SdkRoom): void {
+  if (!world) return;
+  for (const agent of room.agents) {
+    if (isActive(agent) && agent.persona !== undefined) world.setAgentPersona(agent.deskIndex, agent.persona);
+  }
+}
+
 function moveAgents(scene: Simulation, delta: number) {
   for (let id = 0; id < scene.progress.capacity; id++) {
     const agent = scene.agents[id];
@@ -183,6 +193,7 @@ function LiveOffice() {
   const [hover, setHover] = useState<{ name: string; x: number; y: number } | null>(null);
   const [draft, setDraft] = useState("");
   const [repoPath, setRepoPath] = useState("");
+  const [accessChoice, setAccessChoice] = useState<"task" | "session" | "edit">("task");
   const [copiedId, setCopiedId] = useState("");
   const [actionError, setActionError] = useState("");
   const [menuAgentId, setMenuAgentId] = useState<string | null>(null);
@@ -239,8 +250,9 @@ function LiveOffice() {
     roomRef.current = next;
     setSdkRoom(next);
     for (const agent of next.agents) {
-      if (!agent.archived && agent.review && !seenReviews.current.has(agent.review.id)) {
-        seenReviews.current.add(agent.review.id);
+      const requestId = agent.review?.id ?? agent.accessRequest?.id;
+      if (!agent.archived && requestId && !seenReviews.current.has(requestId)) {
+        seenReviews.current.add(requestId);
         selectActor(agent.sessionId);
       }
     }
@@ -292,6 +304,15 @@ function LiveOffice() {
     }
     selectedRef.current = key;
     worldRef.current?.focusAgent(agent.archived ? null : index);
+    if (!agent.archived && index >= 0) {
+      const point = worldRef.current?.projectAgent(index);
+      const actor = actorsRef.current[index];
+      if (point && actor) setHover({ name: actor.name, ...point });
+      hoverDeskRef.current = index;
+    } else {
+      setHover(null);
+      hoverDeskRef.current = null;
+    }
     focusedKey.current = `${key}:${agent.archived ? "archived" : index}`;
     setSelected(key);
     setPanelOpen(true);
@@ -360,6 +381,10 @@ function LiveOffice() {
     try {
       world = createWorld(host.current, scene, "live", {
         onAgentHover(index) {
+          if (selectedRef.current) {
+            const focusedIndex = actorsRef.current.findIndex(actor => actor?.key === selectedRef.current);
+            index = focusedIndex < 0 ? null : focusedIndex;
+          }
           const actor = index === null ? undefined : actorsRef.current[index];
           if (hoverDeskRef.current === index) return;
           hoverDeskRef.current = index;
@@ -394,6 +419,7 @@ function LiveOffice() {
         actorsRef.current = nextActors;
         world?.capturePositions();
         applyRoom(scene, nextActors, occupied);
+        updatePersonas(world, update);
         updateRoom(update);
         setConnection(update.connected ? connectedStatus : update.error || "SDK connection unavailable");
       } catch (error) {
@@ -410,6 +436,7 @@ function LiveOffice() {
         actorsRef.current = deskActors(initial);
         world?.capturePositions();
         applyRoom(scene, actorsRef.current, occupied);
+        updatePersonas(world, initial);
         updateRoom(initial);
         setConnection(initial.connected ? connectedStatus : initial.error || "SDK connection unavailable");
       }
@@ -479,7 +506,8 @@ function LiveOffice() {
     };
   }, []);
 
-  const actors = roomActors(room);
+  const names = new Map(sdkRoom?.agents.map(agent => [agent.sessionId, agent.name]) ?? []);
+  const actors = roomActors(room).map(actor => ({ ...actor, name: names.get(actor.key) ?? actor.name }));
   const activeAgents = sdkRoom?.agents.filter(isActive) ?? [];
   const deskCount = MAX_LIVE_DESKS;
   const firstEmptyDesk = Array.from({ length: MAX_AGENTS }, (_, index) => index)
@@ -501,11 +529,15 @@ function LiveOffice() {
     setRepoPath(selectedAgent?.repository?.path ?? "");
     setCopiedId("");
   }, [selected, selectedAgent?.repository?.path]);
+  useEffect(() => {
+    setAccessChoice(selectedAgent?.accessRequest?.scope === "edit" ? "edit" : "task");
+    setRepoPath(selectedAgent?.repository?.path ?? "");
+  }, [selectedAgent?.accessRequest?.id]);
   const selectedActor = actors.find(actor => actor.key === selected);
   const confirmAgent = sdkRoom?.agents.find(agent => agent.id === confirmAgentId);
   const confirmName = actors.find(actor => actor.key === confirmAgent?.sessionId)?.name ?? "this agent";
   const lifecycleBusy = (agent: SdkAgent) =>
-    !!agent.review || ["thinking", "working", "permission"].includes(agent.phase);
+    !!agent.review || !!agent.accessRequest || ["thinking", "working", "permission"].includes(agent.phase);
   const archiveAgent = async (agent: SdkAgent) => {
     setMenuAgentId(null);
     if (await act("archive", { agentId: agent.id })) {
@@ -622,7 +654,12 @@ function LiveOffice() {
                   hoverDeskRef.current = agent.deskIndex;
                   if (point && actor) setHover({ name: actor.name, ...point });
                 }}
-                onBlur={() => { hoverDeskRef.current = null; setHover(null); }}
+                onBlur={() => {
+                  if (selectedRef.current !== agent.sessionId) {
+                    hoverDeskRef.current = null;
+                    setHover(null);
+                  }
+                }}
                 onClick={() => selectActor(agent.sessionId)} />;
             })}
             <div className="world-callout live-callout" role="status" aria-live="polite">
@@ -686,8 +723,24 @@ function LiveOffice() {
                   <p className="workspace-path">{sdkRoom?.workspace || "Loading…"}</p>
                   <p>{sdkRoom?.agents.some(agent => agent.workspaceKind === "root") ?
                     "The existing agent retains this root; new agents use separate disposable subfolders here." :
-                    "Each agent uses a separate disposable subfolder here."} Repository research can be attached to one agent at a time; it does not approve shell or write requests. Working directories are not OS sandboxes; review each tool permission.</p>
+                    "Each agent uses a separate disposable subfolder here."} Agents request repository access in their own chat. Worktrees do not provide OS isolation; review every shell or write permission.</p>
                 </div>
+                <div className="activity-row">
+                  <div className="activity-row-heading"><strong>SDK usage · all recorded agents</strong>
+                    <span className="activity-tag">On demand</span></div>
+                  {sdkRoom?.usage ? <p>{sdkRoom.usage.status === "unavailable" ? "Usage unavailable from the SDK." :
+                    `${sdkRoom.usage.tokens.toLocaleString()} tokens · ${sdkRoom.usage.calls.toLocaleString()} model calls · ${sdkRoom.usage.filesChanged.toLocaleString()} session-file counts${sdkRoom.usage.status === "partial" ? " (partial)" : ""}.`}
+                    {" "}Measured {sdkRoom.usage.measured}/{sdkRoom.usage.total} sessions, active and archived, accumulated since {sdkRoom.usage.startedAt ?? "unknown start"}; refreshed {new Date(sdkRoom.usage.updatedAt).toLocaleString()}{sdkRoom.usage.stale ? " (outdated; refresh for recent work)" : ""}. File counts may overlap across sessions.</p> :
+                    <p>Not loaded. Query per-session SDK metrics to see available accumulated usage.</p>}
+                  <button type="button" className="focus-button" disabled={!connected} onClick={() => void act("usage", {})}>Refresh SDK usage</button>
+                </div>
+                {!!sdkRoom?.worktrees?.length && <div className="activity-row">
+                  <div className="activity-row-heading"><strong>Preserved worktrees</strong>
+                    <span className="activity-tag">{sdkRoom.worktrees.length} created</span></div>
+                  <p>Never deleted on revoke, archive or Send home. Inspect or clean up manually with Git after reviewing changes.</p>
+                  {sdkRoom.worktrees.map(tree => <p className="workspace-path" key={tree.path}>
+                    {tree.branch} · {tree.path}</p>)}
+                </div>}
                 {!connected && <button type="button" className="focus-button" onClick={() => void act("retry", {})}>Retry SDK connection</button>}
               </section>
             )}
@@ -703,14 +756,16 @@ function LiveOffice() {
                   return <div className={`conversation-row ${agent.archived ? "agent-archived" : ""}`} key={agent.id}>
                     <button type="button" className="agent-row-main" onClick={() => selectActor(agent.sessionId)}
                       aria-label={`Open ${name}${agent.archived ? " archived" : ""} conversation`}>
-                      <span className="worker-avatar" aria-hidden="true">{name.split(" ").map(part => part[0]).join("")}</span>
+                      <span className="worker-avatar" aria-hidden="true">{agent.persona !== undefined &&
+                        <img src={agentPortrait(agent.persona)} alt="" width="42" height="42" />}</span>
                       <span className="conversation-row-text">
                         <strong>{name}</strong>
                         <small>{last ? `${last.role === "user" ? "You: " : ""}${last.content.slice(0, 110)}` :
                           "New conversation · say hello"}</small>
                         <small>{agent.archived ? `Archived · former desk ${(agent.lastDeskIndex ?? 0) + 1}` :
                           `Desk ${agent.deskIndex! + 1} · ${agent.activity}`}</small>
-                        {agent.repository && <small>Research: {agent.repository.name} · read-only</small>}
+                        {agent.repository && <small>{agent.repository.worktree ? "Worktree" : "Research"}: {agent.repository.name} · {agent.repository.scope === "task" ? "this task" : "this session"}</small>}
+                        {agent.accessRequest && <small>Repository access request awaiting you</small>}
                       </span>
                       {agent.review && <span className="activity-tag activity-tag-warning">Review</span>}
                     </button>
@@ -743,8 +798,10 @@ function LiveOffice() {
                         {lifecycleBusy(agent) && <small>Wait for the turn or decide its permission first.</small>}
                         {agent.archived && officeFull && <small>Office full: archive another agent before restoring.</small>}
                         <div className="agent-menu-workspace">
-                          <span>Tool working directory · {agent.workspaceKind === "root" ? "original root" : "scratch"}</span>
-                          <code>{agent.workspace}</code>
+                          <span>Tool working directory · {agent.repository?.worktree ? "isolated worktree" :
+                            agent.workspaceKind === "root" ? "original root" : "scratch"}</span>
+                          <code>{agent.repository?.worktree?.path ?? agent.workspace}</code>
+                          {agent.repository?.worktree && <small>Branch: {agent.repository.worktree.branch} · preserved on archive/send home</small>}
                           <small>Not an OS sandbox. Review each tool permission.</small>
                         </div>
                       </div>}
@@ -762,34 +819,61 @@ function LiveOffice() {
                       <div className={`conversation-message ${message.role}`} key={message.id}>
                         <span>{message.role === "user" ? "YOU" : message.role === "system" ? "OFFICE" : selectedActor?.name}{message.pending ? " · STREAMING" : ""}</span>
                         <div className="message-markdown"><SafeMarkdown content={message.content} /></div>
-                        <button type="button" className="copy-message" aria-live="polite" aria-label={`Copy ${message.role} message as Markdown`}
+                        <button type="button" className="copy-message" aria-label={`${copiedId === message.id ? "Copied" : "Copy"} ${message.role} message as Markdown`}
+                          title={copiedId === message.id ? "Copied" : "Copy Markdown"}
                           onClick={() => void navigator.clipboard.writeText(message.content).then(() => setCopiedId(message.id))
                             .catch(error => setActionError(`Could not copy message: ${error instanceof Error ? error.message : String(error)}`))}>
-                          <span aria-hidden="true">▢</span> {copiedId === message.id ? "Copied" : "Copy"}
+                          <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><rect x="7" y="6" width="10" height="11" rx="1.5" />
+                            <path d="M13 6V4a1 1 0 0 0-1-1H4a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h3" /></svg>
                         </button>
+                        {copiedId === message.id && <span className="sr-only" role="status">Message copied</span>}
                       </div>)}
                   </div>
               </section>
             )}
           </div>
-          {selectedAgent && <section className="repo-attachment" aria-label={`Repository research access for ${selectedActor?.name ?? "agent"}`}>
+          {selectedAgent && <section className="repo-attachment" aria-label={`Repository access for ${selectedActor?.name ?? "agent"}`}>
             {selectedAgent.repository ? <div className="repo-grant">
-              <strong>{selectedAgent.repository.name} · read-only research</strong>
+              <strong>{selectedAgent.repository.name} · {selectedAgent.repository.worktree ? "isolated worktree edit" :
+                selectedAgent.repository.scope === "task" ? "read this task" : "read this session"}</strong>
               <code>{selectedAgent.repository.path}</code>
+              {selectedAgent.repository.worktree && <code>Worktree: {selectedAgent.repository.worktree.path} · {selectedAgent.repository.worktree.branch}</code>}
               <button type="button" disabled={lifecycleBusy(selectedAgent)}
-                onClick={() => void act("repository", { agentId: selectedAgent.id, path: null })}>Revoke research access</button>
-            </div> : <form onSubmit={event => {
-              event.preventDefault();
-              void act("repository", { agentId: selectedAgent.id, path: repoPath.trim() });
-            }}>
-              <label htmlFor="repo-path">Attach repository for research · this agent only</label>
-              <div><input id="repo-path" type="text" value={repoPath} onChange={event => setRepoPath(event.target.value)}
-                placeholder="/absolute/path/to/local/git-repo" aria-label="Absolute local Git repository path"
-                disabled={lifecycleBusy(selectedAgent)} />
-                <button type="submit" disabled={!repoPath.trim() || lifecycleBusy(selectedAgent)}>Attach</button></div>
-            </form>}
-            <small>Only tracked, non-sensitive text files can be read. No shell or write permission is granted. Revoke anytime; archived agents retain access until revoked.</small>
+                onClick={() => void act("access-revoke", { agentId: selectedAgent.id })}>Revoke access</button>
+            </div> : !selectedAgent.accessRequest && !selectedAgent.archived ?
+              <button type="button" disabled={lifecycleBusy(selectedAgent)}
+                onClick={() => void act("access-request", { agentId: selectedAgent.id })}>
+                Guided repository access…</button> : null}
+            <small>Ask this agent to request repository access for a task. If it only reports a missing repo, use Guided access. Reads use tracked, bounded text only; shell/writes always need separate per-call approval.</small>
           </section>}
+          {selectedAgent?.accessRequest && <form className="permission-card access-card" role="group"
+            aria-label={`Repository access request from ${selectedActor?.name ?? "agent"}`}
+            onSubmit={event => {
+              event.preventDefault();
+              void act("access-decision", { agentId: selectedAgent.id, id: selectedAgent.accessRequest!.id,
+                choice: accessChoice, path: repoPath.trim() });
+            }}>
+            <strong>{selectedActor?.name} requests {selectedAgent.accessRequest.scope} access</strong>
+            <span>Hint: {selectedAgent.accessRequest.repoHint || "Choose a local Git repo"} · {selectedAgent.accessRequest.purpose}</span>
+            <label htmlFor="repo-path">Choose an absolute local Git root for this agent only</label>
+            <input id="repo-path" list="known-repositories" type="text" value={repoPath}
+              onChange={event => setRepoPath(event.target.value)} placeholder="/absolute/path/to/local/git-repo"
+              aria-label="Absolute local Git repository root" />
+            <datalist id="known-repositories">{(sdkRoom?.knownRepositories ?? []).map(path => <option key={path} value={path} />)}</datalist>
+            <div className="access-scopes" role="group" aria-label="Repository scope">
+              {([["task", "Read for this task"], ["session", "Read for this agent session"],
+                ...(selectedAgent.accessRequest.scope === "edit" ? [["edit", "Edit in isolated worktree"]] : [])] as const).map(([scope, label]) =>
+                <label key={scope}><input type="radio" name="access-scope" checked={accessChoice === scope}
+                  onChange={() => setAccessChoice(scope as "task" | "session" | "edit")} />{label}</label>)}
+            </div>
+            <div className="permission-buttons">
+              <button type="button" onClick={() => void act("access-decision", {
+                agentId: selectedAgent.id, id: selectedAgent.accessRequest!.id, choice: "deny" })}>Deny</button>
+              <button type="submit" disabled={!repoPath.trim()}>Grant selected scope</button>
+            </div>
+            <small>Read scopes use the guarded tool. Edit creates a branch/worktree, not an OS sandbox.
+              No shell/write is automatically approved. Agent requests expire after 90 seconds; grants do not.</small>
+          </form>}
           {selectedAgent?.review && !selectedAgent.archived && <div className="permission-card" role="alertdialog"
             aria-label={`Tool permission request for ${selectedActor?.name ?? "agent"}`}>
             <strong>{selectedActor?.name} · permission needed · {selectedAgent.review.kind}</strong>
@@ -799,7 +883,7 @@ function LiveOffice() {
               <button type="button" onClick={() => void act("decision", { agentId: selectedAgent.id, id: selectedAgent.review!.id, allow: false })}>Deny</button>
               <button type="button" onClick={() => void act("decision", { agentId: selectedAgent.id, id: selectedAgent.review!.id, allow: true })}>Allow once</button>
             </div>
-            <small>Expires in 90 seconds. Your workspace is not an OS sandbox.</small>
+            <small>Expires in 90 seconds. Worktrees are not OS sandboxes; inspect paths and commands before allowing once.</small>
           </div>}
           {selectedAgent?.archived && <p className="archived-chat-notice">Archived · open Agents to restore this agent before sending a message.</p>}
           {selectedAgent?.phase === "error" && !selectedAgent.archived && <button type="button" className="focus-button" onClick={() => void act("retry", {})}>Retry agent connection</button>}
@@ -847,6 +931,8 @@ function LiveOffice() {
           <p id="send-home-description">This deletes this agent’s SDK session and its local conversation record,
             then removes its sprite. It cannot be undone. Other agents are not affected.</p>
           <p>The working files stay untouched at <code>{confirmAgent.workspace}</code>.</p>
+          {(sdkRoom?.worktrees ?? []).filter(tree => tree.agentId === confirmAgent.id).map(tree =>
+            <p key={tree.path}>The Git worktree and branch <code>{tree.branch}</code> stay at <code>{tree.path}</code>.</p>)}
           <label className="send-home-acknowledge">
             <input ref={confirmCheckboxRef} type="checkbox" checked={confirmChecked}
               disabled={confirmSubmitting} onChange={event => setConfirmChecked(event.target.checked)} />

@@ -10,6 +10,18 @@ const workers = [
   { coat: "#b29acb", shade: "#80759f", deep: "#60577f", hair: "#65516a", hairLight: "#9e7887", skin: "#c99074", skinLight: "#eab997", accent: "#f5c39b" },
   { coat: "#d99683", shade: "#ab727d", deep: "#755d78", hair: "#34374f", hairLight: "#65647b", skin: "#aa745b", skinLight: "#d4a27d", accent: "#d5efbc" },
   { coat: "#d9bc78", shade: "#a78673", deep: "#786b78", hair: "#a87962", hairLight: "#d2a477", skin: "#ddab85", skinLight: "#f7caa3", accent: "#a7ddd1" },
+  { coat: "#86a9cf", shade: "#617fa9", deep: "#40577e", hair: "#36394d", hairLight: "#656a82", skin: "#b98069", skinLight: "#d9a089", accent: "#e7bf84" },
+  { coat: "#e1a7bd", shade: "#b3779c", deep: "#865a7e", hair: "#5b3c40", hairLight: "#996166", skin: "#e4b998", skinLight: "#f6d2af", accent: "#93d7ba" },
+  { coat: "#85c5ad", shade: "#568e81", deep: "#426b72", hair: "#252e42", hairLight: "#546378", skin: "#9f654e", skinLight: "#cc9070", accent: "#f4c899" },
+  { coat: "#d7ae70", shade: "#ab795f", deep: "#794d56", hair: "#594256", hairLight: "#96728d", skin: "#c99278", skinLight: "#e6b696", accent: "#b9e2e7" },
+  { coat: "#9e98d9", shade: "#7778a9", deep: "#565b86", hair: "#6c4738", hairLight: "#aa7857", skin: "#dda98a", skinLight: "#f2c9a6", accent: "#f5db82" },
+  { coat: "#cb8d7b", shade: "#a16868", deep: "#765867", hair: "#2c3037", hairLight: "#636975", skin: "#8f604c", skinLight: "#bb866a", accent: "#a9d3ea" },
+  { coat: "#9cbd83", shade: "#6f946d", deep: "#506f61", hair: "#936854", hairLight: "#c5916a", skin: "#ebbd9a", skinLight: "#f8d6ac", accent: "#d8a7db" },
+  { coat: "#bd90bb", shade: "#956d9e", deep: "#685677", hair: "#3e3943", hairLight: "#746978", skin: "#bd8665", skinLight: "#e1a582", accent: "#8be0d1" },
+  { coat: "#88c4cb", shade: "#5b93a7", deep: "#44677d", hair: "#574652", hairLight: "#967083", skin: "#d99d80", skinLight: "#f1c4a0", accent: "#f2c47d" },
+  { coat: "#d7a18d", shade: "#ac7c80", deep: "#785f7f", hair: "#42343d", hairLight: "#77606c", skin: "#9a6a51", skinLight: "#c99172", accent: "#b9df89" },
+  { coat: "#aec581", shade: "#829b65", deep: "#5a765a", hair: "#7a5650", hairLight: "#b08575", skin: "#e1ab87", skinLight: "#f4c9a5", accent: "#e3b2d8" },
+  { coat: "#818ec4", shade: "#616ba0", deep: "#434e7a", hair: "#493b31", hairLight: "#897057", skin: "#c58d6b", skinLight: "#e7b08b", accent: "#eda7a8" },
 ];
 const outline = "#2d3049";
 
@@ -194,6 +206,26 @@ export function agentArt(id: number): AgentArt {
     coffee: draw("coffee"),
     sitting: draw("sitting"),
   };
+}
+
+const portraits = new Map<number, string>();
+export function agentPortrait(id: number): string {
+  const cached = portraits.get(id);
+  if (cached) return cached;
+  const source = document.createElement("canvas");
+  source.width = 32; source.height = 40;
+  const sourceContext = source.getContext("2d");
+  if (!sourceContext) throw new Error("Canvas 2D is required for agent portraits.");
+  drawAgent(sourceContext, id, "idle", "right");
+  const portrait = document.createElement("canvas");
+  portrait.width = portrait.height = 48;
+  const context = portrait.getContext("2d");
+  if (!context) throw new Error("Canvas 2D is required for agent portraits.");
+  context.imageSmoothingEnabled = false;
+  context.drawImage(source, 4, 1, 24, 24, 0, 0, 48, 48);
+  const image = portrait.toDataURL("image/png");
+  portraits.set(id, image);
+  return image;
 }
 
 export function coffeeCounterArt(variant: "game" | "live" = "game"): THREE.CanvasTexture {

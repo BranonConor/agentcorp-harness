@@ -1,7 +1,8 @@
 import { execFile, spawn } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
-import { lstat, open, realpath } from "node:fs/promises";
-import { basename, isAbsolute, resolve, sep } from "node:path";
+import { lstat, mkdir, open, realpath } from "node:fs/promises";
+import { basename, isAbsolute, join, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { Tool } from "@github/copilot-sdk";
 
@@ -9,7 +10,38 @@ const git = promisify(execFile);
 const MAX_FILE = 64 * 1024;
 const forbidden = /(^\.|^node_modules$|^vendor$|^dist$|^build$|^(?:private|secrets?|credentials?|tokens?)(?:[._-]|$)|^id_(?:rsa|ed25519)(?:[._-]|$)|\.env(?:\.|$)|\.(?:pem|p12|pfx|key|keystore)$)/i;
 
-export type RepositoryGrant = { path: string; name: string };
+export type RepositoryGrant = { path: string; name: string; scope?: "task" | "session" | "edit"; worktree?: { path: string; branch: string } };
+export type AccessIntent = { repoHint: string; purpose: string; scope: "read" | "edit" };
+
+export async function createResearchWorktree(root: string, grant: RepositoryGrant, agentId: string): Promise<RepositoryGrant> {
+  const checked = await validateRepository(grant.path);
+  if (checked.path !== grant.path) throw new Error("Repository root changed; refusing to create a worktree.");
+  const branch = `agentcorp/${agentId}/${randomUUID()}`;
+  const parent = join(root, agentId);
+  await mkdir(parent, { recursive: true });
+  if (await realpath(parent) !== parent) throw new Error("Worktree parent must not be a symlink.");
+  const destination = join(parent, branch.split("/").at(-1)!);
+  await git("git", ["-C", grant.path, "worktree", "add", "-b", branch, destination, "HEAD"], { timeout: 15000 });
+  const actual = await realpath(destination);
+  if (actual !== destination) throw new Error(`Worktree was created at ${actual}, not the expected path. Inspect it manually; no files were deleted.`);
+  return { ...checked, scope: "edit", worktree: { path: actual, branch } };
+}
+
+export async function validateResearchWorktree(grant: RepositoryGrant): Promise<void> {
+  const tree = grant.worktree;
+  if (!tree) return;
+  if (await realpath(tree.path) !== tree.path) throw new Error("Isolated worktree moved or became a symlink; refusing to resume.");
+  if ((await validateRepository(tree.path)).path !== tree.path) throw new Error("Isolated worktree is no longer a Git worktree.");
+  const [original, attached, branch] = await Promise.all([
+    git("git", ["-C", grant.path, "rev-parse", "--path-format=absolute", "--git-common-dir"], { timeout: 5000 }),
+    git("git", ["-C", tree.path, "rev-parse", "--path-format=absolute", "--git-common-dir"], { timeout: 5000 }),
+    git("git", ["-C", tree.path, "symbolic-ref", "--short", "HEAD"], { timeout: 5000 })
+  ]);
+  if (await realpath(original.stdout.trim()) !== await realpath(attached.stdout.trim()) ||
+    branch.stdout.trim() !== tree.branch) {
+    throw new Error("Saved worktree no longer belongs to its approved repository/branch; refusing to resume.");
+  }
+}
 
 export async function validateRepository(path: string): Promise<RepositoryGrant> {
   if (!isAbsolute(path)) throw new Error("Enter an absolute path to a local Git repository.");
@@ -59,6 +91,7 @@ async function tracked(root: string): Promise<string[]> {
 }
 
 export async function researchRepository(grant: RepositoryGrant, action: string, path: string): Promise<string> {
+  if (await realpath(grant.path) !== grant.path) throw new Error("Granted repository moved or became a symlink; access revoked until reselected.");
   const relativePath = safeRelative(path);
   const files = await tracked(grant.path);
   if (action === "list") {
@@ -98,10 +131,10 @@ export async function researchRepository(grant: RepositoryGrant, action: string,
   }
 }
 
-export function repositoryTool(grant: RepositoryGrant): Tool {
+export function repositoryTool(getGrant: () => RepositoryGrant | undefined): Tool {
   return {
     name: "research_attached_repository",
-    description: `Read-only research in the user's explicitly attached Git repository "${grant.name}". Use action=list with path="" to discover root entries and list a directory's path to navigate; use action=read with a relative tracked file path. This cannot access ignored, hidden, secret-like, symlinked, binary or oversized files; it cannot execute commands or write files. This is distinct from creating office agents.`,
+    description: "Read tracked files in this agent's explicitly authorized Git repository. Use action=list with path=\"\" to discover root entries, and action=read with a relative tracked file path. If access is not granted, call request_repository_access. This tool cannot read ignored, hidden, secret-like, symlinked, binary or oversized files or write anything.",
     parameters: {
       type: "object",
       properties: { action: { type: "string", enum: ["list", "read"] }, path: { type: "string" } },
@@ -111,7 +144,33 @@ export function repositoryTool(grant: RepositoryGrant): Tool {
     handler: async (args: unknown) => {
       if (!args || typeof args !== "object" || !("action" in args) || !("path" in args) ||
         typeof args.action !== "string" || typeof args.path !== "string") throw new Error("Invalid research request.");
-      return researchRepository(grant, args.action, args.path);
+      const grant = getGrant();
+      if (!grant) throw new Error("This agent has no active repository research grant. Request access first.");
+      return researchRepository(grant.worktree ? { ...grant, path: grant.worktree.path } : grant, args.action, args.path);
+    }
+  };
+}
+
+export function repositoryRequestTool(request: (intent: AccessIntent) => Promise<string>): Tool {
+  return {
+    name: "request_repository_access",
+    description: "Ask the local user for access to a Git repository when a task needs one. Provide a repository hint/name, specific purpose, and intended scope read or edit. Never guess a path or claim access before the user chooses a repository and approves. Edit requests create a separate Git worktree; all shell/write calls still require individual permission.",
+    parameters: {
+      type: "object",
+      properties: {
+        repoHint: { type: "string" }, purpose: { type: "string" },
+        scope: { type: "string", enum: ["read", "edit"] }
+      },
+      required: ["repoHint", "purpose", "scope"], additionalProperties: false
+    },
+    handler: async (args: unknown) => {
+      if (!args || typeof args !== "object" || !("repoHint" in args) || !("purpose" in args) || !("scope" in args) ||
+        typeof args.repoHint !== "string" || typeof args.purpose !== "string" ||
+        (args.scope !== "read" && args.scope !== "edit") ||
+        args.repoHint.length > 150 || !args.repoHint.trim() || args.purpose.length > 500 || !args.purpose.trim()) {
+        throw new Error("Provide a repository hint, purpose, and read/edit scope.");
+      }
+      return request({ repoHint: args.repoHint, purpose: args.purpose, scope: args.scope });
     }
   };
 }
