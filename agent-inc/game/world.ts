@@ -325,6 +325,8 @@ export type World = {
   capturePositions: () => void;
   render: (elapsed: number, previewOffset: number, alpha: number, advanced: boolean) => void;
   focusAgent: (index: number | null) => void;
+  projectDesk: (index: number) => { x: number; y: number } | null;
+  projectAgent: (index: number) => { x: number; y: number } | null;
   dispose: () => void;
 };
 
@@ -1081,6 +1083,12 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
   let lastPreviewOffset = 0;
   let lastRoomKey = "";
   let lastVisibleDesks = -1;
+  const projected = new THREE.Vector3();
+  const projectPoint = (x: number, y: number, z: number) => {
+    projected.set(x, y, z).project(camera);
+    if (projected.z < -1 || projected.z > 1) return null;
+    return { x: (projected.x + 1) * host.clientWidth / 2, y: (1 - projected.y) * host.clientHeight / 2 };
+  };
 
   return {
     capturePositions() {
@@ -1097,6 +1105,16 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
       if (next !== null) returningView = null;
       selectedAgent = next;
       focusIndex = selectedAgent;
+    },
+    projectDesk(index) {
+      const desk = stationPositions[index];
+      return desk && index < liveDeskCount(simulation.progress.capacity + 1) ?
+        projectPoint(desk.x, 1.4, desk.z) : null;
+    },
+    projectAgent(index) {
+      const agent = simulation.agents[index];
+      return agent && index < simulation.progress.capacity && agent.x < 50 ?
+        projectPoint(agent.x, 1.15, agent.z) : null;
     },
     render(elapsed: number, previewOffset: number, alpha: number, advanced: boolean) {
       const now = performance.now() / 1000;
@@ -1214,7 +1232,7 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
       contextRoom.visible = !isLive && simulation.progress.context;
       lockedContext.visible = !isLive && !simulation.progress.context;
       if (isLive) {
-        const count = liveDeskCount(simulation.progress.capacity);
+        const count = liveDeskCount(simulation.progress.capacity + 1);
         if (count !== lastVisibleDesks) {
           stations.forEach((station, index) => { station.visible = index < count; });
           host.dataset.visibleDesks = String(count);

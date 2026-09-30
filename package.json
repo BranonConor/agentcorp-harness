@@ -7,7 +7,7 @@
   "scripts": {
     "build": "vite build",
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test tests/*.test.ts",
+    "test": "node --import tsx --test tests/*.test.ts tests/*.test.tsx",
     "dev": "npm run build && tsx server/main.ts",
     "start": "tsx server/main.ts"
   },
@@ -15,6 +15,8 @@
     "@github/copilot-sdk": "1.0.15",
     "react": "19.3.0",
     "react-dom": "19.3.0",
+    "react-markdown": "^10.1.0",
+    "remark-gfm": "^4.0.1",
     "three": "0.180.0"
   },
   "devDependencies": {

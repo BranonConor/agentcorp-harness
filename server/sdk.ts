@@ -1,6 +1,7 @@
 import { BuiltInTools, CopilotClient, ToolSet, type PermissionRequest, type PermissionRequestResult, type SessionEvent } from "@github/copilot-sdk";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { mkdir, realpath, writeFile } from "node:fs/promises";
 import type { Adapter, LiveSession } from "./types.js";
 
 export class SdkAdapter implements Adapter {
@@ -36,6 +37,15 @@ export class SdkAdapter implements Adapter {
     const status = await (await this.ready()).getAuthStatus();
     if (!status.isAuthenticated) throw new Error(`GitHub Copilot CLI is not signed in. Run "copilot login" in your terminal, then click Retry connection. ${status.statusMessage ?? ""}`.trim());
   }
+  async prepareWorkspace(root: string, agentId: string): Promise<string> {
+    const parent = join(root, "agents");
+    await mkdir(parent, { recursive: true });
+    if (await realpath(parent) !== parent) throw new Error("Agent folder parent must not be a symlink.");
+    const folder = join(parent, agentId);
+    await mkdir(folder);
+    await writeFile(join(folder, ".deskbound-workspace"), "AgentCorp dedicated agent working directory\n", { flag: "wx" });
+    return folder;
+  }
   async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string): Promise<LiveSession> {
     const client = await this.ready();
     const session = await client.createSession({
@@ -51,6 +61,7 @@ export class SdkAdapter implements Adapter {
   }
 
   async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>): Promise<LiveSession> {
+    if (await realpath(workspace) !== workspace) throw new Error("Agent working directory is no longer the selected directory; refusing to resume.");
     const client = await this.ready();
     const session = await client.resumeSession(id, {
       workingDirectory: workspace,

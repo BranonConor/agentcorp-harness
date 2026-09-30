@@ -1,9 +1,9 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import "../../agent-inc/app/styles.css";
 import "../live.css";
 import "../sdk-chat.css";
-import type { Room as SdkRoom } from "../../server/types";
+import { MAX_AGENTS, type Room as SdkRoom } from "../../server/types";
 import {
   COFFEE_SPOTS, DESKS, initialProgress, Simulation,
 } from "../../agent-inc/game/simulation";
@@ -17,6 +17,7 @@ import { AGENTCORP_LETTERS, AGENTCORP_MARK, AGENTCORP_WORDMARK } from "../../age
 import { createWorld } from "../../agent-inc/game/world";
 import { noticeActivityForActor, roomActors } from "./room";
 import type { Actor, Room as OfficeRoom, Status } from "./room";
+import { SafeMarkdown } from "./markdown";
 
 const LIVE_DESKS = [...DESKS, ...EXTRA_DESKS];
 const LIVE_COFFEE_SPOTS = COFFEE_SPOTS.map(({ x }) => ({ x, z: LIVE_COFFEE_Z + 0.75 }));
@@ -28,27 +29,34 @@ const wordmarkPaths = [...AGENTCORP_WORDMARK].map((letter, index) =>
   ).join(""));
 
 function officeRoom(room: SdkRoom | null): OfficeRoom {
-  const agent = room?.agent;
-  if (!agent) return { currentSessionId: "", sessions: [] };
-  const status: Status = agent.phase === "working" ? "tool" :
-    agent.phase === "permission" ? "blocked" :
-    agent.phase === "thinking" ? "thinking" :
-    agent.phase === "idle" ? "idle" : "offline";
+  if (!room) return { currentSessionId: "", sessions: [] };
   return {
-    currentSessionId: agent.sessionId,
-    sessions: [{
-      sessionId: agent.sessionId, title: "Your SDK session",
+    currentSessionId: "",
+    sessions: room.agents.map(agent => {
+      const status: Status = agent.phase === "working" ? "tool" :
+        agent.phase === "permission" ? "blocked" :
+        agent.phase === "thinking" ? "thinking" :
+        agent.phase === "idle" ? "idle" : "offline";
+      return {
+      sessionId: agent.sessionId,
       status, activity: agent.activity, tools: [],
       subagents: [], messages: agent.messages.length,
       ...(status === "tool" ? { recentTool: { kind: "Working" as const, at: Date.now() } } : {}),
       events: agent.messages.slice(-6).map((message, index) => ({
         kind: "message" as const,
         label: message.role === "user" ? "Message sent" : message.pending ? "Response streaming" : "Assistant replied",
-        at: index
+        at: agent.updatedAt + index
       })),
-      updatedAt: Date.now(), seenAt: Date.now()
-    }]
+      updatedAt: agent.updatedAt, seenAt: agent.createdAt
+    }; })
   };
+}
+
+function deskActors(room: SdkRoom): (Actor | null)[] {
+  const bySession = new Map(roomActors(officeRoom(room)).map(actor => [actor.key, actor]));
+  const slots: (Actor | null)[] = Array.from({ length: Math.max(0, ...room.agents.map(agent => agent.deskIndex + 1)) }, () => null);
+  for (const agent of room.agents) slots[agent.deskIndex] = bySession.get(agent.sessionId) ?? null;
+  return slots;
 }
 
 async function post(path: string, body: Record<string, unknown>): Promise<SdkRoom> {
@@ -79,16 +87,25 @@ function makeScene() {
   return scene;
 }
 
-function applyRoom(scene: Simulation, actors: Actor[], occupied: boolean[]) {
+function applyRoom(scene: Simulation, actors: (Actor | null)[], occupied: boolean[]) {
   const shown = actors.slice(0, MAX_LIVE_DESKS);
   while (scene.agents.length < shown.length) scene.agents.push(makeAgent(scene.agents.length));
   scene.agents.length = Math.max(MIN_LIVE_DESKS, shown.length);
   scene.progress.capacity = shown.length;
   scene.requests = [];
   const loungeSpots = assignLoungeSpots(shown.slice(MIN_LIVE_DESKS).map((actor) =>
-    actor.status === "idle" || actor.status === "offline"));
+    actor?.status === "idle" || actor?.status === "offline"));
   shown.forEach((actor, id) => {
     const agent = scene.agents[id];
+    if (!actor) {
+      occupied[id] = false;
+      agent.x = agent.z = 100;
+      agent.target = { x: 100, z: 100 };
+      agent.route = [];
+      agent.taskId = undefined;
+      agent.state = "idle";
+      return;
+    }
     const busy = actor.status !== "idle" && actor.status !== "offline";
     const destination = busy ? LIVE_DESKS[id] :
       id < MIN_LIVE_DESKS ? LIVE_COFFEE_SPOTS[id] : loungeSpots[id - MIN_LIVE_DESKS];
@@ -154,7 +171,7 @@ function LiveOffice() {
   const [sdkRoom, setSdkRoom] = useState<SdkRoom | null>(null);
   const [connection, setConnection] = useState("Connecting to local Copilot SDK…");
   const [panelOpen, setPanelOpen] = useState(false);
-  const [tab, setTab] = useState<"office" | "chat">("office");
+  const [tab, setTab] = useState<"office" | "conversations">("office");
   const [feedOpen, setFeedOpen] = useState(false);
   const [previewOffset, setPreviewOffset] = useState(0);
   const [selected, setSelected] = useState("");
@@ -166,31 +183,36 @@ function LiveOffice() {
   const activityClose = useRef<HTMLButtonElement>(null);
   const sceneRef = useRef<Simulation | null>(null);
   const worldRef = useRef<ReturnType<typeof createWorld> | null>(null);
-  const actorsRef = useRef<Actor[]>([]);
-  const selectedCard = useRef<HTMLDivElement>(null);
+  const actorsRef = useRef<(Actor | null)[]>([]);
+  const chatScroll = useRef<HTMLDivElement>(null);
+  const followTail = useRef(true);
+  const seenReviews = useRef(new Set<string>());
   const focusedKey = useRef("");
   const selectedRef = useRef("");
   const returnFocus = useRef(false);
   const previewRef = useRef(0);
   const roomRef = useRef<SdkRoom | null>(null);
-  const messagesEnd = useRef<HTMLDivElement>(null);
   const room = officeRoom(sdkRoom);
 
   const updateRoom = (next: SdkRoom) => {
     if (roomRef.current && next.revision < roomRef.current.revision) return;
     roomRef.current = next;
     setSdkRoom(next);
-    if (next.agent?.review) {
-      setPanelOpen(true);
-      setTab("chat");
+    for (const agent of next.agents) {
+      if (agent.review && !seenReviews.current.has(agent.review.id)) {
+        seenReviews.current.add(agent.review.id);
+        selectActor(agent.sessionId);
+      }
     }
   };
-  const act = async (path: string, body: Record<string, unknown>) => {
+  const act = async (path: string, body: Record<string, unknown>): Promise<boolean> => {
     try {
       setActionError("");
       updateRoom(await post(path, body));
+      return true;
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
+      return false;
     }
   };
 
@@ -204,6 +226,10 @@ function LiveOffice() {
     worldRef.current?.focusAgent(null);
     clearSelection();
   };
+  const backToActivity = () => {
+    unfocusActor();
+    setTab("conversations");
+  };
   const closeActivity = () => {
     unfocusActor();
     returnFocus.current = true;
@@ -211,18 +237,14 @@ function LiveOffice() {
   };
 
   const selectActor = (key: string) => {
-    if (selectedRef.current === key) {
-      unfocusActor();
-      return;
-    }
-    const index = actorsRef.current.findIndex((actor) => actor.key === key);
+    const index = actorsRef.current.findIndex((actor) => actor?.key === key);
     if (index < 0 || index >= MAX_LIVE_DESKS) throw new Error(`Worker has no desk: ${key}`);
     selectedRef.current = key;
     worldRef.current?.focusAgent(index);
     focusedKey.current = `${key}:${index}`;
     setSelected(key);
     setPanelOpen(true);
-    setTab("chat");
+    setTab("conversations");
   };
 
   useEffect(() => {
@@ -238,7 +260,8 @@ function LiveOffice() {
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        closeActivity();
+        if (selectedRef.current) backToActivity();
+        else closeActivity();
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -246,19 +269,19 @@ function LiveOffice() {
       window.clearTimeout(focusTimer);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [panelOpen]);
+  }, [panelOpen, selected]);
 
-  useEffect(() => {
-    if (panelOpen && tab === "chat") {
-      selectedCard.current?.scrollIntoView({
-        block: "nearest", behavior: matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
-      });
-    }
-  }, [selected, panelOpen, tab]);
+  useLayoutEffect(() => {
+    if (!panelOpen || !selected) return;
+    followTail.current = true;
+    const scroll = chatScroll.current;
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+  }, [selected, panelOpen]);
 
-  useEffect(() => {
-    if (panelOpen && tab === "chat") messagesEnd.current?.scrollIntoView({ block: "end" });
-  }, [sdkRoom?.revision, panelOpen, tab]);
+  useLayoutEffect(() => {
+    const scroll = chatScroll.current;
+    if (scroll && selected && followTail.current) scroll.scrollTop = scroll.scrollHeight;
+  }, [sdkRoom?.revision, selected]);
 
   useEffect(() => {
     if (!host.current) return;
@@ -276,15 +299,6 @@ function LiveOffice() {
         onAgentSelect(index) {
           const actor = actorsRef.current[index];
           if (actor) selectActor(actor.key);
-        },
-        onEmptySelect(clientX, clientY) {
-          if (roomRef.current?.agent || !roomRef.current?.connected) return;
-          const rect = host.current?.getBoundingClientRect();
-          if (!rect) return;
-          void act("create", {
-            x: Math.min(100, Math.max(0, (clientX - rect.left) / rect.width * 100)),
-            y: Math.min(100, Math.max(0, (clientY - rect.top) / rect.height * 100))
-          });
         },
         onFocusCleared() {
           clearSelection();
@@ -306,7 +320,7 @@ function LiveOffice() {
         if (typeof update.revision !== "number" || typeof update.workspace !== "string") {
           throw new Error("Invalid SDK office status");
         }
-        const nextActors = roomActors(officeRoom(update));
+        const nextActors = deskActors(update);
         actorsRef.current = nextActors;
         world?.capturePositions();
         applyRoom(scene, nextActors, occupied);
@@ -323,7 +337,7 @@ function LiveOffice() {
       if (!response.ok) throw new Error(`Local server returned ${response.status}`);
       const initial = await response.json() as SdkRoom;
       if (!roomRef.current || initial.revision >= roomRef.current.revision) {
-        actorsRef.current = roomActors(officeRoom(initial));
+        actorsRef.current = deskActors(initial);
         world?.capturePositions();
         applyRoom(scene, actorsRef.current, occupied);
         updateRoom(initial);
@@ -354,6 +368,24 @@ function LiveOffice() {
         }
         animationTime += elapsed;
         world?.render(animationTime, previewRef.current, accumulator / STEP, advanced);
+        if (world && host.current) {
+          host.current.querySelectorAll<HTMLButtonElement>("[data-desk-index]").forEach(button => {
+            const position = world.projectDesk(Number(button.dataset.deskIndex));
+            button.hidden = !position;
+            if (position) {
+              button.style.left = `${position.x}px`;
+              button.style.top = `${position.y}px`;
+            }
+          });
+          host.current.querySelectorAll<HTMLButtonElement>("[data-agent-desk]").forEach(button => {
+            const position = world.projectAgent(Number(button.dataset.agentDesk));
+            button.hidden = !position;
+            if (position) {
+              button.style.left = `${position.x}px`;
+              button.style.top = `${position.y}px`;
+            }
+          });
+        }
       }
       raf = requestAnimationFrame(frame);
     };
@@ -370,26 +402,30 @@ function LiveOffice() {
   }, []);
 
   const actors = roomActors(room);
-  const deskCount = liveDeskCount(actors.length);
+  const deskCount = liveDeskCount(Math.max(0, ...(sdkRoom?.agents.map(agent => agent.deskIndex + 2) ?? [])));
+  const firstEmptyDesk = Array.from({ length: MAX_AGENTS }, (_, index) => index)
+    .find(index => !sdkRoom?.agents.some(agent => agent.deskIndex === index));
   const working = actors.filter((actor) => actor.status === "thinking" || actor.status === "tool").length;
   const idle = actors.filter((actor) => actor.status === "idle").length;
   const blocked = actors.filter((actor) => actor.status === "blocked").length;
-  const messages = sdkRoom?.agent?.messages.length ?? 0;
+  const messages = sdkRoom?.agents.reduce((sum, agent) => sum + agent.messages.length, 0) ?? 0;
   const connected = sdkRoom?.connected === true && connection === connectedStatus;
   const signals = room.sessions.flatMap((session) => (session.events ?? []).map((event, index) => ({
-    ...event, owner: actors[0]?.name || "Agent",
+    ...event, owner: actors.find(actor => actor.key === session.sessionId)?.name || "Agent",
     key: `${session.sessionId}:${event.at}:${index}`,
   }))).reverse().slice(0, 8);
-  if (sdkRoom?.agent && sdkRoom.agent.phase !== "idle") {
+  for (const agent of sdkRoom?.agents ?? []) if (agent.phase !== "idle") {
     signals.unshift({
-      kind: sdkRoom.agent.phase === "error" ? "error" : "tool",
-      label: sdkRoom.agent.activity,
-      at: Date.now(), owner: actors[0]?.name || "Agent",
-      key: `activity:${sdkRoom.agent.phase}:${sdkRoom.revision}`
+      kind: agent.phase === "error" ? "error" : "tool",
+      label: agent.activity,
+      at: agent.updatedAt, owner: actors.find(actor => actor.key === agent.sessionId)?.name || "Agent",
+      key: `activity:${agent.id}:${agent.phase}:${sdkRoom?.revision}`
     });
   }
+  const selectedAgent = sdkRoom?.agents.find(agent => agent.sessionId === selected);
+  const selectedActor = actors.find(actor => actor.key === selected);
   useEffect(() => {
-    const index = actors.findIndex((actor) => actor.key === selected);
+    const index = actorsRef.current.findIndex((actor) => actor?.key === selected);
     if (selected && index < 0) {
       unfocusActor();
       return;
@@ -399,7 +435,7 @@ function LiveOffice() {
       worldRef.current?.focusAgent(index >= 0 && index < MAX_LIVE_DESKS ? index : null);
       focusedKey.current = key;
     }
-  }, [room, selected]);
+  }, [sdkRoom?.revision, selected]);
   const daylight = sampleDaylight(sceneRef.current?.time ?? 0, previewOffset);
   const previewLight = () => {
     previewRef.current = (previewRef.current + 0.25) % 1;
@@ -441,6 +477,10 @@ function LiveOffice() {
           <div className="stat"><span className="stat-label">Sessions</span><strong>{room.sessions.length}</strong></div>
           <div className="stat"><span className="stat-label">Working</span><strong>{working}</strong></div>
           <div className="stat desktop-stat"><span className="stat-label">Messages</span><strong>{messages}</strong></div>
+          <button type="button" className="add-agent-button" disabled={!connected || firstEmptyDesk === undefined}
+            onClick={() => firstEmptyDesk !== undefined && void act("create", { deskIndex: firstEmptyDesk })}>
+            + Add agent
+          </button>
           <button ref={activityToggle} type="button" className="system-toggle" aria-expanded={panelOpen} aria-controls="system-panel"
             onClick={() => setPanelOpen(true)}>Activity <span className="toggle-chevron" aria-hidden="true" /></button>
         </div>
@@ -449,12 +489,30 @@ function LiveOffice() {
         <section className="world-panel" aria-label="Live Copilot office">
           <div ref={host} className="world-host">
             {hover && <div className="agent-hover" style={{ left: hover.x, top: hover.y }}>{hover.name}</div>}
-            {!sdkRoom?.agent && connected && (
+            {connected && Array.from({ length: deskCount }, (_, deskIndex) =>
+              sdkRoom?.agents.some(agent => agent.deskIndex === deskIndex) ? null :
+                <button key={deskIndex} type="button" className="desk-add" data-desk-index={deskIndex}
+                  aria-label={`Add independent SDK agent at empty desk ${deskIndex + 1}`}
+                  title={`Add agent at desk ${deskIndex + 1}`}
+                  onClick={() => void act("create", { deskIndex })}>+</button>)}
+            {(sdkRoom?.agents ?? []).map(agent => {
+              const actor = actors.find(item => item.key === agent.sessionId);
+              return <button key={agent.id} type="button" className="keyboard-agent-target"
+                data-agent-desk={agent.deskIndex}
+                aria-label={`Chat with ${actor?.name ?? "agent"} at desk ${agent.deskIndex + 1}`}
+                onFocus={() => {
+                  const point = worldRef.current?.projectAgent(agent.deskIndex);
+                  if (point && actor) setHover({ name: actor.name, ...point });
+                }}
+                onBlur={() => setHover(null)}
+                onClick={() => selectActor(agent.sessionId)} />;
+            })}
+            {!sdkRoom?.agents.length && connected && (
               <div className="world-callout live-callout"><span className="callout-star">✦</span>
-                <span>Click an empty desk to invite your first SDK agent.</span>
+                <span>Click + above an empty desk to create a separate SDK agent.</span>
               </div>
             )}
-            {(blocked > 0 || working > 0) && sdkRoom?.agent && (
+            {(blocked > 0 || working > 0) && !!sdkRoom?.agents.length && (
               <div className="world-callout live-callout"><span className="callout-star">✦</span>
                 <span>{blocked ? `${blocked} worker${blocked === 1 ? "" : "s"} need attention.` :
                   `${working} worker${working === 1 ? " is" : "s are"} active.`}</span>
@@ -462,30 +520,41 @@ function LiveOffice() {
             )}
           </div>
         </section>
-        <aside id="system-panel" className={`sidebar activity-panel ${panelOpen ? "sidebar-open" : ""}`}
-          aria-label="Activity" aria-hidden={!panelOpen} inert={!panelOpen}>
+        <aside id="system-panel" className={`sidebar activity-panel ${panelOpen ? "sidebar-open" : ""} ${selectedAgent ? "chat-open" : ""}`}
+          aria-label={selectedAgent ? `${selectedActor?.name ?? "Agent"} conversation` : "Activity"}
+          aria-hidden={!panelOpen} inert={!panelOpen}>
           <div className="activity-header">
             <div className="activity-title-row">
-              <h2>{selected && actors[0] ? actors[0].name : "Activity"}</h2>
+              {selectedAgent && <button type="button" className="chat-back" onClick={backToActivity}
+                aria-label="Back to conversations">←</button>}
+              <h2>{selectedAgent ? selectedActor?.name : "Activity"}</h2>
               <button ref={activityClose} type="button" className="sidebar-close" onClick={closeActivity}
-                aria-label="Close activity">
+                aria-label={selectedAgent ? "Close conversation" : "Close activity"}>
                 <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" /></svg>
               </button>
             </div>
-            <div className="activity-summary" aria-label="Live office summary">
+            {!selectedAgent && <div className="activity-summary" aria-label="Live office summary">
               <span><strong>{room.sessions.length}</strong> {room.sessions.length === 1 ? "session" : "sessions"}</span>
               <span><strong>{working}</strong> working</span>
               <span><strong>{messages}</strong> {messages === 1 ? "message" : "messages"}</span>
-            </div>
+            </div>}
+            {selectedAgent && <p className="chat-workspace" title={selectedAgent.workspace}>
+              Desk {selectedAgent.deskIndex + 1} · {selectedAgent.workspaceKind === "root" ? "original root" : "disposable scratch folder"} · tools start in <span>{selectedAgent.workspace}</span>
+            </p>}
           </div>
-          <nav className="activity-tabs" aria-label="Activity views">
-            {([["office", "Overview"], ["chat", "Conversation"]] as const).map(([item, label]) => (
+          {!selectedAgent && <nav className="activity-tabs" aria-label="Activity views">
+            {([["office", "Overview"], ["conversations", "Conversations"]] as const).map(([item, label]) => (
               <button key={item} type="button" aria-pressed={tab === item}
                 onClick={() => setTab(item)}>{label}</button>
             ))}
-          </nav>
-          <div className={`activity-scroll ${tab === "chat" ? "conversation-scroll" : ""}`}>
-            {tab === "office" && (
+          </nav>}
+          <div ref={chatScroll} className={`activity-scroll ${selectedAgent ? "conversation-scroll" : ""}`}
+            onScroll={event => {
+              if (!selectedAgent) return;
+              const scroll = event.currentTarget;
+              followTail.current = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 70;
+            }}>
+            {!selectedAgent && tab === "office" && (
               <section className="activity-view" aria-label="Office overview">
                 <div className="activity-row activity-row-first">
                   <div className="activity-row-heading"><strong>Connection</strong>
@@ -497,56 +566,76 @@ function LiveOffice() {
                 </div>
                 <div className="activity-row">
                   <div className="activity-row-heading"><strong>The office</strong><span className="activity-tag">{deskCount} desks</span></div>
-                  <p>{sdkRoom?.agent ? "Click the pixel agent to focus the camera and open its persistent chat." :
-                    "Click an empty spot in the office to create a new SDK session and agent."}</p>
+                  <p>Click + above an empty desk (or Add agent) to create a separate SDK session. Click its pixel sprite to open its chat. A prompt to an existing agent does not create another office agent.</p>
                 </div>
                 <div className="activity-row">
-                  <div className="activity-row-heading"><strong>Tool working directory</strong><span className="activity-tag">Local only</span></div>
+                  <div className="activity-row-heading"><strong>Scratch workspace root</strong><span className="activity-tag">Local only</span></div>
                   <p className="workspace-path">{sdkRoom?.workspace || "Loading…"}</p>
-                  <p>This is not an OS sandbox. Every SDK tool request waits for one explicit permission decision.</p>
+                  <p>{sdkRoom?.agents.some(agent => agent.workspaceKind === "root") ?
+                    "The existing agent retains this root; new agents use separate disposable subfolders here." :
+                    "Each agent uses a separate disposable subfolder here."} No project is selected. Paths are not OS sandboxes; every SDK tool request waits for your decision.</p>
                 </div>
                 {sdkRoom?.error && <button type="button" className="focus-button" onClick={() => void act("retry", {})}>Retry SDK connection</button>}
               </section>
             )}
-            {tab === "chat" && (
-              <section className="activity-view conversation-view" aria-label="SDK conversation" ref={selectedCard}>
-                {sdkRoom?.agent ? <>
+            {!selectedAgent && tab === "conversations" && (
+              <section className="activity-view conversations-list" aria-label="Recent agent conversations">
+                {!(sdkRoom?.agents.length) && <p className="activity-empty">No agents yet. Click + above an empty desk to start a conversation.</p>}
+                {[...(sdkRoom?.agents ?? [])].sort((a, b) => b.updatedAt - a.updatedAt || a.deskIndex - b.deskIndex).map(agent => {
+                  const actor = actors.find(item => item.key === agent.sessionId);
+                  const last = agent.messages.at(-1);
+                  return <button type="button" className="conversation-row" key={agent.id}
+                    onClick={() => selectActor(agent.sessionId)}>
+                    <span className="worker-avatar" aria-hidden="true">{actor?.name.split(" ").map(part => part[0]).join("")}</span>
+                    <span className="conversation-row-text">
+                      <strong>{actor?.name ?? `Desk ${agent.deskIndex + 1}`}</strong>
+                      <small>{last ? `${last.role === "user" ? "You: " : ""}${last.content.slice(0, 110)}` :
+                        "New conversation · say hello"}</small>
+                      <small>Desk {agent.deskIndex + 1} · {agent.activity}</small>
+                    </span>
+                    {agent.review && <span className="activity-tag activity-tag-warning">Review</span>}
+                  </button>;
+                })}
+              </section>
+            )}
+            {selectedAgent && (
+              <section className="activity-view conversation-view" aria-label="SDK conversation">
                   <div className="conversation-person">
-                    <span className="worker-avatar" aria-hidden="true">{actors[0]?.name.split(" ").map(part => part[0]).join("")}</span>
-                    <span><strong>{actors[0]?.name}</strong><small>{sdkRoom.agent.activity}</small></span>
-                    <span className={`activity-tag status-${actors[0]?.status}`}>{sdkRoom.agent.phase}</span>
+                    <span className="worker-avatar" aria-hidden="true">{selectedActor?.name.split(" ").map(part => part[0]).join("")}</span>
+                    <span><strong>{selectedActor?.name}</strong><small>{selectedAgent.activity}</small></span>
+                    <span className={`activity-tag status-${selectedActor?.status}`}>{selectedAgent.phase}</span>
                   </div>
                   <div className="conversation-messages">
-                    {sdkRoom.agent.messages.length === 0 && <p className="activity-empty">Say hello to your new office mate.</p>}
-                    {sdkRoom.agent.messages.map(message =>
+                    {selectedAgent.messages.length === 0 && <p className="activity-empty">Say hello to your new office mate.</p>}
+                    {selectedAgent.messages.map(message =>
                       <div className={`conversation-message ${message.role}`} key={message.id}>
-                        <span>{message.role === "user" ? "YOU" : actors[0]?.name}{message.pending ? " · STREAMING" : ""}</span>
-                        <p>{message.content}</p>
+                        <span>{message.role === "user" ? "YOU" : selectedActor?.name}{message.pending ? " · STREAMING" : ""}</span>
+                        <div className="message-markdown"><SafeMarkdown content={message.content} /></div>
                       </div>)}
-                    <div ref={messagesEnd} />
                   </div>
-                </> : <p className="activity-empty">Click an empty desk to create your first agent.</p>}
               </section>
             )}
           </div>
-          {sdkRoom?.agent?.review && <div className="permission-card" role="alertdialog" aria-label="Tool permission request">
-            <strong>Permission needed · {sdkRoom.agent.review.kind}</strong>
+          {selectedAgent?.review && <div className="permission-card" role="alertdialog"
+            aria-label={`Tool permission request for ${selectedActor?.name ?? "agent"}`}>
+            <strong>{selectedActor?.name} · permission needed · {selectedAgent.review.kind}</strong>
             <span>Review the complete request before allowing this tool once.</span>
-            <pre>{sdkRoom.agent.review.detail}</pre>
+            <pre>{selectedAgent.review.detail}</pre>
             <div className="permission-buttons">
-              <button type="button" onClick={() => void act("decision", { id: sdkRoom.agent!.review!.id, allow: false })}>Deny</button>
-              <button type="button" onClick={() => void act("decision", { id: sdkRoom.agent!.review!.id, allow: true })}>Allow once</button>
+              <button type="button" onClick={() => void act("decision", { agentId: selectedAgent.id, id: selectedAgent.review!.id, allow: false })}>Deny</button>
+              <button type="button" onClick={() => void act("decision", { agentId: selectedAgent.id, id: selectedAgent.review!.id, allow: true })}>Allow once</button>
             </div>
             <small>Expires in 90 seconds. Your workspace is not an OS sandbox.</small>
           </div>}
-          {tab === "chat" && sdkRoom?.agent && <form className="conversation-composer" onSubmit={event => {
+          {selectedAgent?.phase === "error" && <button type="button" className="focus-button" onClick={() => void act("retry", {})}>Retry agent connection</button>}
+          {selectedAgent && <form className="conversation-composer" onSubmit={event => {
             event.preventDefault();
             if (!draft.trim()) return;
             const prompt = draft;
             setDraft("");
-            void act("send", { prompt });
+            void act("send", { agentId: selectedAgent.id, prompt }).then(ok => { if (!ok) setDraft(prompt); });
           }}>
-            <label htmlFor="chat-prompt">MESSAGE YOUR AGENT</label>
+            <label htmlFor="chat-prompt">MESSAGE {selectedActor?.name.toUpperCase() ?? "YOUR AGENT"}</label>
             <div><textarea id="chat-prompt" value={draft} onChange={event => setDraft(event.target.value)}
               onKeyDown={event => {
                 if (event.key === "Enter" && !event.shiftKey) {
@@ -554,8 +643,8 @@ function LiveOffice() {
                   event.currentTarget.form?.requestSubmit();
                 }
               }} rows={2} maxLength={12000} placeholder="Ask something, or start a task…"
-              disabled={!connected || ["thinking", "working", "permission"].includes(sdkRoom.agent.phase)} />
-              <button type="submit" disabled={!connected || !draft.trim() || ["thinking", "working", "permission"].includes(sdkRoom.agent.phase)} aria-label="Send message">↗</button>
+              disabled={!connected || ["thinking", "working", "permission", "error"].includes(selectedAgent.phase)} />
+              <button type="submit" disabled={!connected || !draft.trim() || ["thinking", "working", "permission", "error"].includes(selectedAgent.phase)} aria-label="Send message">↗</button>
             </div>
             <small>Enter to send · Shift+Enter for a new line</small>
           </form>}
@@ -579,7 +668,7 @@ function LiveOffice() {
         </div>
       </section>
       {sdkRoom && <div className="workspace-chip" title={sdkRoom.workspace}>
-        Tools start in <strong>{sdkRoom.workspace.split("/").at(-1)}</strong> · not an OS sandbox · approval required
+        Scratch root <strong>{sdkRoom.workspace.split("/").at(-1)}</strong> · per-agent folders · not an OS sandbox
       </div>}
       {(connection !== connectedStatus || actionError || sdkRoom?.error) && (
         <div className="storage-error" role="status">

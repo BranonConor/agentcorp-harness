@@ -1,19 +1,21 @@
 import { randomUUID } from "node:crypto";
+import { join } from "node:path";
 import type { PermissionRequest, PermissionRequestResult, SessionEvent } from "@github/copilot-sdk";
-import type { Adapter, Agent, LiveSession, Review, Room } from "./types.js";
+import { MAX_AGENTS, type Adapter, type Agent, type LiveSession, type Review, type Room } from "./types.js";
 import type { Store } from "./storage.js";
 
 const EXPIRE_MS = 90_000;
-type Pending = { resolve: (decision: PermissionRequestResult) => void; timer: NodeJS.Timeout };
+type Pending = { agentId: string; resolve: (decision: PermissionRequestResult) => void; timer: NodeJS.Timeout };
 
 export class RoomController {
   readonly state: Room;
-  private session: LiveSession | null = null;
-  private unsubscribe: (() => void) | null = null;
+  private sessions = new Map<string, LiveSession>();
+  private unsubscribers = new Map<string, () => void>();
   private listeners = new Set<(room: Room) => void>();
   private pending = new Map<string, Pending>();
   private saving: Promise<void> = Promise.resolve();
-  private creating = false;
+  private connecting: Promise<void> | null = null;
+  private creating = new Set<number>();
 
   private constructor(private readonly adapter: Adapter, private readonly store: Store, state: Room) {
     this.state = state;
@@ -21,16 +23,33 @@ export class RoomController {
 
   static async open(adapter: Adapter, store: Store, workspace: string): Promise<RoomController> {
     const saved = await store.read();
-    if (saved && saved.workspace !== workspace) throw new Error(`Saved session belongs to ${saved.workspace}. Choose that workspace or move .local/state.json aside deliberately.`);
-    const room = new RoomController(adapter, store, saved ?? { agent: null, error: null, connected: false, workspace, revision: 0 });
+    if (saved && saved.workspace !== workspace) throw new Error(`Saved sessions belong to ${saved.workspace}. Choose that workspace or move .local/state.json aside deliberately.`);
+    if (saved && !("agents" in saved) && !("agent" in saved)) throw new Error("Unrecognized saved room format; state was not changed.");
+    const now = Date.now();
+    const state: Room = saved
+      ? "agents" in saved
+        ? saved
+        : { agents: saved.agent ? [{ ...saved.agent, deskIndex: 0, workspace, workspaceKind: "root", createdAt: now, updatedAt: now }] : [], error: saved.error, connected: saved.connected, workspace, revision: saved.revision }
+      : { agents: [], error: null, connected: false, workspace, revision: 0 };
+    if (!Array.isArray(state.agents) || state.agents.length > MAX_AGENTS ||
+      state.agents.some((agent, index) => !agent.id || !agent.sessionId || !agent.workspace ||
+        !(agent.workspaceKind === "root" && agent.workspace === workspace && agent.deskIndex === 0 ||
+          agent.workspaceKind === "scratch" && /^[0-9a-f-]{36}$/.test(agent.id) &&
+          agent.workspace === join(workspace, "agents", agent.id)) ||
+        !Number.isInteger(agent.deskIndex) || agent.deskIndex < 0 || agent.deskIndex >= MAX_AGENTS ||
+        state.agents.findIndex(other => other.deskIndex === agent.deskIndex ||
+          other.id === agent.id || other.sessionId === agent.sessionId) !== index)) {
+      throw new Error("Saved agent roster is invalid; state was not changed.");
+    }
+    const room = new RoomController(adapter, store, state);
     room.state.connected = false;
     room.state.error = null;
-    if (room.state.agent) {
-      room.state.agent.review = undefined;
-      if (["thinking", "working", "permission"].includes(room.state.agent.phase)) {
-        room.state.agent.phase = "interrupted";
-        room.state.agent.activity = "Turn interrupted by restart";
-        const draft = [...room.state.agent.messages].reverse().find(message => message.role === "assistant" && message.pending);
+    for (const agent of room.state.agents) {
+      agent.review = undefined;
+      if (["thinking", "working", "permission"].includes(agent.phase)) {
+        agent.phase = "interrupted";
+        agent.activity = "Turn interrupted by restart";
+        const draft = [...agent.messages].reverse().find(message => message.role === "assistant" && message.pending);
         if (draft) draft.pending = false;
       }
     }
@@ -55,104 +74,131 @@ export class RoomController {
     await this.saving;
   }
 
-  private report(error: unknown): void {
-    this.state.error = error instanceof Error ? error.message : String(error);
-    if (this.state.agent) {
-      this.state.agent.phase = "error";
-      this.state.agent.activity = "Connection or session error";
+  private report(error: unknown, agent?: Agent): void {
+    const message = error instanceof Error ? error.message : String(error);
+    if (agent) {
+      agent.phase = "error";
+      agent.activity = message;
+      agent.updatedAt = Date.now();
+    } else {
+      this.state.error = message;
     }
     void this.publish().catch(cause => console.error("Cannot save room:", cause));
   }
 
-  async connect(): Promise<void> {
-    if (this.session && !this.state.error) return;
+  connect(): Promise<void> {
+    if (!this.connecting) {
+      this.connecting = this.connectSessions().finally(() => { this.connecting = null; });
+    }
+    return this.connecting;
+  }
+
+  private async connectSessions(): Promise<void> {
     try {
       await this.adapter.probe();
-      if (this.state.agent) {
-        const agent = this.state.agent;
-        if (this.session) {
-          this.unsubscribe?.();
-          await this.session.disconnect();
-          this.session = null;
+      this.state.connected = true;
+      this.state.error = null;
+    } catch (error) {
+      this.state.connected = false;
+      this.report(error);
+      throw error;
+    }
+    for (const agent of this.state.agents) {
+      if (this.sessions.has(agent.id) && agent.phase !== "error") continue;
+      try {
+        if (this.sessions.has(agent.id)) {
+          this.unsubscribers.get(agent.id)?.();
+          await this.sessions.get(agent.id)!.disconnect();
+          this.sessions.delete(agent.id);
+          this.unsubscribers.delete(agent.id);
         }
         let session: LiveSession;
         try {
-          session = await this.adapter.resume(agent.sessionId, this.state.workspace, request => this.permission(request));
+          session = await this.adapter.resume(agent.sessionId, agent.workspace, request => this.permission(agent.id, request));
         } catch (error) {
           if (agent.messages.length !== 0 || !(error instanceof Error) ||
             !error.message.includes(`Session not found: ${agent.sessionId}`)) throw error;
-          session = await this.adapter.create(this.state.workspace, request => this.permission(request), agent.sessionId);
+          session = await this.adapter.create(agent.workspace, request => this.permission(agent.id, request), agent.sessionId);
           if (session.sessionId !== agent.sessionId) {
             await session.disconnect();
             throw new Error("SDK returned a different identity for the empty-session recovery.");
           }
           agent.activity = "Empty session restored; no messages lost";
         }
-        this.attach(session);
+        this.attach(agent.id, session);
+        if (agent.phase === "error") {
+          agent.phase = "idle";
+          if (agent.activity !== "Empty session restored; no messages lost") agent.activity = "Ready to chat";
+        }
+      } catch (error) {
+        this.report(error, agent);
       }
-      this.state.connected = true;
-      this.state.error = null;
-      if (this.state.agent?.phase === "error") {
-        this.state.agent.phase = "idle";
-        if (this.state.agent.activity !== "Empty session restored; no messages lost") this.state.agent.activity = "Ready to chat";
-      }
-      await this.publish();
-    } catch (error) {
-      this.report(error);
-      throw error;
     }
+    await this.publish();
   }
 
-  async create(x: number, y: number): Promise<void> {
-    if (this.state.agent || this.creating) throw new Error("This first slice supports one desk agent.");
-    if (!Number.isFinite(x) || !Number.isFinite(y) || x < 0 || x > 100 || y < 0 || y > 100) throw new Error("Invalid desk coordinates.");
-    this.creating = true;
+  async create(deskIndex: number): Promise<Agent> {
+    if (!Number.isInteger(deskIndex) || deskIndex < 0 || deskIndex >= MAX_AGENTS) throw new Error("Invalid desk.");
+    if (this.state.agents.length >= MAX_AGENTS) throw new Error("All office desks are occupied.");
+    if (this.state.agents.some(agent => agent.deskIndex === deskIndex) || this.creating.has(deskIndex)) throw new Error("This desk is already occupied.");
+    this.creating.add(deskIndex);
+    const id = randomUUID();
     try {
-      const session = await this.adapter.create(this.state.workspace, request => this.permission(request));
-      this.state.agent = { id: randomUUID(), x, y, sessionId: session.sessionId, phase: "idle", activity: "Ready to chat", messages: [] };
-      this.attach(session);
+      const workspace = await this.adapter.prepareWorkspace(this.state.workspace, id);
+      const session = await this.adapter.create(workspace, request => this.permission(id, request));
+      if (this.state.agents.some(agent => agent.sessionId === session.sessionId)) {
+        throw new Error("SDK returned a session identity already assigned to another agent.");
+      }
+      const now = Date.now();
+      const agent: Agent = { id, deskIndex, workspace, workspaceKind: "scratch", createdAt: now, updatedAt: now, sessionId: session.sessionId,
+        phase: "idle", activity: "Ready to chat", messages: [] };
+      this.state.agents.push(agent);
+      this.attach(id, session);
       this.state.connected = true;
       this.state.error = null;
       await this.publish();
-    } catch (error) {
-      this.report(error);
-      throw error;
+      return agent;
     } finally {
-      this.creating = false;
+      this.creating.delete(deskIndex);
     }
   }
 
-  private attach(session: LiveSession): void {
-    this.unsubscribe?.();
-    this.session = session;
-    this.unsubscribe = session.onEvent(event => {
-      try { this.event(event); } catch (error) { this.report(error); }
-    });
+  private attach(agentId: string, session: LiveSession): void {
+    this.sessions.set(agentId, session);
+    this.unsubscribers.set(agentId, session.onEvent(event => {
+      try { this.event(agentId, event); } catch (error) { this.report(error, this.agent(agentId)); }
+    }));
   }
 
-  async send(text: string): Promise<void> {
-    const agent = this.state.agent;
-    if (!agent || !this.session) throw new Error("Session unavailable. Retry connection before sending.");
+  private agent(agentId: string): Agent {
+    const agent = this.state.agents.find(item => item.id === agentId);
+    if (!agent) throw new Error("Unknown agent.");
+    return agent;
+  }
+
+  async send(agentId: string, text: string): Promise<void> {
+    const agent = this.agent(agentId);
+    const session = this.sessions.get(agentId);
+    if (!session) throw new Error("Session unavailable. Retry connection before sending.");
     const prompt = text.trim();
     if (!prompt || prompt.length > 12000) throw new Error("Prompt must contain 1–12000 characters.");
     if (["thinking", "working", "permission"].includes(agent.phase)) throw new Error("Wait for the current turn to finish.");
     agent.messages.push({ id: randomUUID(), role: "user", content: prompt });
     agent.phase = "thinking";
     agent.activity = "Thinking";
+    agent.updatedAt = Date.now();
     await this.publish();
     try {
-      await this.session.send(prompt);
+      await session.send(prompt);
     } catch (error) {
-      agent.phase = "error";
       agent.activity = "Message was not sent";
-      this.report(error);
+      this.report(error, agent);
       throw error;
     }
   }
 
-  private event(event: SessionEvent): void {
-    const agent = this.state.agent;
-    if (!agent) return;
+  private event(agentId: string, event: SessionEvent): void {
+    const agent = this.agent(agentId);
     switch (event.type) {
       case "assistant.message_delta": {
         const delta = event.data.deltaContent;
@@ -192,17 +238,17 @@ export class RoomController {
       case "session.error":
         agent.phase = "error";
         agent.activity = event.data.message || "SDK session error";
-        this.state.error = agent.activity;
         break;
       default:
         return;
     }
+    agent.updatedAt = Date.now();
     void this.publish().catch(error => console.error("Cannot save SDK event:", error));
   }
 
-  private permission(request: PermissionRequest): Promise<PermissionRequestResult> {
-    if (!this.listeners.size || !this.state.agent) return Promise.resolve({ kind: "user-not-available" });
-    if (this.state.agent.review) return Promise.resolve({ kind: "user-not-available" });
+  private permission(agentId: string, request: PermissionRequest): Promise<PermissionRequestResult> {
+    const agent = this.state.agents.find(item => item.id === agentId);
+    if (!this.listeners.size || !agent || agent.review) return Promise.resolve({ kind: "user-not-available" });
     const id = randomUUID();
     const review: Review = {
       id,
@@ -210,47 +256,53 @@ export class RoomController {
       tool: "toolName" in request ? String(request.toolName) : request.kind,
       detail: JSON.stringify(request, null, 2)
     };
-    this.state.agent.review = review;
-    this.state.agent.phase = "permission";
-    this.state.agent.activity = "Waiting for your decision";
+    agent.review = review;
+    agent.phase = "permission";
+    agent.activity = "Waiting for your decision";
+    agent.updatedAt = Date.now();
     void this.publish().catch(error => console.error("Cannot save permission request:", error));
     return new Promise(resolve => {
-      const timer = setTimeout(() => this.decide(id, false, true), EXPIRE_MS);
-      this.pending.set(id, { resolve, timer });
+      const timer = setTimeout(() => this.decide(agentId, id, false, true), EXPIRE_MS);
+      this.pending.set(id, { agentId, resolve, timer });
     });
   }
 
-  decide(id: string, allow: boolean, expired = false): void {
+  decide(agentId: string, id: string, allow: boolean, expired = false): void {
     const pending = this.pending.get(id);
-    if (!pending || this.state.agent?.review?.id !== id) throw new Error("Permission request is stale or already decided.");
+    const agent = this.state.agents.find(item => item.id === agentId);
+    if (!pending || pending.agentId !== agentId || agent?.review?.id !== id) throw new Error("Permission request is stale or belongs to another agent.");
     clearTimeout(pending.timer);
     this.pending.delete(id);
-    this.state.agent.review = undefined;
-    this.state.agent.phase = "thinking";
-    this.state.agent.activity = allow ? "Approved once; waiting for tool" : expired ? "Permission timed out" : "Tool denied";
+    agent.review = undefined;
+    agent.phase = "thinking";
+    agent.activity = allow ? "Approved once; waiting for tool" : expired ? "Permission timed out" : "Tool denied";
+    agent.updatedAt = Date.now();
     void this.publish().catch(error => console.error("Cannot save permission decision:", error));
     pending.resolve(allow ? { kind: "approve-once" } : { kind: "reject", feedback: expired ? "No human decision before timeout." : "User denied this action." });
   }
 
   private denyPending(): void {
+    if (!this.pending.size) return;
     for (const [id, pending] of this.pending) {
       clearTimeout(pending.timer);
       pending.resolve({ kind: "user-not-available" });
       this.pending.delete(id);
+      const agent = this.agent(pending.agentId);
+      agent.review = undefined;
+      agent.phase = "interrupted";
+      agent.activity = "No browser available; tool denied";
+      agent.updatedAt = Date.now();
     }
-    if (this.state.agent?.review) {
-      this.state.agent.review = undefined;
-      this.state.agent.phase = "interrupted";
-      this.state.agent.activity = "No browser available; tool denied";
-      void this.publish().catch(error => console.error("Cannot save permission disconnect:", error));
-    }
+    void this.publish().catch(error => console.error("Cannot save permission disconnect:", error));
   }
 
   async close(): Promise<void> {
     this.denyPending();
-    this.unsubscribe?.();
+    for (const unsubscribe of this.unsubscribers.values()) unsubscribe();
     try {
-      if (this.session) await this.session.disconnect();
+      const results = await Promise.allSettled([...this.sessions.values()].map(session => session.disconnect()));
+      const failure = results.find(result => result.status === "rejected");
+      if (failure?.status === "rejected") throw failure.reason;
     } finally {
       await this.adapter.stop();
       await this.saving;

@@ -77,19 +77,20 @@ const server = createServer(async (request, response) => {
       if (url.pathname === "/api/state" && request.method === "GET") return json(response, 200, room.state);
       if (url.pathname === "/api/create" && request.method === "POST") {
         const body = await payload(request);
-        await room.create(Number(body.x), Number(body.y));
+        if (!Number.isInteger(body.deskIndex)) throw new Error("Choose an empty desk.");
+        await room.create(body.deskIndex as number);
         return json(response, 200, room.state);
       }
       if (url.pathname === "/api/send" && request.method === "POST") {
         const body = await payload(request);
-        if (typeof body.prompt !== "string") throw new Error("Prompt must be text.");
-        await room.send(body.prompt);
+        if (typeof body.prompt !== "string" || typeof body.agentId !== "string") throw new Error("Choose an agent and a text prompt.");
+        await room.send(body.agentId, body.prompt);
         return json(response, 200, room.state);
       }
       if (url.pathname === "/api/decision" && request.method === "POST") {
         const body = await payload(request);
-        if (typeof body.id !== "string" || typeof body.allow !== "boolean") throw new Error("Invalid permission decision.");
-        room.decide(body.id, body.allow);
+        if (typeof body.id !== "string" || typeof body.agentId !== "string" || typeof body.allow !== "boolean") throw new Error("Invalid permission decision.");
+        room.decide(body.agentId, body.id, body.allow);
         return json(response, 200, room.state);
       }
       if (url.pathname === "/api/retry" && request.method === "POST") {
