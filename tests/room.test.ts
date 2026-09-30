@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { execFileSync } from "node:child_process";
+import { mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { PermissionRequest, PermissionRequestResult, SessionEvent } from "@github/copilot-sdk";
 import { RoomController } from "../server/room.js";
+import type { RepositoryGrant } from "../server/repository.js";
 import { MAX_AGENTS, type Adapter, type LegacyRoom, type LiveSession, type Room } from "../server/types.js";
 import type { Store } from "../server/storage.js";
 
@@ -12,10 +17,16 @@ class MemoryStore implements Store {
 }
 class MockSession implements LiveSession {
   sent: string[] = [];
+  aborts = 0;
+  abortError: Error | null = null;
   disconnects = 0;
   handler: ((event: SessionEvent) => void) | null = null;
   constructor(readonly sessionId: string) {}
   async send(prompt: string): Promise<void> { this.sent.push(prompt); }
+  async abort(): Promise<void> {
+    if (this.abortError) throw this.abortError;
+    this.aborts++;
+  }
   onEvent(handler: (event: SessionEvent) => void): () => void {
     this.handler = handler;
     return () => { this.handler = null; };
@@ -33,27 +44,30 @@ class MockAdapter implements Adapter {
   failResume = new Set<string>();
   missing = new Set<string>();
   deleted: string[] = [];
+  grants = new Map<string, RepositoryGrant | undefined>();
   deleteError: Error | null = null;
   async probe(): Promise<void> {}
   async prepareWorkspace(root: string, agentId: string): Promise<string> {
     this.prepared.push(agentId);
     return `${root}/agents/${agentId}`;
   }
-  async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string): Promise<LiveSession> {
+  async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant): Promise<LiveSession> {
     const id = sessionId ?? `sdk-session-${this.sessions.size + 1}`;
     const session = new MockSession(id);
     this.sessions.set(id, session);
     this.workspaces.set(id, workspace);
     this.permissions.set(id, permission);
+    this.grants.set(id, repository);
     this.recreated = sessionId;
     return session;
   }
-  async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>): Promise<LiveSession> {
+  async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, repository?: RepositoryGrant): Promise<LiveSession> {
     this.resumed.push(id);
     if (this.failResume.has(id)) throw new Error("CLI temporarily unavailable");
     if (this.missing.has(id)) throw new Error(`Failed to load session events: Session not found: ${id}`);
     if (this.workspaces.get(id) !== workspace) throw new Error("Wrong agent workspace");
     this.permissions.set(id, permission);
+    this.grants.set(id, repository);
     return this.sessions.get(id)!;
   }
   async deleteSession(id: string): Promise<void> {
@@ -357,4 +371,97 @@ test("real tool lifecycle events drive only the owning sprite", async () => {
   adapter.sessions.get(a.sessionId)!.emit(event("session.idle"));
   assert.equal(a.phase, "idle");
   await room.close();
+});
+
+test("repository research grant stays per agent through archive and restart; revoke and send home remove it", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentcorp-grant-"));
+  try {
+    const resolvedRoot = await realpath(root);
+    execFileSync("git", ["init", "-q", root]);
+    await writeFile(join(root, "README.md"), "public fixture");
+    execFileSync("git", ["-C", root, "add", "README.md"]);
+    const store = new MemoryStore();
+    const adapter = new MockAdapter();
+    const room = await RoomController.open(adapter, store, "/dedicated");
+    const a = await room.create(0);
+    const b = await room.create(1);
+    await assert.rejects(room.setRepository(a.id, "/does-not-exist"), /ENOENT|not a git repository/);
+    await room.setRepository(a.id, root);
+    assert.deepEqual(a.repository, { path: resolvedRoot, name: root.split("/").at(-1) });
+    assert.equal(adapter.grants.get(b.sessionId), undefined);
+    assert.equal(adapter.grants.get(a.sessionId)?.path, resolvedRoot);
+    assert.equal(a.sessionId, adapter.sessions.get(a.sessionId)?.sessionId);
+    await room.archive(a.id);
+    await room.close();
+    const restarted = await RoomController.open(adapter, store, "/dedicated");
+    await restarted.connect();
+    assert.equal(restarted.state.agents[0].repository?.path, resolvedRoot);
+    assert.equal(adapter.grants.get(b.sessionId), undefined);
+    await restarted.restore(a.id);
+    assert.equal(adapter.grants.get(a.sessionId)?.path, resolvedRoot);
+    await restarted.setRepository(a.id, null);
+    assert.equal(restarted.state.agents[0].repository, undefined);
+    assert.equal(adapter.grants.get(a.sessionId), undefined);
+    await restarted.setRepository(a.id, root);
+    await restarted.sendHome(a.id);
+    assert.equal(restarted.state.agents.some(agent => agent.id === a.id), false);
+    assert.equal(restarted.state.agents[0].id, b.id);
+    await restarted.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
+test("STOP aborts only the active SDK turn, rejects pending permission and reports failure", async () => {
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated");
+  const a = await room.create(0);
+  const b = await room.create(1);
+  await room.send(a.id, "Research");
+  await assert.rejects(room.setRepository(a.id, null), /Wait for the turn/);
+  const unsubscribe = room.subscribe(() => {});
+  const decision = adapter.permissions.get(a.sessionId)!(request);
+  assert.ok(a.review);
+  await room.stop(a.id);
+  assert.deepEqual(await decision, { kind: "reject", feedback: "Turn stopped by user." });
+  assert.equal(adapter.sessions.get(a.sessionId)?.aborts, 1);
+  assert.equal(a.phase, "idle");
+  assert.equal(a.activity, "Turn stopped by user · ready to chat");
+  assert.equal(a.messages.at(-1)?.content, "Turn stopped by user.");
+  assert.equal(a.review, undefined);
+  assert.equal(b.phase, "idle");
+  await assert.rejects(room.stop(a.id), /No active turn/);
+  await room.send(a.id, "Another turn");
+  adapter.sessions.get(a.sessionId)!.abortError = new Error("SDK cancellation unavailable");
+  await assert.rejects(room.stop(a.id), /cancellation unavailable/);
+  assert.equal(a.phase, "error");
+  assert.match(a.activity, /cancellation unavailable/);
+  unsubscribe();
+  await room.close();
+});
+
+test("explicit research grant authorizes only its own read-only SDK tool, never shell or writes", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agentcorp-permission-"));
+  try {
+    execFileSync("git", ["init", "-q", root]);
+    const adapter = new MockAdapter();
+    const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated");
+    const agent = await room.create(0);
+    const attachedRequest = { kind: "custom-tool", toolCallId: "read-1",
+      toolName: "research_attached_repository", toolDescription: "Read tracked files",
+      args: { action: "read", path: "README.md" } } as PermissionRequest;
+    assert.deepEqual(await adapter.permissions.get(agent.sessionId)!(attachedRequest), { kind: "reject", feedback: "No active repository research grant." });
+    await room.setRepository(agent.id, root);
+    assert.deepEqual(await adapter.permissions.get(agent.sessionId)!(attachedRequest), { kind: "approve-once" });
+    const noBrowserShell = await adapter.permissions.get(agent.sessionId)!(request);
+    assert.deepEqual(noBrowserShell, { kind: "user-not-available" });
+    const noBrowserWrite = await adapter.permissions.get(agent.sessionId)!({ kind: "custom-tool", toolCallId: "write-1",
+      toolName: "other_tool", toolDescription: "Writes files", args: {} } as PermissionRequest);
+    assert.deepEqual(noBrowserWrite, { kind: "user-not-available" });
+    await room.setRepository(agent.id, null);
+    assert.deepEqual(await adapter.permissions.get(agent.sessionId)!(attachedRequest), { kind: "reject", feedback: "No active repository research grant." });
+    await room.close();
+  } finally {
+    await rm(root, { recursive: true, force: true });
+  }
 });

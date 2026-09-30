@@ -176,13 +176,14 @@ function moveAgents(scene: Simulation, delta: number) {
 function LiveOffice() {
   const [sdkRoom, setSdkRoom] = useState<SdkRoom | null>(null);
   const [connection, setConnection] = useState("Connecting to local Copilot SDK…");
-  const [sceneAvailable, setSceneAvailable] = useState(true);
   const [panelOpen, setPanelOpen] = useState(false);
   const [tab, setTab] = useState<"office" | "agents">("office");
   const [previewOffset, setPreviewOffset] = useState(0);
   const [selected, setSelected] = useState("");
   const [hover, setHover] = useState<{ name: string; x: number; y: number } | null>(null);
   const [draft, setDraft] = useState("");
+  const [repoPath, setRepoPath] = useState("");
+  const [copiedId, setCopiedId] = useState("");
   const [actionError, setActionError] = useState("");
   const [menuAgentId, setMenuAgentId] = useState<string | null>(null);
   const [confirmAgentId, setConfirmAgentId] = useState<string | null>(null);
@@ -202,7 +203,6 @@ function LiveOffice() {
   const actorsRef = useRef<(Actor | null)[]>([]);
   const hoverDeskRef = useRef<number | null>(null);
   const hoverLabelRef = useRef<HTMLDivElement>(null);
-  const signStatusRef = useRef<HTMLButtonElement>(null);
   const confirmCheckboxRef = useRef<HTMLInputElement>(null);
   const confirmTriggerRef = useRef<HTMLButtonElement>(null);
   const chatScroll = useRef<HTMLDivElement>(null);
@@ -381,7 +381,6 @@ function LiveOffice() {
       worldRef.current = world;
     } catch (error) {
       host.current.classList.add("static-fallback");
-      setSceneAvailable(false);
       setConnection(`3D office unavailable; live status remains visible. ${error instanceof Error ? error.message : String(error)}`);
     }
     const feed = new EventSource("/api/events");
@@ -440,20 +439,6 @@ function LiveOffice() {
         animationTime += elapsed;
         world?.render(animationTime, previewRef.current, accumulator / STEP, advanced);
         if (world && host.current) {
-          const sign = world.projectSignStatus();
-          if (signStatusRef.current) {
-            const status = signStatusRef.current;
-            const width = host.current.clientWidth;
-            const height = host.current.clientHeight;
-            const side = Math.min(status.offsetWidth / 2 + 8, width / 2);
-            const top = Math.min(70, height / 2);
-            const bottom = Math.min(status.offsetHeight / 2 + 10, height / 2);
-            const x = sign && Number.isFinite(sign.x) ? sign.x : width / 2;
-            const y = sign && Number.isFinite(sign.y) ? sign.y :
-              height * (width < 700 ? .3 : .105);
-            status.style.left = `${Math.max(side, Math.min(width - side, x))}px`;
-            status.style.top = `${Math.max(top, Math.min(height - bottom, y))}px`;
-          }
           if (hoverDeskRef.current !== null && hoverLabelRef.current) {
             const position = world.projectAgent(hoverDeskRef.current);
             hoverLabelRef.current.hidden = !position;
@@ -509,7 +494,13 @@ function LiveOffice() {
     connection.startsWith("Connecting") ? "connecting" : "offline";
   const signLabel = connected ? "SDK online" : sdkRoom?.error ? "SDK needs attention" :
     signKind === "connecting" ? "Connecting…" : "SDK offline";
+  const compactStatus = connected ? "Online" : sdkRoom?.error ? "Error" :
+    signKind === "connecting" ? "Connecting" : "Offline";
   const selectedAgent = sdkRoom?.agents.find(agent => agent.sessionId === selected);
+  useEffect(() => {
+    setRepoPath(selectedAgent?.repository?.path ?? "");
+    setCopiedId("");
+  }, [selected, selectedAgent?.repository?.path]);
   const selectedActor = actors.find(actor => actor.key === selected);
   const confirmAgent = sdkRoom?.agents.find(agent => agent.id === confirmAgentId);
   const confirmName = actors.find(actor => actor.key === confirmAgent?.sessionId)?.name ?? "this agent";
@@ -594,11 +585,6 @@ function LiveOffice() {
               title={`HUD appearance: ${themePreference === "system" ? "system" : themePreference}`}>
               <span aria-hidden="true">{darkTheme ? "☼" : "☾"}</span>
             </button>
-            {!sceneAvailable && <button type="button" className={`office-presence-fallback sdk-${signKind}`}
-              aria-label={`SDK status: ${signLabel}. Open connection details`}
-              onClick={() => { setTab("office"); setPanelOpen(true); }}>
-              <span className="sdk-status-dot" aria-hidden="true" />{signLabel}
-            </button>}
           </div>
         </div>
         <div className="top-stats" aria-hidden={panelOpen} inert={panelOpen}>
@@ -619,12 +605,6 @@ function LiveOffice() {
       <div className="layout">
         <section className="world-panel" aria-label="Live Copilot office">
           <div ref={host} className="world-host">
-            {sceneAvailable && <button ref={signStatusRef} type="button" className={`sdk-sign-status sdk-${signKind}`}
-              aria-label={`SDK status: ${signLabel}. Open connection details`}
-              title={sdkRoom?.error || connection}
-              onClick={() => { setTab("office"); setPanelOpen(true); }}>
-              <span className="sdk-status-dot" aria-hidden="true" />{signLabel}
-            </button>}
             {hover && <div ref={hoverLabelRef} className="agent-hover" style={{ left: hover.x, top: hover.y }}>{hover.name}</div>}
             {connected && Array.from({ length: deskCount }, (_, deskIndex) =>
               activeAgents.some(agent => agent.deskIndex === deskIndex) ? null :
@@ -645,19 +625,17 @@ function LiveOffice() {
                 onBlur={() => { hoverDeskRef.current = null; setHover(null); }}
                 onClick={() => selectActor(agent.sessionId)} />;
             })}
-            {!activeAgents.length && connected && (
-              <div className="world-callout live-callout"><span className="callout-star">✦</span>
-                <span>Click + above an empty desk to create a separate SDK agent.</span>
-              </div>
-            )}
-            {!!activeAgents.length && (
-              <div className="world-callout live-callout" role="status" aria-live="polite">
-                <span className="callout-star">✦</span>
-                <span>{working} working · {idle} idle
-                  {blocked > 0 ? ` · ${blocked} need permission` : ""}
-                  {unavailable > 0 ? ` · ${unavailable} unavailable` : ""}</span>
-              </div>
-            )}
+            <div className="world-callout live-callout" role="status" aria-live="polite">
+              <button type="button" className={`office-status-link sdk-${signKind}`}
+                aria-label={`SDK status: ${signLabel}. Open connection details`}
+                title={sdkRoom?.error || connection}
+                onClick={() => { setTab("office"); setPanelOpen(true); }}>
+                <span className="sdk-status-dot" aria-hidden="true" /> SDK {compactStatus}
+              </button>
+              <span className="callout-separator" aria-hidden="true" />
+              <span>{activeAgents.length ? `${working} working · ${idle} idle${blocked ? ` · ${blocked} need permission` : ""}${unavailable ? ` · ${unavailable} unavailable` : ""}` :
+                connected ? "Click + at a desk to create an agent" : "Open Manage agents for connection details"}</span>
+            </div>
           </div>
         </section>
         <aside id="system-panel" className={`sidebar activity-panel ${panelOpen ? "sidebar-open" : ""} ${selectedAgent ? "chat-open" : ""}`}
@@ -708,7 +686,7 @@ function LiveOffice() {
                   <p className="workspace-path">{sdkRoom?.workspace || "Loading…"}</p>
                   <p>{sdkRoom?.agents.some(agent => agent.workspaceKind === "root") ?
                     "The existing agent retains this root; new agents use separate disposable subfolders here." :
-                    "Each agent uses a separate disposable subfolder here."} No project is selected. Paths are not OS sandboxes; every SDK tool request waits for your decision.</p>
+                    "Each agent uses a separate disposable subfolder here."} Repository research can be attached to one agent at a time; it does not approve shell or write requests. Working directories are not OS sandboxes; review each tool permission.</p>
                 </div>
                 {!connected && <button type="button" className="focus-button" onClick={() => void act("retry", {})}>Retry SDK connection</button>}
               </section>
@@ -732,6 +710,7 @@ function LiveOffice() {
                           "New conversation · say hello"}</small>
                         <small>{agent.archived ? `Archived · former desk ${(agent.lastDeskIndex ?? 0) + 1}` :
                           `Desk ${agent.deskIndex! + 1} · ${agent.activity}`}</small>
+                        {agent.repository && <small>Research: {agent.repository.name} · read-only</small>}
                       </span>
                       {agent.review && <span className="activity-tag activity-tag-warning">Review</span>}
                     </button>
@@ -781,13 +760,36 @@ function LiveOffice() {
                       {selectedAgent.archived ? "This archived agent has no messages yet." : "Say hello to your new office mate."}</p>}
                     {selectedAgent.messages.map(message =>
                       <div className={`conversation-message ${message.role}`} key={message.id}>
-                        <span>{message.role === "user" ? "YOU" : selectedActor?.name}{message.pending ? " · STREAMING" : ""}</span>
+                        <span>{message.role === "user" ? "YOU" : message.role === "system" ? "OFFICE" : selectedActor?.name}{message.pending ? " · STREAMING" : ""}</span>
                         <div className="message-markdown"><SafeMarkdown content={message.content} /></div>
+                        <button type="button" className="copy-message" aria-live="polite" aria-label={`Copy ${message.role} message as Markdown`}
+                          onClick={() => void navigator.clipboard.writeText(message.content).then(() => setCopiedId(message.id))
+                            .catch(error => setActionError(`Could not copy message: ${error instanceof Error ? error.message : String(error)}`))}>
+                          <span aria-hidden="true">▢</span> {copiedId === message.id ? "Copied" : "Copy"}
+                        </button>
                       </div>)}
                   </div>
               </section>
             )}
           </div>
+          {selectedAgent && <section className="repo-attachment" aria-label={`Repository research access for ${selectedActor?.name ?? "agent"}`}>
+            {selectedAgent.repository ? <div className="repo-grant">
+              <strong>{selectedAgent.repository.name} · read-only research</strong>
+              <code>{selectedAgent.repository.path}</code>
+              <button type="button" disabled={lifecycleBusy(selectedAgent)}
+                onClick={() => void act("repository", { agentId: selectedAgent.id, path: null })}>Revoke research access</button>
+            </div> : <form onSubmit={event => {
+              event.preventDefault();
+              void act("repository", { agentId: selectedAgent.id, path: repoPath.trim() });
+            }}>
+              <label htmlFor="repo-path">Attach repository for research · this agent only</label>
+              <div><input id="repo-path" type="text" value={repoPath} onChange={event => setRepoPath(event.target.value)}
+                placeholder="/absolute/path/to/local/git-repo" aria-label="Absolute local Git repository path"
+                disabled={lifecycleBusy(selectedAgent)} />
+                <button type="submit" disabled={!repoPath.trim() || lifecycleBusy(selectedAgent)}>Attach</button></div>
+            </form>}
+            <small>Only tracked, non-sensitive text files can be read. No shell or write permission is granted. Revoke anytime; archived agents retain access until revoked.</small>
+          </section>}
           {selectedAgent?.review && !selectedAgent.archived && <div className="permission-card" role="alertdialog"
             aria-label={`Tool permission request for ${selectedActor?.name ?? "agent"}`}>
             <strong>{selectedActor?.name} · permission needed · {selectedAgent.review.kind}</strong>
@@ -817,6 +819,8 @@ function LiveOffice() {
                 }
               }} rows={2} maxLength={12000} placeholder="Ask something, or start a task…"
               disabled={!connected || ["thinking", "working", "permission", "error"].includes(selectedAgent.phase)} />
+              {["thinking", "working", "permission"].includes(selectedAgent.phase) && <button type="button" className="stop-turn"
+                aria-label="Stop agent response" onClick={() => void act("stop", { agentId: selectedAgent.id })}>Stop</button>}
               <button type="submit" disabled={!connected || !draft.trim() || ["thinking", "working", "permission", "error"].includes(selectedAgent.phase)} aria-label="Send message">↗</button>
             </div>
             <small>Enter to send · Shift+Enter for a new line</small>

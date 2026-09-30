@@ -82,7 +82,7 @@
 .identity-controls {
   display: inline-flex;
   align-items: center;
-  gap: 10px;
+  gap: 8px;
   margin-left: 4px;
   padding-left: 12px;
   border-left: 1px solid var(--office-border);
@@ -190,42 +190,25 @@
 }
 .live-shell .theme-toggle:hover { background: var(--office-accent-bg); }
 .live-shell .time-preview, .live-shell .theme-toggle { box-sizing: border-box; }
-.sdk-sign-status {
-  position: absolute;
-  top: 94px;
-  left: 50%;
-  z-index: 4;
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 5px 9px;
-  transform: translate(-50%, -50%);
-  border: 1px solid #a9d6bd;
-  border-radius: 5px;
-  background: #152e38e8;
-  box-shadow: 0 0 16px #73d5b661, inset 0 0 8px #6bd9ad26;
-  color: #e7f4df;
-  font: 700 10px/1 var(--mono);
-  letter-spacing: .035em;
-  white-space: nowrap;
-  cursor: pointer;
-}
-.sdk-sign-status:hover { background: #214651ef; }
 .sdk-status-dot { flex: none; width: 7px; height: 7px; border-radius: 50%; background: #83e7b0; box-shadow: 0 0 9px #83e7b0; }
 .sdk-connecting .sdk-status-dot { background: #e9c377; box-shadow: 0 0 9px #e9c377; }
 .sdk-offline .sdk-status-dot, .sdk-error .sdk-status-dot { background: #ef9b82; box-shadow: 0 0 9px #ef9b82; }
-.sdk-sign-status.sdk-offline, .sdk-sign-status.sdk-error { border-color: #d3978a; color: #ffe2d1; }
-.office-presence-fallback {
+.office-status-link {
   display: inline-flex;
   align-items: center;
   gap: 5px;
-  padding: 5px 7px;
-  border: 1px solid var(--office-border);
-  border-radius: 6px;
-  background: var(--office-muted);
-  color: var(--office-text);
-  font: 650 10px var(--sans);
+  flex: none;
+  padding: 2px 4px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: #e6f5e7;
+  font: 700 10px var(--mono);
+  cursor: pointer;
 }
+.office-status-link:hover, .office-status-link:focus-visible { background: #53736b; }
+.office-status-link.sdk-error, .office-status-link.sdk-offline { color: #ffcfb5; }
+.callout-separator { align-self: stretch; width: 1px; background: #98b3ae80; }
 .live-shell .world-callout {
   border-color: #98b3ae80;
   border-radius: 9px;
@@ -235,11 +218,15 @@
   line-height: 1.4;
 }
 .live-shell .world-callout.live-callout {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: auto;
   top: auto;
   right: auto;
   bottom: max(var(--office-inset), env(safe-area-inset-bottom));
   left: max(var(--office-inset), env(safe-area-inset-left));
-  max-width: min(380px, calc(100vw - 20px));
+  max-width: min(440px, calc(100vw - 20px));
 }
 .live-shell .agent-hover {
   position: absolute;
@@ -461,14 +448,13 @@
   .live-shell .sidebar.activity-panel {
     width: min(436px, calc(100vw - 16px));
   }
-  .sdk-sign-status { padding: 4px 7px; font-size: 9px; }
 }
 @media (max-width: 540px) {
   .live-shell .identity { gap: 6px; padding: 5px 6px; }
   .live-shell .brand-icon { width: 24px; height: 24px; }
   .live-shell .brand-icon svg { width: 20px; height: 20px; }
   .live-shell .brand-wordmark { width: 92px; height: auto; }
-  .identity-controls { gap: 6px; margin-left: 0; padding-left: 7px; }
+  .identity-controls { gap: 8px; margin-left: 0; padding-left: 7px; }
   .live-shell .time-preview {
     grid-template-columns: 14px 5ch 14px;
     gap: 2px;

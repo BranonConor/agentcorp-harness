@@ -118,6 +118,18 @@ const server = createServer(async (request, response) => {
         await room.sendHome(body.agentId);
         return json(response, 200, room.state);
       }
+      if (url.pathname === "/api/repository" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string" || !(body.path === null || typeof body.path === "string")) throw new Error("Choose an agent and an absolute repository path, or null to revoke.");
+        await room.setRepository(body.agentId, body.path);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/stop" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string") throw new Error("Choose an agent to stop.");
+        await room.stop(body.agentId);
+        return json(response, 200, room.state);
+      }
       return json(response, 404, { error: "Unknown API route." });
     }
     if (request.method !== "GET" || url.pathname.includes("..")) return json(response, 404, { error: "Not found." });

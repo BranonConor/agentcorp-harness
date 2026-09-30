@@ -6,14 +6,14 @@
 .live-shell .overview-list .focus-button { margin: 14px 18px; }
 .live-shell .conversation-scroll { display: flex; flex-direction: column; }
 .conversation-view { display: flex; flex-direction: column; flex: 1; min-height: 0; }
-.conversation-messages { flex: 1; min-height: 180px; padding-top: 2px; }
+.conversation-messages { flex: 1; min-height: 180px; padding: 2px 0 36px; }
 .conversation-message { margin: 0 0 20px; }
 .conversation-message > span { font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--office-secondary); }
 .conversation-message .message-markdown {
   margin-top: 6px;
   padding: 11px 13px;
   border: 1px solid var(--office-border);
-  border-radius: 12px 12px 12px 3px;
+  border-radius: 3px 12px 12px 12px;
   background: var(--office-assistant-bubble);
   line-height: 1.6;
   font-size: 13px;
@@ -39,8 +39,11 @@
 .message-markdown img { max-width: 100%; }
 .conversation-message.user { margin-left: 24px; }
 .conversation-message.user > span { display: block; text-align: right; }
-.conversation-message.user .message-markdown { border-radius: 12px 12px 3px 12px; background: var(--office-accent-bg); }
+.conversation-message.user .message-markdown { border-radius: 12px 3px 12px 12px; background: var(--office-accent-bg); }
 .conversation-message.assistant { margin-right: 24px; }
+.copy-message { display: block; margin: 5px 0 0 auto; min-height: 30px; padding: 5px 8px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--office-secondary); font: 650 11px var(--sans); cursor: pointer; opacity: 0; }
+.conversation-message:hover .copy-message, .copy-message:focus-visible { opacity: 1; border-color: var(--office-border); }
+@media (hover: none) { .copy-message { opacity: 1; } }
 .conversation-row { position: relative; box-sizing: border-box; display: flex; align-items: flex-start; width: 100%; padding: 0 18px; border-bottom: 1px solid var(--office-border); color: var(--office-text); }
 .conversation-row:hover { background: var(--office-muted); }
 .conversation-row.agent-archived { opacity: .78; }
@@ -98,8 +101,19 @@
 .conversation-composer label { display: block; margin-bottom: 8px; color: var(--office-secondary); font: 700 10px var(--mono); letter-spacing: .04em; }
 .conversation-composer > div { display: flex; align-items: center; gap: 6px; padding: 5px; border: 1px solid var(--office-border); border-radius: 8px; background: var(--office-muted); }
 .conversation-composer textarea { flex: 1; min-width: 0; resize: vertical; border: 0; outline: 0; padding: 6px; color: var(--office-text); background: transparent; font: 12px var(--sans); }
-.conversation-composer button { align-self: center; width: 34px; height: 34px; border: 0; border-radius: 6px; color: #fff; background: #316b60; font-size: 22px; }
+.conversation-composer button { align-self: center; min-width: 34px; min-height: 34px; padding: 6px 10px; border: 1px solid #316b60; border-radius: 7px; color: #fff; background: #316b60; font: 650 16px var(--sans); }
+.conversation-composer .stop-turn { background: var(--office-warning-bg); color: var(--office-warning); border-color: var(--office-warning); font-size: 11px; cursor: pointer; }
 .conversation-composer button:disabled { opacity: .4; cursor: default; }
+.repo-attachment { flex: none; padding: 10px 16px; border-top: 1px solid var(--office-border); background: var(--office-panel); }
+.repo-attachment label, .repo-attachment strong { display: block; margin-bottom: 6px; color: var(--office-text); font: 650 11px var(--sans); }
+.repo-attachment form > div { display: flex; gap: 6px; }
+.repo-attachment input { flex: 1; min-width: 0; padding: 6px 8px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 11px var(--sans); }
+.repo-attachment button { flex: none; min-height: 32px; padding: 6px 10px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-accent-bg); color: var(--office-accent); font: 650 11px var(--sans); cursor: pointer; }
+.repo-attachment button:disabled { opacity: .5; cursor: not-allowed; }
+.repo-attachment small { display: block; margin-top: 6px; color: var(--office-secondary); font-size: 10px; line-height: 1.4; }
+.repo-grant { display: flex; align-items: center; flex-wrap: wrap; gap: 4px 8px; }
+.repo-grant strong { flex: 1; margin: 0; }
+.repo-grant code { flex-basis: 100%; color: var(--office-secondary); font: 10px var(--mono); overflow-wrap: anywhere; }
 .conversation-composer small { display: block; margin-top: 7px; color: var(--office-secondary); font-size: 10px; }
 .permission-card { flex: none; margin: 0 12px 10px; padding: 11px; border: 1px solid #c78777; border-radius: 9px; background: var(--office-warning-bg); color: var(--office-text); }
 .permission-card strong, .permission-card > span, .permission-card small { display: block; font-size: 11px; line-height: 1.45; }

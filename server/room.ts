@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { PermissionRequest, PermissionRequestResult, SessionEvent } from "@github/copilot-sdk";
 import { MAX_AGENTS, type Adapter, type Agent, type LiveSession, type Review, type Room } from "./types.js";
 import type { Store } from "./storage.js";
+import { validateRepository, type RepositoryGrant } from "./repository.js";
 
 const EXPIRE_MS = 90_000;
 type Pending = { agentId: string; resolve: (decision: PermissionRequestResult) => void; timer: NodeJS.Timeout };
@@ -17,6 +18,7 @@ export class RoomController {
   private connecting: Promise<void> | null = null;
   private creating = new Set<number>();
   private lifecycle = new Set<string>();
+  private stopped = new Set<string>();
 
   private constructor(private readonly adapter: Adapter, private readonly store: Store, state: Room) {
     this.state = state;
@@ -135,13 +137,19 @@ export class RoomController {
     await this.publish();
   }
 
-  private async resumeAgent(agent: Agent): Promise<LiveSession> {
+  private async resumeAgent(agent: Agent, repository: RepositoryGrant | null = agent.repository ?? null): Promise<LiveSession> {
+    const grant = repository ?? undefined;
     try {
-      return await this.adapter.resume(agent.sessionId, agent.workspace, request => this.permission(agent.id, request));
+      const session = await this.adapter.resume(agent.sessionId, agent.workspace, request => this.permission(agent.id, request), grant);
+      if (session.sessionId !== agent.sessionId) {
+        await session.disconnect();
+        throw new Error("SDK resumed a different session identity; repository access was not changed.");
+      }
+      return session;
     } catch (error) {
       if (agent.messages.length !== 0 || !(error instanceof Error) ||
         !error.message.includes(`Session not found: ${agent.sessionId}`)) throw error;
-      const session = await this.adapter.create(agent.workspace, request => this.permission(agent.id, request), agent.sessionId);
+      const session = await this.adapter.create(agent.workspace, request => this.permission(agent.id, request), agent.sessionId, grant);
       if (session.sessionId !== agent.sessionId) {
         await session.disconnect();
         throw new Error("SDK returned a different identity for the empty-session recovery.");
@@ -274,6 +282,73 @@ export class RoomController {
     }
   }
 
+  async setRepository(agentId: string, path: string | null): Promise<void> {
+    const agent = this.agent(agentId);
+    this.availableForLifecycle(agent);
+    this.lifecycle.add(agentId);
+    try {
+      const repository: RepositoryGrant | undefined = path === null ? undefined : await validateRepository(path);
+      if (repository?.path === agent.repository?.path) return;
+      if (agent.archived) {
+        agent.repository = repository;
+      } else {
+        const current = this.sessions.get(agentId);
+        if (!current) throw new Error("Agent unavailable. Retry its SDK connection before changing repository access.");
+        await current.disconnect();
+        this.unsubscribers.get(agentId)?.();
+        this.sessions.delete(agentId);
+        this.unsubscribers.delete(agentId);
+        try {
+          this.attach(agentId, await this.resumeAgent(agent, repository ?? null));
+        } catch (error) {
+          try { this.attach(agentId, await this.resumeAgent(agent)); }
+          catch (restoreError) { this.report(restoreError, agent); }
+          throw error;
+        }
+        agent.repository = repository;
+      }
+      agent.updatedAt = Date.now();
+      agent.activity = repository ? `Research access: ${repository.name} (tracked files only)` : "Repository research access revoked";
+      await this.publish();
+    } finally {
+      this.lifecycle.delete(agentId);
+    }
+  }
+
+  async stop(agentId: string): Promise<void> {
+    const agent = this.agent(agentId);
+    if (agent.archived || this.lifecycle.has(agentId) || !["thinking", "working", "permission"].includes(agent.phase)) {
+      throw new Error("No active turn to stop for this agent.");
+    }
+    const session = this.sessions.get(agentId);
+    if (!session) throw new Error("Agent SDK session is unavailable; cannot confirm cancellation.");
+    this.lifecycle.add(agentId);
+    try {
+      const abort = session.abort();
+      for (const [id, pending] of this.pending) {
+        if (pending.agentId !== agentId) continue;
+        clearTimeout(pending.timer);
+        pending.resolve({ kind: "reject", feedback: "Turn stopped by user." });
+        this.pending.delete(id);
+      }
+      await abort;
+      agent.review = undefined;
+      const last = agent.messages.at(-1);
+      if (last?.pending) last.pending = false;
+      this.stopped.add(agentId);
+      agent.phase = "idle";
+      agent.activity = "Turn stopped by user · ready to chat";
+      agent.messages.push({ id: randomUUID(), role: "system", content: "Turn stopped by user." });
+      agent.updatedAt = Date.now();
+      await this.publish();
+    } catch (error) {
+      this.report(error, agent);
+      throw error;
+    } finally {
+      this.lifecycle.delete(agentId);
+    }
+  }
+
   async send(agentId: string, text: string): Promise<void> {
     const agent = this.agent(agentId);
     if (agent.archived || this.lifecycle.has(agentId)) throw new Error("This agent is not active in the office.");
@@ -282,6 +357,7 @@ export class RoomController {
     const prompt = text.trim();
     if (!prompt || prompt.length > 12000) throw new Error("Prompt must contain 1–12000 characters.");
     if (["thinking", "working", "permission"].includes(agent.phase)) throw new Error("Wait for the current turn to finish.");
+    this.stopped.delete(agentId);
     agent.messages.push({ id: randomUUID(), role: "user", content: prompt });
     agent.phase = "thinking";
     agent.activity = "Thinking";
@@ -299,6 +375,7 @@ export class RoomController {
   private event(agentId: string, event: SessionEvent): void {
     const agent = this.agent(agentId);
     if (agent.archived) return;
+    if (this.stopped.has(agentId) && event.type !== "session.error" && event.type !== "session.idle") return;
     switch (event.type) {
       case "assistant.message_delta": {
         const delta = event.data.deltaContent;
@@ -333,7 +410,7 @@ export class RoomController {
         break;
       case "session.idle":
         agent.phase = "idle";
-        agent.activity = "Ready to chat";
+        agent.activity = this.stopped.has(agentId) ? "Turn stopped by user · ready to chat" : "Ready to chat";
         break;
       case "session.error":
         agent.phase = "error";
@@ -348,6 +425,10 @@ export class RoomController {
 
   private permission(agentId: string, request: PermissionRequest): Promise<PermissionRequestResult> {
     const agent = this.state.agents.find(item => item.id === agentId);
+    if (request.kind === "custom-tool" && request.toolName === "research_attached_repository") {
+      return Promise.resolve(agent?.repository && !agent.archived && !this.lifecycle.has(agentId) ?
+        { kind: "approve-once" } : { kind: "reject", feedback: "No active repository research grant." });
+    }
     if (!this.listeners.size || !agent || agent.archived || this.lifecycle.has(agentId) || agent.review) {
       return Promise.resolve({ kind: "user-not-available" });
     }

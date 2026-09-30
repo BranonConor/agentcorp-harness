@@ -17,6 +17,7 @@ export type Agent = {
   activity: string;
   messages: Message[];
   review?: Review;
+  repository?: RepositoryGrant;
 };
 export type Room = { agents: Agent[]; error: string | null; connected: boolean; workspace: string; revision: number };
 export type LegacyRoom = {
@@ -27,17 +28,19 @@ export type LegacyRoom = {
   revision: number;
 };
 import type { SessionEvent, PermissionRequest, PermissionRequestResult } from "@github/copilot-sdk";
+import type { RepositoryGrant } from "./repository.js";
 export interface LiveSession {
   sessionId: string;
   send(prompt: string): Promise<void>;
+  abort(): Promise<void>;
   onEvent(handler: (event: SessionEvent) => void): () => void;
   disconnect(): Promise<void>;
 }
 export interface Adapter {
   probe(): Promise<void>;
   prepareWorkspace(root: string, agentId: string): Promise<string>;
-  create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string): Promise<LiveSession>;
-  resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>): Promise<LiveSession>;
+  create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant): Promise<LiveSession>;
+  resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, repository?: RepositoryGrant): Promise<LiveSession>;
   deleteSession(id: string): Promise<void>;
   stop(): Promise<void>;
 }

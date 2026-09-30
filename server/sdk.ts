@@ -3,13 +3,15 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import type { Adapter, LiveSession } from "./types.js";
+import { repositoryTool, validateRepository, type RepositoryGrant } from "./repository.js";
 
 export class SdkAdapter implements Adapter {
   private client: CopilotClient | null = null;
   private starting: Promise<CopilotClient> | null = null;
   constructor(private readonly workspace: string) {}
-  private tools(): ToolSet {
-    return new ToolSet().addBuiltIn(BuiltInTools.Isolated).addBuiltIn(["bash", "view", "rg", "glob", "apply_patch"]);
+  private tools(repository?: RepositoryGrant): ToolSet {
+    const tools = new ToolSet().addBuiltIn(BuiltInTools.Isolated).addBuiltIn(["bash", "view", "rg", "glob", "apply_patch"]);
+    return repository ? tools.addCustom("research_attached_repository") : tools;
   }
 
   private async ready(): Promise<CopilotClient> {
@@ -46,27 +48,31 @@ export class SdkAdapter implements Adapter {
     await writeFile(join(folder, ".deskbound-workspace"), "AgentCorp dedicated agent working directory\n", { flag: "wx" });
     return folder;
   }
-  async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string): Promise<LiveSession> {
+  async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant): Promise<LiveSession> {
     const client = await this.ready();
+    if (repository) await validateRepository(repository.path);
     const session = await client.createSession({
       sessionId,
       model: "auto",
       streaming: true,
       workingDirectory: workspace,
-      availableTools: this.tools(),
+      availableTools: this.tools(repository),
+      tools: repository ? [repositoryTool(repository)] : [],
       onPermissionRequest: permission,
-      systemMessage: { mode: "append", content: `This is a local experiment. Work only inside ${workspace}. Ask before interacting with paths outside this directory.` }
+      systemMessage: { mode: "append", content: `This is a local experiment. Work only inside ${workspace}. Ask before interacting with paths outside this directory. To create another office agent, the user clicks + at a desk; chat does not create office agents. When a repository is explicitly attached, research it only with research_attached_repository. A repository research grant never approves shell commands or edits.` }
     });
     return this.wrap(session);
   }
 
-  async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>): Promise<LiveSession> {
+  async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, repository?: RepositoryGrant): Promise<LiveSession> {
     if (await realpath(workspace) !== workspace) throw new Error("Agent working directory is no longer the selected directory; refusing to resume.");
+    if (repository && (await validateRepository(repository.path)).path !== repository.path) throw new Error("Repository grant no longer matches its original directory.");
     const client = await this.ready();
     const session = await client.resumeSession(id, {
       workingDirectory: workspace,
       streaming: true,
-      availableTools: this.tools(),
+      availableTools: this.tools(repository),
+      tools: repository ? [repositoryTool(repository)] : [],
       continuePendingWork: false,
       onPermissionRequest: permission
     });
@@ -81,6 +87,7 @@ export class SdkAdapter implements Adapter {
     return {
       sessionId: session.sessionId,
       send: async (prompt: string) => { await session.send({ prompt }); },
+      abort: () => session.abort(),
       onEvent: (handler: (event: SessionEvent) => void) => session.on(handler),
       disconnect: () => session.disconnect()
     };

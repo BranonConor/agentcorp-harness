@@ -327,7 +327,6 @@ export type World = {
   focusAgent: (index: number | null) => void;
   projectDesk: (index: number) => { x: number; y: number } | null;
   projectAgent: (index: number) => { x: number; y: number } | null;
-  projectSignStatus: () => { x: number; y: number } | null;
   dispose: () => void;
 };
 
@@ -1127,9 +1126,6 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
       const agent = simulation.agents[index];
       return agent && index < simulation.progress.capacity && agent.x < 50 ?
         projectPoint(agent.x, 1.15, agent.z) : null;
-    },
-    projectSignStatus() {
-      return isLive ? projectPoint(0, 4.23, room.back + 0.4) : null;
     },
     render(elapsed: number, previewOffset: number, alpha: number, advanced: boolean) {
       const now = performance.now() / 1000;
