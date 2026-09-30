@@ -5,7 +5,7 @@ import {
   EXTRA_DESKS, LIVE_COFFEE_COUNTER, LIVE_COFFEE_Z, LIVE_DIVIDER_END_Z, LIVE_DIVIDER_START_Z,
   LIVE_DIVIDER_PLANTS, LIVE_DIVIDER_X,
   LIVE_LOUNGE_SOFA_X, LIVE_LOUNGE_Z, LIVE_ROOM, LIVE_RUG_X,
-  deskPropsFor, isLoungeSeat, liveDeskCount,
+  deskPropsFor, isLoungeSeat,
 } from "./live-layout";
 import { sampleDaylight } from "./lighting";
 import { interpolatePosition } from "./animation";
@@ -1108,7 +1108,7 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
     },
     projectDesk(index) {
       const desk = stationPositions[index];
-      return desk && index < liveDeskCount(simulation.progress.capacity + 1) ?
+      return desk ?
         projectPoint(desk.x, 1.4, desk.z) : null;
     },
     projectAgent(index) {
@@ -1232,7 +1232,7 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
       contextRoom.visible = !isLive && simulation.progress.context;
       lockedContext.visible = !isLive && !simulation.progress.context;
       if (isLive) {
-        const count = liveDeskCount(simulation.progress.capacity + 1);
+        const count = stationPositions.length;
         if (count !== lastVisibleDesks) {
           stations.forEach((station, index) => { station.visible = index < count; });
           host.dataset.visibleDesks = String(count);

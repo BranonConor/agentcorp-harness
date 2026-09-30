@@ -11,7 +11,7 @@ import type { Agent, Request } from "../../agent-inc/game/simulation";
 import { sampleDaylight } from "../../agent-inc/game/lighting";
 import {
   EXTRA_DESKS, LIVE_COFFEE_Z, MAX_LIVE_DESKS, MIN_LIVE_DESKS,
-  assignLoungeSpots, liveDeskCount, routeAroundDividers,
+  assignLoungeSpots, routeAroundDividers,
 } from "../../agent-inc/game/live-layout";
 import { AGENTCORP_LETTERS, AGENTCORP_MARK, AGENTCORP_WORDMARK } from "../../agent-inc/game/sprite-art";
 import { createWorld } from "../../agent-inc/game/world";
@@ -402,9 +402,10 @@ function LiveOffice() {
   }, []);
 
   const actors = roomActors(room);
-  const deskCount = liveDeskCount(Math.max(0, ...(sdkRoom?.agents.map(agent => agent.deskIndex + 2) ?? [])));
+  const deskCount = MAX_LIVE_DESKS;
   const firstEmptyDesk = Array.from({ length: MAX_AGENTS }, (_, index) => index)
     .find(index => !sdkRoom?.agents.some(agent => agent.deskIndex === index));
+  const officeFull = sdkRoom?.agents.length === MAX_AGENTS;
   const working = actors.filter((actor) => actor.status === "thinking" || actor.status === "tool").length;
   const idle = actors.filter((actor) => actor.status === "idle").length;
   const blocked = actors.filter((actor) => actor.status === "blocked").length;
@@ -478,8 +479,10 @@ function LiveOffice() {
           <div className="stat"><span className="stat-label">Working</span><strong>{working}</strong></div>
           <div className="stat desktop-stat"><span className="stat-label">Messages</span><strong>{messages}</strong></div>
           <button type="button" className="add-agent-button" disabled={!connected || firstEmptyDesk === undefined}
+            aria-label={officeFull ? `Office full (${MAX_AGENTS} desks)` : "Add agent"}
+            title={officeFull ? `All ${MAX_AGENTS} office desks are occupied` : "Create an independent SDK agent"}
             onClick={() => firstEmptyDesk !== undefined && void act("create", { deskIndex: firstEmptyDesk })}>
-            + Add agent
+            {officeFull ? <>Office full <span className="desk-capacity">({MAX_AGENTS} desks)</span></> : "+ Add agent"}
           </button>
           <button ref={activityToggle} type="button" className="system-toggle" aria-expanded={panelOpen} aria-controls="system-panel"
             onClick={() => setPanelOpen(true)}>Activity <span className="toggle-chevron" aria-hidden="true" /></button>
@@ -567,6 +570,7 @@ function LiveOffice() {
                 <div className="activity-row">
                   <div className="activity-row-heading"><strong>The office</strong><span className="activity-tag">{deskCount} desks</span></div>
                   <p>Click + above an empty desk (or Add agent) to create a separate SDK session. Click its pixel sprite to open its chat. A prompt to an existing agent does not create another office agent.</p>
+                  {officeFull && <p>Office full: all {MAX_AGENTS} desks have independent agents. Existing conversations remain available.</p>}
                 </div>
                 <div className="activity-row">
                   <div className="activity-row-heading"><strong>Scratch workspace root</strong><span className="activity-tag">Local only</span></div>

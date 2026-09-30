@@ -26,12 +26,14 @@ class MockAdapter implements Adapter {
   sessions = new Map<string, MockSession>();
   permissions = new Map<string, (request: PermissionRequest) => Promise<PermissionRequestResult>>();
   workspaces = new Map<string, string>();
+  prepared: string[] = [];
   resumed: string[] = [];
   recreated: string | undefined;
   failResume = new Set<string>();
   missing = new Set<string>();
   async probe(): Promise<void> {}
   async prepareWorkspace(root: string, agentId: string): Promise<string> {
+    this.prepared.push(agentId);
     return `${root}/agents/${agentId}`;
   }
   async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string): Promise<LiveSession> {
@@ -58,10 +60,13 @@ const request = { kind: "shell", toolCallId: "call-1", fullCommandText: "rm -rf 
 
 test("migrates the existing agent without changing its session, transcript or root workspace", async () => {
   const store = new MemoryStore();
+  const originalMessages = Array.from({ length: 15 }, (_, index) => ({
+    id: `old-message-${index}`, role: (index % 2 ? "assistant" : "user") as "assistant" | "user",
+    content: `Preserved message ${index + 1}`,
+  }));
   store.saved = { workspace: "/dedicated", connected: true, error: null, revision: 7,
     agent: { id: "old-agent", sessionId: "old-sdk-session", x: 42, y: 68,
-      phase: "idle", activity: "Ready to chat",
-      messages: [{ id: "old-message", role: "user", content: "Keep this conversation" }] } };
+      phase: "idle", activity: "Ready to chat", messages: originalMessages } };
   const adapter = new MockAdapter();
   adapter.sessions.set("old-sdk-session", new MockSession("old-sdk-session"));
   adapter.workspaces.set("old-sdk-session", "/dedicated");
@@ -70,13 +75,24 @@ test("migrates the existing agent without changing its session, transcript or ro
   assert.equal(room.state.agents[0].sessionId, "old-sdk-session");
   assert.equal(room.state.agents[0].workspace, "/dedicated");
   assert.equal(room.state.agents[0].deskIndex, 0);
-  assert.equal(room.state.agents[0].messages[0].content, "Keep this conversation");
+  assert.deepEqual(room.state.agents[0].messages, originalMessages);
+  assert.equal(room.state.agents.length, 1);
   await room.connect();
   assert.deepEqual(adapter.resumed, ["old-sdk-session"]);
-  const next = await room.create(2);
-  assert.equal(next.workspace, `/dedicated/agents/${next.id}`);
-  assert.equal(room.state.agents[0].workspace, "/dedicated");
+  assert.equal(adapter.prepared.length, 0);
+  assert.equal(room.state.agents.length, 1);
   await room.close();
+  const reloaded = await RoomController.open(adapter, store, "/dedicated");
+  await reloaded.connect();
+  assert.equal(reloaded.state.agents.length, 1);
+  assert.deepEqual(reloaded.state.agents[0].messages, originalMessages);
+  assert.equal(adapter.prepared.length, 0);
+  const next = await reloaded.create(1);
+  assert.equal(next.workspace, `/dedicated/agents/${next.id}`);
+  assert.equal(reloaded.state.agents.length, 2);
+  assert.equal(adapter.prepared.length, 1);
+  assert.equal(reloaded.state.agents[0].workspace, "/dedicated");
+  await reloaded.close();
 });
 
 test("two SDK sessions retain independent streamed turns and resume from their own folders", async () => {
