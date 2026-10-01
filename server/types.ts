@@ -7,8 +7,22 @@ export type RepositoryRequest = { id: string; repoHint: string; purpose: string;
   error?: string; progress?: string };
 export type UsageSummary = { status: "ready" | "partial" | "unavailable"; measured: number; total: number; tokens: number; calls: number; filesChanged: number; startedAt?: string; updatedAt: number; stale?: boolean };
 export const MAX_AGENTS = 16;
+export type PersonaMemory = { id: string; text: string; provenance: string; approvedAt: number };
+export type AgentPersona = {
+  id: string; name: string; artId: number; createdAt: number; updatedAt: number;
+  profile: { workingStyle: string; specialties: string[]; title: string; rank: string };
+  memories: PersonaMemory[];
+};
+export type Assignment = {
+  id: string; personaId: string; sessionId: string; workspace: string;
+  repository?: RepositoryGrant; startedAt: number; endedAt?: number; outcome?: string;
+  status: "active" | "completed" | "interrupted"; messages: Message[];
+  retention?: "keep" | "delete-sdk";
+};
 export type Agent = {
   id: string;
+  personaId?: string;
+  assignmentId?: string;
   deskIndex: number | null;
   archived: boolean;
   archivedAt?: number;
@@ -27,7 +41,8 @@ export type Agent = {
   persona?: number;
   name?: string;
 };
-export type Room = { agents: Agent[]; error: string | null; connected: boolean; workspace: string; revision: number;
+export type Room = { schemaVersion?: 2; personas?: AgentPersona[]; assignments?: Assignment[];
+  agents: Agent[]; error: string | null; connected: boolean; workspace: string; revision: number;
   knownRepositories?: string[]; usage?: UsageSummary;
   snapshots?: RepositorySnapshot[];
   worktrees?: { agentId: string; repository: string; path: string; branch: string }[] };

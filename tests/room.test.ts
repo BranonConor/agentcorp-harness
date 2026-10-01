@@ -9,7 +9,7 @@ import { RoomController } from "../server/room.js";
 import { uniqueAgentName } from "../agent-inc-live/src/room.js";
 import { validateResearchWorktree, type RepositoryGrant } from "../server/repository.js";
 import { MAX_AGENTS, type Adapter, type LegacyRoom, type LiveSession, type Room } from "../server/types.js";
-import type { Store } from "../server/storage.js";
+import { FileStore, type Store } from "../server/storage.js";
 import { canonicalGitHubUrl, type RemoteRepository, type RepositorySnapshot, type RepositorySource } from "../server/github-repositories.js";
 
 class MemoryStore implements Store {
@@ -42,6 +42,7 @@ class MockSession implements LiveSession {
   async disconnect(): Promise<void> { this.disconnects++; }
 }
 class MockAdapter implements Adapter {
+  nextSession = 1;
   sessions = new Map<string, MockSession>();
   permissions = new Map<string, (request: PermissionRequest) => Promise<PermissionRequestResult>>();
   workspaces = new Map<string, string>();
@@ -59,7 +60,7 @@ class MockAdapter implements Adapter {
     return `${root}/agents/${agentId}`;
   }
   async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant): Promise<LiveSession> {
-    const id = sessionId ?? `sdk-session-${this.sessions.size + 1}`;
+    const id = sessionId ?? `sdk-session-${this.nextSession++}`;
     const session = new MockSession(id);
     this.sessions.set(id, session);
     this.workspaces.set(id, workspace);
@@ -249,6 +250,10 @@ test("duplicate saved display names are repaired without changing session identi
   const sharedName = active.name;
   assert.ok(store.saved && "agents" in store.saved);
   const saved = store.saved as Room;
+  delete saved.schemaVersion;
+  delete saved.personas;
+  delete saved.assignments;
+  for (const agent of saved.agents) { delete agent.personaId; delete agent.assignmentId; }
   saved.agents.find(agent => agent.id === archived.id)!.name = sharedName;
   saved.agents.find(agent => agent.id === archived.id)!.messages = structuredClone(archived.messages);
   await room.close();
@@ -792,4 +797,150 @@ test("usage aggregates SDK session snapshots including archived agents, marks pa
   assert.equal(room.state.usage?.measured, 1);
   assert.equal(room.state.agents[0].id, first.id);
   await room.close();
+});
+
+test("all sixteen legacy identities, desk positions, grants, artifacts and transcripts survive migration and restart", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const original = await RoomController.open(adapter, store, "/dedicated");
+  for (let desk = 0; desk < MAX_AGENTS; desk++) {
+    const agent = await original.create(desk);
+    agent.messages.push({ id: `message-${desk}`, role: "user", content: `history ${desk}` });
+    agent.repository = { name: `repo-${desk}`, path: `/repo-${desk}`, scope: "session" } as RepositoryGrant;
+  }
+  const retired = original.state.agents[0];
+  await original.archive(retired.id);
+  original.state.worktrees!.push({ agentId: retired.id, repository: "repo-0", path: "/artifact", branch: "saved" });
+  const legacy = structuredClone(original.state);
+  delete legacy.schemaVersion;
+  delete legacy.personas;
+  delete legacy.assignments;
+  for (const agent of legacy.agents) { delete agent.personaId; delete agent.assignmentId; }
+  store.saved = legacy;
+  const migrated = await RoomController.open(adapter, store, "/dedicated");
+  assert.equal(migrated.state.schemaVersion, 2);
+  assert.equal(migrated.state.personas?.length, 16);
+  assert.equal(migrated.state.assignments?.length, 16);
+  assert.deepEqual(migrated.state.agents.map(agent => ({
+    id: agent.id, name: agent.name, sessionId: agent.sessionId, deskIndex: agent.deskIndex,
+    archived: agent.archived, messages: agent.messages, repository: agent.repository,
+  })), legacy.agents.map(agent => ({
+    id: agent.id, name: agent.name, sessionId: agent.sessionId, deskIndex: agent.deskIndex,
+    archived: agent.archived, messages: agent.messages, repository: agent.repository,
+  })));
+  assert.deepEqual(migrated.state.worktrees, legacy.worktrees);
+  const reloaded = await RoomController.open(adapter, store, "/dedicated");
+  assert.deepEqual(reloaded.state.assignments?.map(item => item.sessionId), legacy.agents.map(item => item.sessionId));
+  await reloaded.close();
+  await migrated.close();
+  await original.close();
+});
+
+test("profile, curated memory, independent sequential assignment and permission isolation survive restart", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  const agent = await room.create(0);
+  const id = agent.id;
+  const formerSession = agent.sessionId;
+  const formerWorkspace = agent.workspace;
+  const formerPermission = adapter.permissions.get(formerSession)!;
+  await room.editPersona(id, { name: "Persistent persona", artId: agent.persona!, workingStyle: "Careful",
+    specialties: ["TypeScript"], title: "Engineer", rank: "Senior" });
+  await room.addMemory(id, "Approved preference", "User approved in conversation");
+  assert.equal(room.state.personas![0].memories[0].provenance, "User approved in conversation");
+  await assert.rejects(room.editPersona(id, { name: " ", artId: 0, workingStyle: "", specialties: [], title: "", rank: "" }), /Invalid/);
+  agent.repository = { name: "restricted", path: "/restricted", scope: "session" } as RepositoryGrant;
+  agent.messages.push({ id: "old-message", role: "user", content: "Private assignment" });
+  await room.newAssignment(id, "Done");
+  assert.equal(agent.id, id);
+  assert.equal(agent.name, "Persistent persona");
+  assert.notEqual(agent.sessionId, formerSession);
+  assert.notEqual(agent.workspace, formerWorkspace);
+  assert.equal(agent.repository, undefined);
+  assert.deepEqual(agent.messages, []);
+  assert.deepEqual(room.state.assignments![0].messages, [{ id: "old-message", role: "user", content: "Private assignment" }]);
+  assert.equal(room.state.assignments![0].repository?.path, "/restricted");
+  assert.equal(room.state.assignments![0].outcome, "Done");
+  assert.equal(room.state.assignments![0].status, "completed");
+  assert.deepEqual(await formerPermission({ kind: "custom-tool", toolName: "research_attached_repository" } as PermissionRequest),
+    { kind: "reject", feedback: "This SDK assignment is no longer active." });
+  assert.deepEqual(await adapter.permissions.get(agent.sessionId)!(request), { kind: "user-not-available" });
+  await room.close();
+  const restarted = await RoomController.open(adapter, store, "/dedicated");
+  await restarted.connect();
+  assert.equal(restarted.state.agents[0].sessionId, agent.sessionId);
+  assert.equal(restarted.state.agents[0].repository, undefined);
+  assert.equal(restarted.state.personas![0].profile.rank, "Senior");
+  assert.equal(restarted.state.assignments![0].sessionId, formerSession);
+  await restarted.removeMemory(id, restarted.state.personas![0].memories[0].id);
+  assert.equal(restarted.state.personas![0].memories.length, 0);
+  await restarted.close();
+});
+
+test("firing retains files and history; SDK deletion is an explicit separate retention choice", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  const kept = await room.create(0);
+  const deleted = await room.create(1);
+  await assert.rejects(room.fire(kept.id, "invalid" as "keep"), /retention/);
+  await room.fire(kept.id, "keep");
+  assert.deepEqual(adapter.deleted, []);
+  assert.equal(room.state.personas?.some(item => item.id === kept.id), true);
+  assert.equal(room.state.assignments?.find(item => item.personaId === kept.id)?.status, "completed");
+  await room.fire(deleted.id, "delete-sdk");
+  assert.deepEqual(adapter.deleted, [deleted.sessionId]);
+  assert.equal(room.state.agents.length, 0);
+  assert.equal(room.state.assignments!.find(item => item.personaId === kept.id)?.retention, "keep");
+  assert.equal(room.state.assignments!.find(item => item.personaId === deleted.id)?.retention, "delete-sdk");
+  await room.create(0);
+  await room.close();
+  const reloaded = await RoomController.open(adapter, store, "/dedicated");
+  assert.equal(new Set(reloaded.state.personas?.map(persona => persona.name.toLocaleLowerCase())).size,
+    reloaded.state.personas?.length);
+  await reloaded.close();
+});
+
+test("atomic v1 backup supports rollback; unknown schema or invalid linkage cannot overwrite state", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "persona-store-"));
+  try {
+    const path = join(directory, "state.json");
+    const store = new FileStore(path);
+    const legacy: Room = { workspace: "/dedicated", agents: [], connected: false, error: null, revision: 4 };
+    await writeFile(path, JSON.stringify(legacy));
+    const room = await RoomController.open(new MockAdapter(), store, "/dedicated");
+    assert.deepEqual(JSON.parse(await readFile(`${path}.v1.bak`, "utf8")), legacy);
+    assert.equal(JSON.parse(await readFile(path, "utf8")).schemaVersion, 2);
+    await room.close();
+    const damaged = { ...room.state, assignments: [{ id: "bad", personaId: "missing" }] };
+    await writeFile(path, JSON.stringify(damaged));
+    const before = await readFile(path, "utf8");
+    await assert.rejects(RoomController.open(new MockAdapter(), store, "/dedicated"), /assignment history/);
+    assert.equal(await readFile(path, "utf8"), before);
+    await writeFile(path, JSON.stringify({ ...legacy, schemaVersion: 99 }));
+    await assert.rejects(RoomController.open(new MockAdapter(), store, "/dedicated"), /Unknown state schema/);
+    await writeFile(path, await readFile(`${path}.v1.bak`, "utf8"));
+    assert.equal((await RoomController.open(new MockAdapter(), store, "/dedicated")).state.schemaVersion, 2);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("a failed state write rejects its edit but does not permanently block later saves", async () => {
+  class FlakyStore extends MemoryStore {
+    failNext = false;
+    override async write(room: Room): Promise<void> {
+      if (this.failNext) { this.failNext = false; throw new Error("Disk temporarily unavailable"); }
+      await super.write(room);
+    }
+  }
+  const store = new FlakyStore();
+  const room = await RoomController.open(new MockAdapter(), store, "/dedicated");
+  const agent = await room.create(0);
+  store.failNext = true;
+  await assert.rejects(room.addMemory(agent.id, "Keep this", "User approved"), /Disk temporarily unavailable/);
+  await room.addMemory(agent.id, "And this", "User approved");
+  await room.close();
+  assert.equal((await RoomController.open(new MockAdapter(), store, "/dedicated")).state.personas?.[0].memories.length, 2);
 });

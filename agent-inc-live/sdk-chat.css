@@ -202,6 +202,48 @@
 .send-home-buttons button { min-height: 30px; padding: 5px 9px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
 .send-home-buttons .send-home-confirm { border-color: var(--office-warning); background: var(--office-warning-bg); color: var(--office-warning); }
 .send-home-buttons button:disabled { opacity: .5; cursor: not-allowed; }
+.persona-details { border-bottom: 1px solid var(--office-border); padding: 16px 18px 20px; font: 12px/1.5 var(--sans); color: var(--office-text); }
+.persona-details h3, .persona-details h4 { margin: 0; font-size: 13px; }
+.persona-details h4 { margin: 16px 0 6px; }
+.persona-details p { margin: 8px 0; color: var(--office-secondary); overflow-wrap: anywhere; }
+.persona-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.persona-heading img { flex: none; width: 42px; height: 42px; }
+.persona-heading div { min-width: 0; overflow-wrap: anywhere; }
+.persona-heading span, .persona-notes small, .assignment-history li span { display: block; color: var(--office-secondary); }
+.persona-details button { min-height: 30px; padding: 5px 9px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
+.persona-details button:hover:not(:disabled), .persona-details button:focus-visible { background: var(--office-accent-bg); }
+.persona-details button:focus-visible, .send-home-dialog input:focus-visible, .send-home-dialog button:focus-visible,
+.persona-form input:focus-visible, .persona-form textarea:focus-visible { outline: 2px solid var(--office-accent); outline-offset: 2px; }
+.persona-details button:disabled { opacity: .55; cursor: not-allowed; }
+.persona-form { display: grid; gap: 9px; margin-top: 10px; }
+.persona-form label, .assignment-outcome { display: grid; gap: 4px; font-weight: 600; }
+.persona-form input, .persona-form textarea, .assignment-outcome input { box-sizing: border-box; width: 100%; min-width: 0; padding: 7px; border: 1px solid var(--office-border); border-radius: 6px; background: var(--office-panel); color: var(--office-text); font: 12px/1.4 var(--sans); }
+.persona-form textarea { resize: vertical; }
+.persona-form button { justify-self: start; }
+.persona-actions { display: flex; gap: 8px; }
+.persona-notes ul, .assignment-history ul { list-style: none; margin: 8px 0; padding: 0; }
+.persona-notes li, .assignment-history li { display: grid; gap: 4px; padding: 9px 0; border-top: 1px solid var(--office-border); overflow-wrap: anywhere; }
+.persona-notes li button { justify-self: start; }
+.assignment-history code { overflow-wrap: anywhere; user-select: text; }
+.assignment-transcript { margin-top: 6px; }
+.assignment-transcript summary { cursor: pointer; color: var(--office-text); font-weight: 650; }
+.assignment-transcript > div { margin-top: 8px; padding: 8px; border: 1px solid var(--office-border); border-radius: 6px; overflow-wrap: anywhere; }
+.assignment-transcript .message-markdown { white-space: normal; }
+.retention-choices { display: grid; gap: 9px; margin: 15px 0; padding: 12px; border: 1px solid var(--office-border); border-radius: 7px; font-size: 12px; }
+.retention-choices legend { font-weight: 700; }
+.retention-choices label { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
+.retention-choices input { flex: none; accent-color: var(--office-accent); }
+.assignment-outcome { margin: 14px 0; font-size: 12px; }
+.assignment-outcome code { display: inline; padding: 0 3px; margin: 0; }
+.former-personas-title { margin: 20px 18px 8px; color: var(--office-secondary); font-size: 12px; }
+.former-persona { border-top: 1px solid var(--office-border); }
+.former-persona summary { display: flex; align-items: center; gap: 10px; padding: 12px 18px; color: var(--office-text); font: 650 12px var(--sans); cursor: pointer; }
+.former-persona summary:hover { background: var(--office-muted); }
+.former-persona summary:focus-visible { outline: 2px solid var(--office-accent); outline-offset: -2px; }
+.former-persona summary img { flex: none; }
+.former-persona summary::after { content: "▾"; margin-left: auto; }
+.former-persona[open] summary::after { transform: rotate(180deg); }
+.former-persona .persona-details { padding-top: 0; }
 @media (max-width: 700px) {
   .conversation-row { padding: 0 16px; }
   .live-shell .overview-list .activity-row { padding: 13px 16px; }

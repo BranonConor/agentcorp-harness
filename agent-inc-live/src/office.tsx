@@ -3,7 +3,7 @@ import { createRoot } from "react-dom/client";
 import "../../agent-inc/app/styles.css";
 import "../live.css";
 import "../sdk-chat.css";
-import { MAX_AGENTS, type Agent as SdkAgent, type Room as SdkRoom } from "../../server/types";
+import { MAX_AGENTS, type Agent as ServerAgent, type Room as ServerRoom } from "../../server/types";
 import {
   COFFEE_SPOTS, DESKS, initialProgress, Simulation,
 } from "../../agent-inc/game/simulation";
@@ -25,6 +25,28 @@ const LIVE_COFFEE_SPOTS = COFFEE_SPOTS.map(({ x }) => ({ x, z: LIVE_COFFEE_Z + 0
 const STEP = 1 / 30;
 const connectedStatus = "Live local Copilot SDK office";
 const themeKey = "agentcorp-harness-theme";
+type AgentPersona = {
+  id: string; name: string; artId: number; createdAt: number; updatedAt: number;
+  profile: { workingStyle: string; specialties: string[]; title: string; rank: string };
+  memories: { id: string; text: string; provenance: string; approvedAt: number }[];
+};
+type Assignment = {
+  id: string; personaId: string; sessionId: string; workspace: string;
+  repository?: ServerAgent["repository"]; startedAt: number; endedAt?: number;
+  outcome?: string; status: "active" | "completed" | "interrupted";
+  messages: ServerAgent["messages"];
+};
+type SdkAgent = ServerAgent & { personaId?: string; assignmentId?: string };
+type SdkRoom = ServerRoom & { agents: SdkAgent[]; personas?: AgentPersona[]; assignments?: Assignment[] };
+function personaFor(room: SdkRoom | null, agent: SdkAgent | undefined): AgentPersona | undefined {
+  return room?.personas?.find(persona => persona.id === agent?.personaId);
+}
+function agentName(room: SdkRoom | null, agent: SdkAgent | undefined): string {
+  return personaFor(room, agent)?.name || agent?.name || agent?.id || "Agent";
+}
+function agentArt(room: SdkRoom | null, agent: SdkAgent): number {
+  return personaFor(room, agent)?.artId ?? agent.persona ?? 0;
+}
 function isActive(agent: SdkAgent): agent is SdkAgent & { deskIndex: number } {
   return !agent.archived && agent.deskIndex !== null;
 }
@@ -59,7 +81,7 @@ function officeRoom(room: SdkRoom | null): OfficeRoom {
 }
 
 function deskActors(room: SdkRoom): (Actor | null)[] {
-  const names = new Map(room.agents.map(agent => [agent.sessionId, agent.name]));
+  const names = new Map(room.agents.map(agent => [agent.sessionId, agentName(room, agent)]));
   const bySession = new Map(roomActors(officeRoom(room)).map(actor => [actor.key, {
     ...actor, name: names.get(actor.key) ?? actor.name
   }]));
@@ -157,7 +179,7 @@ function applyRoom(scene: Simulation, actors: (Actor | null)[], occupied: boolea
 function updatePersonas(world: ReturnType<typeof createWorld> | undefined, room: SdkRoom): void {
   if (!world) return;
   for (const agent of room.agents) {
-    if (isActive(agent) && agent.persona !== undefined) world.setAgentPersona(agent.deskIndex, agent.persona);
+    if (isActive(agent)) world.setAgentPersona(agent.deskIndex, agentArt(room, agent));
   }
 }
 
@@ -202,9 +224,19 @@ function LiveOffice() {
   const [chatOptionsOpen, setChatOptionsOpen] = useState(false);
   const [editingRepoHint, setEditingRepoHint] = useState(false);
   const [confirmAgentId, setConfirmAgentId] = useState<string | null>(null);
-  const [confirmChecked, setConfirmChecked] = useState(false);
+  const [confirmIdentity, setConfirmIdentity] = useState("");
+  const [retention, setRetention] = useState<"keep" | "delete-sdk">("keep");
   const [confirmError, setConfirmError] = useState("");
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
+  const [assignmentAgentId, setAssignmentAgentId] = useState<string | null>(null);
+  const [assignmentOutcome, setAssignmentOutcome] = useState("");
+  const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
+  const [profileEditingId, setProfileEditingId] = useState<string | null>(null);
+  const [profileDraft, setProfileDraft] = useState({
+    name: "", artId: 0, workingStyle: "", specialties: "", title: "", rank: "",
+  });
+  const [noteDrafts, setNoteDrafts] = useState<Record<string, { text: string; provenance: string }>>({});
+  const [profileBusy, setProfileBusy] = useState(false);
   const [themePreference, setThemePreference] = useState<"system" | "light" | "dark">(() => {
     const saved = localStorage.getItem(themeKey);
     return saved === "light" || saved === "dark" ? saved : "system";
@@ -297,7 +329,8 @@ function LiveOffice() {
   };
   const closeConfirmation = () => {
     setConfirmAgentId(null);
-    setConfirmChecked(false);
+    setConfirmIdentity("");
+    setRetention("keep");
     setConfirmError("");
     window.setTimeout(() => confirmTriggerRef.current?.focus(), 0);
   };
@@ -342,6 +375,8 @@ function LiveOffice() {
         event.preventDefault();
         if (confirmAgentId) {
           if (!confirmSubmitting) closeConfirmation();
+        } else if (assignmentAgentId && !assignmentSubmitting) {
+          setAssignmentAgentId(null);
         } else if (chatOptionsOpen) setChatOptionsOpen(false);
         else if (menuAgentId) setMenuAgentId(null);
         else if (selectedRef.current) backToActivity();
@@ -353,7 +388,7 @@ function LiveOffice() {
       window.clearTimeout(focusTimer);
       window.removeEventListener("keydown", onKeyDown);
     };
-  }, [panelOpen, selected, menuAgentId, chatOptionsOpen, confirmAgentId, confirmSubmitting]);
+  }, [panelOpen, selected, menuAgentId, chatOptionsOpen, confirmAgentId, confirmSubmitting, assignmentAgentId, assignmentSubmitting]);
 
   useEffect(() => {
     if (confirmAgentId) confirmCheckboxRef.current?.focus();
@@ -523,9 +558,11 @@ function LiveOffice() {
     };
   }, []);
 
-  const names = new Map(sdkRoom?.agents.map(agent => [agent.sessionId, agent.name]) ?? []);
+  const names = new Map(sdkRoom?.agents.map(agent => [agent.sessionId, agentName(sdkRoom, agent)]) ?? []);
   const actors = roomActors(room).map(actor => ({ ...actor, name: names.get(actor.key) ?? actor.name }));
   const activeAgents = sdkRoom?.agents.filter(isActive) ?? [];
+  const formerPersonas = (sdkRoom?.personas ?? []).filter(persona =>
+    !sdkRoom?.agents.some(agent => agent.personaId === persona.id));
   const deskCount = MAX_LIVE_DESKS;
   const firstEmptyDesk = Array.from({ length: MAX_AGENTS }, (_, index) => index)
     .find(index => !activeAgents.some(agent => agent.deskIndex === index));
@@ -542,10 +579,18 @@ function LiveOffice() {
   const compactStatus = connected ? "Online" : sdkRoom?.error ? "Error" :
     signKind === "connecting" ? "Connecting" : "Offline";
   const selectedAgent = sdkRoom?.agents.find(agent => agent.sessionId === selected);
+  const selectedPersona = personaFor(sdkRoom, selectedAgent);
+  const previousAssignments = (sdkRoom?.assignments ?? [])
+    .filter(assignment => assignment.personaId === selectedPersona?.id && assignment.id !== selectedAgent?.assignmentId)
+    .sort((a, b) => b.startedAt - a.startedAt);
+  const currentAssignment = sdkRoom?.assignments?.find(assignment => assignment.id === selectedAgent?.assignmentId);
   const displayedMessages = selectedAgent?.messages.length ? selectedAgent.messages :
     selectedAgent && !selectedAgent.archived ?
       [{ id: `greeting-${selectedAgent.id}`, role: "assistant" as const,
-        content: greetingForPersona(selectedAgent.persona ?? 0) }] : [];
+        content: greetingForPersona(agentArt(sdkRoom, selectedAgent)) }] : [];
+  useEffect(() => {
+    setProfileEditingId(null);
+  }, [selectedPersona?.id, selected]);
   useLayoutEffect(() => {
     const bubbles = Array.from(chatScroll.current?.querySelectorAll<HTMLElement>(
       ".conversation-message:not(.access-message) .message-bubble") ?? []);
@@ -582,9 +627,118 @@ function LiveOffice() {
     item.ref === chosenRepository.defaultBranch);
   const selectedActor = actors.find(actor => actor.key === selected);
   const confirmAgent = sdkRoom?.agents.find(agent => agent.id === confirmAgentId);
-  const confirmName = actors.find(actor => actor.key === confirmAgent?.sessionId)?.name ?? "this agent";
+  const confirmName = agentName(sdkRoom, confirmAgent);
+  const assignmentAgent = sdkRoom?.agents.find(agent => agent.id === assignmentAgentId);
   const lifecycleBusy = (agent: SdkAgent) =>
     !!agent.review || !!agent.accessRequest || ["thinking", "working", "permission"].includes(agent.phase);
+  const canStartAssignment = (agent: SdkAgent) => !agent.archived && agent.phase === "idle" && !lifecycleBusy(agent);
+  const startProfileEdit = (persona: AgentPersona) => {
+    setProfileDraft({
+      name: persona.name, artId: persona.artId, workingStyle: persona.profile.workingStyle,
+      specialties: persona.profile.specialties.join(", "), title: persona.profile.title, rank: persona.profile.rank,
+    });
+    setProfileEditingId(persona.id);
+  };
+  const saveProfile = async (persona: AgentPersona) => {
+    followTail.current = false;
+    setProfileBusy(true);
+    try {
+      if (await act("persona-profile", {
+        personaId: persona.id, name: profileDraft.name.trim(), artId: Number(profileDraft.artId),
+        workingStyle: profileDraft.workingStyle.trim(), specialties: profileDraft.specialties
+          .split(/[,\n]/).map(item => item.trim()).filter(Boolean),
+        title: profileDraft.title.trim(), rank: profileDraft.rank.trim(),
+      })) setProfileEditingId(null);
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+  const profileEditor = (persona: AgentPersona) => <form className="persona-form" onSubmit={event => {
+    event.preventDefault();
+    void saveProfile(persona);
+  }}>
+    <label>Name <input required maxLength={80} value={profileDraft.name}
+      onChange={event => setProfileDraft({ ...profileDraft, name: event.target.value })} /></label>
+    <label>Portrait number <input required type="number" min="0" max={MAX_AGENTS - 1} step="1" value={profileDraft.artId}
+      onChange={event => setProfileDraft({ ...profileDraft, artId: Number(event.target.value) })} /></label>
+    <label>Title <input maxLength={1000} value={profileDraft.title}
+      onChange={event => setProfileDraft({ ...profileDraft, title: event.target.value })} /></label>
+    <label>Rank <input maxLength={1000} value={profileDraft.rank}
+      onChange={event => setProfileDraft({ ...profileDraft, rank: event.target.value })} /></label>
+    <label>Working style <textarea rows={3} value={profileDraft.workingStyle}
+      onChange={event => setProfileDraft({ ...profileDraft, workingStyle: event.target.value })} /></label>
+    <label>Specialties (comma-separated) <input value={profileDraft.specialties}
+      onChange={event => setProfileDraft({ ...profileDraft, specialties: event.target.value })} /></label>
+    <div className="persona-actions">
+      <button type="button" disabled={profileBusy} onClick={() => setProfileEditingId(null)}>Cancel</button>
+      <button type="submit" disabled={profileBusy || !profileDraft.name.trim()}>Save profile</button>
+    </div>
+  </form>;
+  const addNote = async (persona: AgentPersona) => {
+    const note = noteDrafts[persona.id];
+    if (!note?.text.trim() || !note.provenance.trim()) return;
+    followTail.current = false;
+    setProfileBusy(true);
+    try {
+      if (await act("persona-memory", {
+        personaId: persona.id, text: note.text.trim(), provenance: note.provenance.trim(),
+      })) setNoteDrafts(drafts => {
+        const next = { ...drafts };
+        delete next[persona.id];
+        return next;
+      });
+    } finally {
+      setProfileBusy(false);
+    }
+  };
+  const personaNotes = (persona: AgentPersona) => {
+    const note = noteDrafts[persona.id] ?? { text: "", provenance: "" };
+    return <div className="persona-notes">
+    <h4>Curated notes</h4>
+    {!persona.memories.length && <p>No approved notes yet.</p>}
+    <ul>{persona.memories.map(memory => <li key={memory.id}>
+      <span>{memory.text}</span>
+      <small>Source: {memory.provenance} · {new Date(memory.approvedAt).toLocaleDateString()}</small>
+      <button type="button" disabled={profileBusy} aria-label={`Remove note: ${memory.text}`}
+        onClick={() => {
+          if (window.confirm("Remove this curated note?")) {
+            followTail.current = false;
+            setProfileBusy(true);
+            void act("persona-memory-remove", { personaId: persona.id, memoryId: memory.id })
+              .finally(() => setProfileBusy(false));
+          }
+        }}>Remove note</button>
+    </li>)}</ul>
+    <form className="persona-form" onSubmit={event => {
+      event.preventDefault();
+      void addNote(persona);
+    }}>
+      <label>New curated note <textarea required rows={2} value={note.text}
+        onChange={event => setNoteDrafts(drafts => ({
+          ...drafts, [persona.id]: { ...note, text: event.target.value },
+        }))} /></label>
+      <label>Provenance (where this came from) <input required value={note.provenance}
+        onChange={event => setNoteDrafts(drafts => ({
+          ...drafts, [persona.id]: { ...note, provenance: event.target.value },
+        }))} /></label>
+      <button type="submit" disabled={profileBusy || !note.text.trim() || !note.provenance.trim()}>Add note</button>
+    </form>
+  </div>;
+  };
+  const newAssignment = async () => {
+    if (!assignmentAgent || !canStartAssignment(assignmentAgent) || assignmentSubmitting) return;
+    setAssignmentSubmitting(true);
+    try {
+      if (await act("new-assignment", { agentId: assignmentAgent.id, ...(assignmentOutcome.trim() ?
+        { outcome: assignmentOutcome.trim() } : {}) })) {
+        setAssignmentAgentId(null);
+        setAssignmentOutcome("");
+        backToActivity();
+      }
+    } finally {
+      setAssignmentSubmitting(false);
+    }
+  };
   const archiveAgent = async (agent: SdkAgent) => {
     setMenuAgentId(null);
     if (await act("archive", { agentId: agent.id })) {
@@ -597,19 +751,22 @@ function LiveOffice() {
     await act("restore", { agentId: agent.id });
   };
   const confirmSendHome = async () => {
-    if (!confirmAgent || !confirmChecked || confirmSubmitting) return;
+    if (!confirmAgent || confirmIdentity.trim() !== confirmName && confirmIdentity.trim() !== confirmAgent.id ||
+      confirmSubmitting) return;
     setConfirmSubmitting(true);
     try {
       setConfirmError("");
       setActionError("");
-      updateRoom(await post("send-home", { agentId: confirmAgent.id, confirmedAgentId: confirmAgent.id }));
+      updateRoom(await post("fire", {
+        agentId: confirmAgent.id, confirmedAgentId: confirmAgent.id, retention,
+      }));
       setConfirmAgentId(null);
-      setConfirmChecked(false);
+      setConfirmIdentity("");
       closeActivity();
       setTab("agents");
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      setConfirmError(`SDK deletion failed; this agent and its conversation remain recorded. ${message}`);
+      setConfirmError(`Could not fire this agent; its record remains unchanged. ${message}`);
       setActionError(message);
     } finally {
       setConfirmSubmitting(false);
@@ -811,7 +968,7 @@ function LiveOffice() {
                 {!!sdkRoom?.worktrees?.length && <div className="activity-row">
                   <div className="activity-row-heading"><strong>Preserved worktrees</strong>
                     <span className="activity-tag">{sdkRoom.worktrees.length} created</span></div>
-                  <p>Never deleted on revoke, archive or Send home. Inspect or clean up manually with Git after reviewing changes.</p>
+                  <p>Never deleted on revoke, archive or fire. Inspect or clean up manually with Git after reviewing changes.</p>
                   {sdkRoom.worktrees.map(tree => <p className="workspace-path" key={tree.path}>
                     {tree.branch} · {tree.path}</p>)}
                 </div>}
@@ -820,24 +977,24 @@ function LiveOffice() {
             )}
             {!selectedAgent && tab === "agents" && (
               <section className="activity-view conversations-list" aria-label="Agents and conversations">
-                {!(sdkRoom?.agents.length) && <p className="activity-empty">No agents yet. Click + above an empty desk to start a conversation.</p>}
+                {!(sdkRoom?.agents.length) && <p className="activity-empty">No active agents. Click + above an empty desk to create one.</p>}
                 {[...(sdkRoom?.agents ?? [])].sort((a, b) =>
                   Number(a.archived) - Number(b.archived) || b.updatedAt - a.updatedAt ||
                   (a.deskIndex ?? a.lastDeskIndex ?? 0) - (b.deskIndex ?? b.lastDeskIndex ?? 0)).map(agent => {
                   const actor = actors.find(item => item.key === agent.sessionId);
                   const last = agent.messages.at(-1);
-                  const name = actor?.name ?? `Desk ${(agent.deskIndex ?? agent.lastDeskIndex ?? 0) + 1}`;
+                  const name = agentName(sdkRoom, agent);
                   return <div className={`conversation-row ${agent.archived ? "agent-archived" : ""}`} key={agent.id}>
                     <button type="button" className="agent-row-main" onClick={() => selectActor(agent.sessionId)}
                       aria-label={`Open ${name}${agent.archived ? " archived" : ""} conversation`}>
-                      <span className="worker-avatar" aria-hidden="true">{agent.persona !== undefined &&
-                        <img src={agentPortrait(agent.persona)} alt="" width="42" height="42" />}</span>
+                      <span className="worker-avatar" aria-hidden="true">
+                        <img src={agentPortrait(agentArt(sdkRoom, agent))} alt="" width="42" height="42" /></span>
                       <span className="conversation-row-text">
                         <strong>{name}</strong>
                         <span className="conversation-preview">{last ? <>
                           {last.role === "user" && "You: "}
                           <SafeMarkdown content={last.content} preview />
-                        </> : agent.archived ? "New conversation" : greetingForPersona(agent.persona ?? 0)}</span>
+                        </> : agent.archived ? "No messages in this assignment" : greetingForPersona(agentArt(sdkRoom, agent))}</span>
                         <small>{agent.archived ? `Archived · former desk ${(agent.lastDeskIndex ?? 0) + 1}` :
                           `Desk ${agent.deskIndex! + 1} · ${agent.activity}`}</small>
                         {agent.repository && <small>{agent.repository.worktree ? "Worktree" : "Research"}: {agent.repository.name} · {agent.repository.scope === "task" ? "this task" : "this session"}</small>}
@@ -853,6 +1010,13 @@ function LiveOffice() {
                           event.currentTarget.scrollIntoView({ block: "center" });
                         }}>⋮</button>
                       {menuAgentId === agent.id && <div className="agent-action-menu" role="menu" aria-label={`${name} actions`}>
+                        <button role="menuitem" type="button" disabled={!canStartAssignment(agent)}
+                          title="Start with a new session; previous assignment and files stay preserved"
+                          onClick={() => {
+                            setAssignmentAgentId(agent.id);
+                            setAssignmentOutcome("");
+                            setMenuAgentId(null);
+                          }}>New assignment…</button>
                         {agent.archived ?
                           <button role="menuitem" type="button" disabled={officeFull}
                             title={officeFull ? "Office full: archive another agent to free a desk" : "Return this agent to an empty desk"}
@@ -861,33 +1025,115 @@ function LiveOffice() {
                             title={lifecycleBusy(agent) ? "Finish the turn or decide the permission first" : "Free the desk but keep the conversation"}
                             onClick={() => void archiveAgent(agent)}>Archive · keep conversation</button>}
                         <button role="menuitem" type="button" className="agent-menu-danger" disabled={lifecycleBusy(agent)}
-                          title={lifecycleBusy(agent) ? "Finish the turn or decide the permission first" : "Delete SDK session and conversation; keep scratch files"}
+                          title={lifecycleBusy(agent) ? "Finish the turn or decide the permission first" : "Choose how to retain the SDK session; working files always remain"}
                           onClick={event => {
                             confirmTriggerRef.current = event.currentTarget.closest("[data-agent-menu]")
                               ?.querySelector<HTMLButtonElement>(".agent-menu-toggle") ?? null;
                             setConfirmAgentId(agent.id);
-                            setConfirmChecked(false);
+                            setConfirmIdentity("");
+                            setRetention("keep");
                             setConfirmError("");
                             setMenuAgentId(null);
                           }}>
-                          Send home permanently…</button>
+                          Fire agent…</button>
                         {lifecycleBusy(agent) && <small>Wait for the turn or decide its permission first.</small>}
                         {agent.archived && officeFull && <small>Office full: archive another agent before restoring.</small>}
                         <div className="agent-menu-workspace">
                           <span>Tool working directory · {agent.repository?.worktree ? "isolated worktree" :
                             agent.workspaceKind === "root" ? "original root" : "scratch"}</span>
                           <code>{agent.repository?.worktree?.path ?? agent.workspace}</code>
-                          {agent.repository?.worktree && <small>Branch: {agent.repository.worktree.branch} · preserved on archive/send home</small>}
+                          {agent.repository?.worktree && <small>Branch: {agent.repository.worktree.branch} · preserved on archive/fire</small>}
                           <small>Not an OS sandbox. Review each tool permission.</small>
                         </div>
                       </div>}
                     </div>
                   </div>;
                 })}
+                {formerPersonas.length > 0 && <>
+                  <h3 className="former-personas-title">Former personas</h3>
+                  {formerPersonas.map(persona =>
+                    <details className="former-persona" key={persona.id}>
+                      <summary><img src={agentPortrait(persona.artId)} alt="" width="36" height="36" />
+                        <span>{persona.name} · {((sdkRoom?.assignments ?? [])
+                          .filter(assignment => assignment.personaId === persona.id)).length} preserved assignments</span></summary>
+                      <div className="persona-details">
+                        <p>{[persona.profile.title, persona.profile.rank, `Portrait #${persona.artId}`]
+                          .filter(Boolean).join(" · ")}</p>
+                        {persona.profile.workingStyle && <p><strong>Working style:</strong> {persona.profile.workingStyle}</p>}
+                        {!!persona.profile.specialties.length &&
+                          <p><strong>Specialties:</strong> {persona.profile.specialties.join(", ")}</p>}
+                        {profileEditingId === persona.id ? profileEditor(persona) :
+                          <button type="button" onClick={() => startProfileEdit(persona)}>Edit profile</button>}
+                        {personaNotes(persona)}
+                        <div className="assignment-history"><h4>Preserved assignments</h4>
+                          <ul>{(sdkRoom?.assignments ?? []).filter(assignment => assignment.personaId === persona.id)
+                            .sort((a, b) => b.startedAt - a.startedAt).map(assignment =>
+                              <li key={assignment.id}><strong>{assignment.outcome || "Assignment"}</strong>
+                                <span>{assignment.status} · {new Date(assignment.startedAt).toLocaleString()}</span>
+                                {assignment.retention && <span>SDK session: {assignment.retention === "keep" ? "retained" : "deleted by request"}</span>}
+                                <span>Workspace: <code>{assignment.workspace}</code></span>
+                                <span>{assignment.messages.length} messages preserved</span>
+                                {assignment.messages.length > 0 && <details className="assignment-transcript">
+                                  <summary>Read preserved transcript</summary>
+                                  {assignment.messages.map(message => <div key={message.id}>
+                                    <strong>{message.role}</strong>
+                                    <SafeMarkdown content={message.content} />
+                                  </div>)}
+                                </details>}
+                              </li>)}</ul>
+                        </div>
+                      </div>
+                    </details>)}
+                </>}
               </section>
             )}
             {selectedAgent && (
               <section className="activity-view conversation-view" aria-label="SDK conversation">
+                  <div className="persona-details">
+                    <div className="persona-heading">
+                      <img src={agentPortrait(agentArt(sdkRoom, selectedAgent))} alt="" width="42" height="42" />
+                      <div><h3>{agentName(sdkRoom, selectedAgent)}</h3>
+                        {selectedPersona && <span>{[selectedPersona.profile.title, selectedPersona.profile.rank,
+                          `Portrait #${selectedPersona.artId}`].filter(Boolean).join(" · ")}</span>}
+                      </div>
+                    </div>
+                    {selectedPersona ? <>
+                      {profileEditingId === selectedPersona.id ? profileEditor(selectedPersona) : <>
+                        {selectedPersona.profile.workingStyle && <p><strong>Working style:</strong> {selectedPersona.profile.workingStyle}</p>}
+                        {!!selectedPersona.profile.specialties.length &&
+                          <p><strong>Specialties:</strong> {selectedPersona.profile.specialties.join(", ")}</p>}
+                        <button type="button" onClick={() => startProfileEdit(selectedPersona)}>Edit profile</button>
+                      </>}
+                      {personaNotes(selectedPersona)}
+                    </> : <p>Profile is not available for this agent yet.</p>}
+                    <div className="assignment-history">
+                      <h4>Assignment history</h4>
+                      {currentAssignment && <p>Current: started {new Date(currentAssignment.startedAt).toLocaleString()}
+                        {currentAssignment.outcome && <> · {currentAssignment.outcome}</>}</p>}
+                      {!previousAssignments.length && <p>No previous assignments.</p>}
+                      <ul>{previousAssignments.map(assignment => <li key={assignment.id}>
+                        <strong>{assignment.outcome || "Previous assignment"}</strong>
+                        <span>{assignment.status} · {new Date(assignment.startedAt).toLocaleString()}
+                          {assignment.endedAt && <> – {new Date(assignment.endedAt).toLocaleString()}</>}</span>
+                        <span>Workspace: <code>{assignment.workspace}</code></span>
+                        {assignment.repository && <span>Repository: {assignment.repository.name}</span>}
+                        <span>{assignment.messages.length} messages preserved</span>
+                        {assignment.messages.length > 0 && <details className="assignment-transcript">
+                          <summary>Read preserved transcript</summary>
+                          {assignment.messages.map(message => <div key={message.id}>
+                            <strong>{message.role}</strong>
+                            <SafeMarkdown content={message.content} />
+                          </div>)}
+                        </details>}
+                      </li>)}</ul>
+                      {!selectedAgent.archived && <button type="button" disabled={!canStartAssignment(selectedAgent)}
+                        title={!canStartAssignment(selectedAgent) ? "Available only when this agent is idle and no turn or permission is pending" : undefined}
+                        onClick={() => {
+                          setAssignmentAgentId(selectedAgent.id);
+                          setAssignmentOutcome("");
+                        }}>New assignment…</button>}
+                    </div>
+                  </div>
                   <div className="conversation-messages">
                     {selectedAgent.archived && selectedAgent.messages.length === 0 &&
                       <p className="activity-empty conversation-empty">No messages yet.</p>}
@@ -1020,6 +1266,34 @@ function LiveOffice() {
           </form>}
         </aside>
       </div>
+      {assignmentAgent && <div className="send-home-backdrop">
+        <div className="send-home-dialog" role="dialog" aria-modal="true"
+          aria-labelledby="assignment-heading" aria-describedby="assignment-description"
+          onKeyDown={event => {
+            if (event.key !== "Tab") return;
+            const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLElement>("input:not(:disabled), button:not(:disabled)"));
+            if (event.shiftKey && document.activeElement === focusable[0]) {
+              event.preventDefault();
+              focusable.at(-1)?.focus();
+            } else if (!event.shiftKey && document.activeElement === focusable.at(-1)) {
+              event.preventDefault();
+              focusable[0]?.focus();
+            }
+          }}>
+          <h2 id="assignment-heading">New assignment for {agentName(sdkRoom, assignmentAgent)}</h2>
+          <p id="assignment-description">This starts a fresh SDK session. The previous assignment, its messages,
+            and working files remain preserved. Repository permissions do not carry over; grant access again if needed.</p>
+          <label className="assignment-outcome">Outcome of previous assignment (optional)
+            <input autoFocus maxLength={240} value={assignmentOutcome}
+              onChange={event => setAssignmentOutcome(event.target.value)} placeholder="What did the previous assignment accomplish?" />
+          </label>
+          <div className="send-home-buttons">
+            <button type="button" disabled={assignmentSubmitting} onClick={() => setAssignmentAgentId(null)}>Cancel</button>
+            <button type="button" disabled={!canStartAssignment(assignmentAgent) || assignmentSubmitting}
+              onClick={() => void newAssignment()}>{assignmentSubmitting ? "Starting…" : "Start new assignment"}</button>
+          </div>
+        </div>
+      </div>}
       {confirmAgent && <div className="send-home-backdrop">
         <div className="send-home-dialog" role="alertdialog" aria-modal="true"
           aria-labelledby="send-home-heading" aria-describedby="send-home-description"
@@ -1036,22 +1310,30 @@ function LiveOffice() {
               first?.focus();
             }
           }}>
-          <h2 id="send-home-heading">Send {confirmName} home permanently?</h2>
-          <p id="send-home-description">This deletes this agent’s SDK session and its local conversation record,
-            then removes its sprite. It cannot be undone. Other agents are not affected.</p>
-          <p>The working files stay untouched at <code>{confirmAgent.workspace}</code>.</p>
+          <h2 id="send-home-heading">Fire {confirmName}?</h2>
+          <p id="send-home-description">Remove this agent from the office and its active assignment.
+            Choose what happens to the SDK session. Your working files and Git worktrees are never deleted.</p>
+          <p>Working files remain at <code>{confirmAgent.workspace}</code>.</p>
           {(sdkRoom?.worktrees ?? []).filter(tree => tree.agentId === confirmAgent.id).map(tree =>
             <p key={tree.path}>The Git worktree and branch <code>{tree.branch}</code> stay at <code>{tree.path}</code>.</p>)}
-          <label className="send-home-acknowledge">
-            <input ref={confirmCheckboxRef} type="checkbox" checked={confirmChecked}
-              disabled={confirmSubmitting} onChange={event => setConfirmChecked(event.target.checked)} />
-            I understand the SDK session and chat will be deleted, but files will be kept.
+          <fieldset className="retention-choices"><legend>SDK history retention</legend>
+            <label><input type="radio" name="retention" value="keep" checked={retention === "keep"}
+              disabled={confirmSubmitting} onChange={() => setRetention("keep")} />
+              Keep SDK session and all history (default)</label>
+            <label><input type="radio" name="retention" value="delete-sdk" checked={retention === "delete-sdk"}
+              disabled={confirmSubmitting} onChange={() => setRetention("delete-sdk")} />
+              Delete SDK session only; working files remain untouched</label>
+          </fieldset>
+          <label className="assignment-outcome">Type <strong>{confirmName}</strong> or agent ID <code>{confirmAgent.id}</code> to confirm
+            <input ref={confirmCheckboxRef} type="text" autoComplete="off" value={confirmIdentity}
+              disabled={confirmSubmitting} onChange={event => setConfirmIdentity(event.target.value)} />
           </label>
           {confirmError && <p className="send-home-error" role="alert">{confirmError}</p>}
           <div className="send-home-buttons">
             <button type="button" disabled={confirmSubmitting} onClick={closeConfirmation}>Cancel</button>
-            <button type="button" className="send-home-confirm" disabled={!confirmChecked || confirmSubmitting}
-              onClick={() => void confirmSendHome()}>{confirmSubmitting ? "Deleting SDK session…" : "Permanently send home"}</button>
+            <button type="button" className="send-home-confirm"
+              disabled={confirmSubmitting || (confirmIdentity.trim() !== confirmName && confirmIdentity.trim() !== confirmAgent.id)}
+              onClick={() => void confirmSendHome()}>{confirmSubmitting ? "Firing…" : "Fire agent"}</button>
           </div>
         </div>
       </div>}

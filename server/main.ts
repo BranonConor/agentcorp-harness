@@ -121,6 +121,46 @@ const server = createServer(async (request, response) => {
         await room.sendHome(body.agentId);
         return json(response, 200, room.state);
       }
+      if (url.pathname === "/api/fire" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string" || body.confirmedAgentId !== body.agentId ||
+          !["keep", "delete-sdk"].includes(String(body.retention))) throw new Error("Explicit confirmation and retention choice are required.");
+        await room.fire(body.agentId, body.retention as "keep" | "delete-sdk");
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/new-assignment" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string" || (body.outcome !== undefined && typeof body.outcome !== "string")) {
+          throw new Error("Choose a persona and optional outcome.");
+        }
+        await room.newAssignment(body.agentId, body.outcome as string | undefined);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/persona-profile" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.personaId !== "string" || typeof body.name !== "string" ||
+          typeof body.artId !== "number" || typeof body.workingStyle !== "string" ||
+          !Array.isArray(body.specialties) || !body.specialties.every(item => typeof item === "string") ||
+          typeof body.title !== "string" || typeof body.rank !== "string") throw new Error("Invalid persona profile.");
+        await room.editPersona(body.personaId, {
+          name: body.name, artId: body.artId, workingStyle: body.workingStyle,
+          specialties: body.specialties as string[], title: body.title, rank: body.rank
+        });
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/persona-memory" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.personaId !== "string" || typeof body.text !== "string" ||
+          typeof body.provenance !== "string") throw new Error("Note and provenance are required.");
+        await room.addMemory(body.personaId, body.text, body.provenance);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/persona-memory-remove" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.personaId !== "string" || typeof body.memoryId !== "string") throw new Error("Choose a memory note.");
+        await room.removeMemory(body.personaId, body.memoryId);
+        return json(response, 200, room.state);
+      }
       if (url.pathname === "/api/repository" && request.method === "POST") {
         const body = await payload(request);
         if (typeof body.agentId !== "string" || !(body.path === null || typeof body.path === "string")) throw new Error("Choose an agent and an absolute repository path, or null to revoke.");

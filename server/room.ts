@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import type { PermissionRequest, PermissionRequestResult, SessionEvent } from "@github/copilot-sdk";
-import { MAX_AGENTS, type Adapter, type Agent, type LiveSession, type Review, type Room, type RepositoryRequest } from "./types.js";
+import { MAX_AGENTS, type Adapter, type Agent, type AgentPersona, type LiveSession, type Review, type Room, type RepositoryRequest } from "./types.js";
 import type { Store } from "./storage.js";
 import { createResearchWorktree, validateRepository, type AccessIntent, type RepositoryGrant } from "./repository.js";
 import { uniqueAgentName } from "../agent-inc-live/src/room.js";
@@ -36,6 +36,9 @@ export class RoomController {
     const saved = await store.read();
     if (saved && saved.workspace !== workspace) throw new Error(`Saved sessions belong to ${saved.workspace}. Choose that workspace or move .local/state.json aside deliberately.`);
     if (saved && !("agents" in saved) && !("agent" in saved)) throw new Error("Unrecognized saved room format; state was not changed.");
+    if (saved && "schemaVersion" in saved && saved.schemaVersion !== undefined && saved.schemaVersion !== 2) {
+      throw new Error("Unknown state schema; state was not changed.");
+    }
     const now = Date.now();
     const state: Room = saved
       ? "agents" in saved
@@ -49,7 +52,9 @@ export class RoomController {
       state.agents.some((agent, index) => !agent.id || !agent.sessionId || !agent.workspace ||
         !(agent.workspaceKind === "root" && agent.workspace === workspace ||
           agent.workspaceKind === "scratch" && /^[0-9a-f-]{36}$/.test(agent.id) &&
-          agent.workspace === join(workspace, "agents", agent.id)) ||
+          (agent.workspace === join(workspace, "agents", agent.id) ||
+            !!agent.assignmentId && /^[0-9a-f-]{36}$/.test(agent.assignmentId) &&
+            agent.workspace === join(workspace, "agents", agent.assignmentId))) ||
         (agent.archived ? agent.deskIndex !== null :
           !Number.isInteger(agent.deskIndex) || agent.deskIndex === null ||
           agent.deskIndex < 0 || agent.deskIndex >= MAX_AGENTS) ||
@@ -74,8 +79,10 @@ export class RoomController {
       if (!Number.isInteger(agent.persona) || agent.persona < 0 || agent.persona >= MAX_AGENTS ||
         (!agent.archived && used.has(agent.persona))) throw new Error("Saved sprite personas collide or are invalid; state was not changed.");
       if (!agent.archived) used.add(agent.persona);
-      const name = agent.name && !assigned.has(agent.name) ?
-        agent.name : uniqueAgentName(agent.sessionId, names);
+      if (state.schemaVersion === 2 && agent.name && assigned.has(agent.name)) {
+        throw new Error("Saved agent names collide; state was not changed.");
+      }
+      const name = agent.name && !assigned.has(agent.name) ? agent.name : uniqueAgentName(agent.sessionId, names);
       agent.name = name;
       names.add(name);
       assigned.add(name);
@@ -89,6 +96,60 @@ export class RoomController {
       }
       if (agent.repository?.scope === "task") agent.repository = undefined;
       if (agent.repository && !room.state.knownRepositories.includes(agent.repository.path)) room.state.knownRepositories.push(agent.repository.path);
+    }
+    if (state.schemaVersion === 2) {
+      if (!Array.isArray(state.personas) || !Array.isArray(state.assignments)) {
+        throw new Error("Saved persona roster is invalid; state was not changed.");
+      }
+      const ids = new Set<string>();
+      const names = new Set<string>();
+      for (const persona of state.personas) {
+        if (!persona?.id || ids.has(persona.id) || !persona.name?.trim() ||
+          names.has(persona.name.trim().toLocaleLowerCase()) ||
+          !Number.isInteger(persona.artId) || persona.artId < 0 || persona.artId >= MAX_AGENTS ||
+          !persona.profile || !Array.isArray(persona.profile.specialties) || !Array.isArray(persona.memories)) {
+          throw new Error("Saved persona roster is invalid; state was not changed.");
+        }
+        ids.add(persona.id);
+        names.add(persona.name.trim().toLocaleLowerCase());
+      }
+      const assignmentIds = new Set<string>();
+      const sdkIds = new Set<string>();
+      for (const assignment of state.assignments) {
+        if (!assignment?.id || assignmentIds.has(assignment.id) || !ids.has(assignment.personaId) ||
+          !assignment.sessionId || sdkIds.has(assignment.sessionId) || !Array.isArray(assignment.messages) ||
+          !["active", "completed", "interrupted"].includes(assignment.status)) {
+          throw new Error("Saved assignment history is invalid; state was not changed.");
+        }
+        assignmentIds.add(assignment.id);
+        sdkIds.add(assignment.sessionId);
+      }
+      if (state.agents.some(agent => {
+        const persona = state.personas!.find(item => item.id === agent.personaId);
+        const assignment = state.assignments!.find(item => item.id === agent.assignmentId);
+        return !persona || !assignment || persona.id !== agent.id ||
+          persona.name !== agent.name || persona.artId !== agent.persona ||
+          assignment.personaId !== persona.id || assignment.sessionId !== agent.sessionId ||
+          assignment.workspace !== agent.workspace || assignment.status !== "active" ||
+          JSON.stringify(assignment.messages) !== JSON.stringify(agent.messages);
+      }) || state.assignments.some(item => item.status === "active" &&
+        !state.agents.some(agent => agent.assignmentId === item.id))) {
+        throw new Error("Saved agent/assignment linkage is invalid; state was not changed.");
+      }
+    } else {
+      state.schemaVersion = 2;
+      state.personas = state.agents.map(agent => ({
+        id: agent.id, name: agent.name!, artId: agent.persona!, createdAt: agent.createdAt,
+        updatedAt: agent.updatedAt, profile: { workingStyle: "", specialties: [], title: "", rank: "" }, memories: []
+      }));
+      state.assignments = state.agents.map(agent => ({
+        id: agent.id, personaId: agent.id, sessionId: agent.sessionId, workspace: agent.workspace,
+        repository: agent.repository, startedAt: agent.createdAt, status: "active" as const, messages: agent.messages
+      }));
+      for (const agent of state.agents) {
+        agent.personaId = agent.id;
+        agent.assignmentId = agent.id;
+      }
     }
     for (const agent of room.state.agents) {
       agent.review = undefined;
@@ -115,8 +176,17 @@ export class RoomController {
 
   private async publish(): Promise<void> {
     this.state.revision++;
+    for (const agent of this.state.agents) {
+      const assignment = this.state.assignments?.find(item => item.id === agent.assignmentId);
+      if (assignment) {
+        assignment.messages = agent.messages;
+        assignment.repository = agent.repository;
+      }
+    }
     const snapshot = structuredClone(this.state);
-    this.saving = this.saving.then(() => this.store.write(snapshot));
+    this.saving = this.saving.catch(error => {
+      console.error("Previous room save failed:", error);
+    }).then(() => this.store.write(snapshot));
     for (const listener of this.listeners) listener(snapshot);
     await this.saving;
   }
@@ -180,8 +250,11 @@ export class RoomController {
       await this.repositories.verify(grant.remote);
     }
     try {
-      const session = await this.adapter.resume(agent.sessionId, agent.workspace, request => this.permission(agent.id, request), grant,
-        intent => this.requestAccess(agent.id, intent), () => this.agent(agent.id).repository);
+      const assignmentId = agent.assignmentId;
+      const session = await this.adapter.resume(agent.sessionId, agent.workspace,
+        request => this.permission(agent.id, request, assignmentId), grant,
+        intent => this.requestAccessForAssignment(agent.id, assignmentId, intent),
+        () => this.agent(agent.id).assignmentId === assignmentId ? this.agent(agent.id).repository : undefined);
       if (session.sessionId !== agent.sessionId) {
         await session.disconnect();
         throw new Error("SDK resumed a different session identity; repository access was not changed.");
@@ -190,8 +263,11 @@ export class RoomController {
     } catch (error) {
       if (agent.messages.length !== 0 || !(error instanceof Error) ||
         !error.message.includes(`Session not found: ${agent.sessionId}`)) throw error;
-      const session = await this.adapter.create(agent.workspace, request => this.permission(agent.id, request), agent.sessionId, grant,
-        intent => this.requestAccess(agent.id, intent), () => this.agent(agent.id).repository);
+      const assignmentId = agent.assignmentId;
+      const session = await this.adapter.create(agent.workspace,
+        request => this.permission(agent.id, request, assignmentId), agent.sessionId, grant,
+        intent => this.requestAccessForAssignment(agent.id, assignmentId, intent),
+        () => this.agent(agent.id).assignmentId === assignmentId ? this.agent(agent.id).repository : undefined);
       if (session.sessionId !== agent.sessionId) {
         await session.disconnect();
         throw new Error("SDK returned a different identity for the empty-session recovery.");
@@ -216,10 +292,11 @@ export class RoomController {
     const id = randomUUID();
     try {
       const workspace = await this.adapter.prepareWorkspace(this.state.workspace, id);
-      const session = await this.adapter.create(workspace, request => this.permission(id, request), undefined, undefined,
-        intent => this.requestAccess(id, intent), () => this.agent(id).repository);
-      if (this.state.agents.some(agent => agent.sessionId === session.sessionId)) {
-        throw new Error("SDK returned a session identity already assigned to another agent.");
+      const session = await this.adapter.create(workspace, request => this.permission(id, request, id), undefined, undefined,
+        intent => this.requestAccessForAssignment(id, id, intent),
+        () => this.agent(id).assignmentId === id ? this.agent(id).repository : undefined);
+      if (this.state.assignments!.some(assignment => assignment.sessionId === session.sessionId)) {
+        throw new Error("SDK returned a session identity already assigned in recorded history.");
       }
       const now = Date.now();
       const occupied = new Set(this.state.agents.map(item => item.persona));
@@ -230,10 +307,19 @@ export class RoomController {
         choices.push(...all.filter(index => !active.has(index)));
       }
       const persona = choices[Math.floor(Math.random() * choices.length)];
-      const name = uniqueAgentName(session.sessionId, new Set(this.state.agents.map(item => item.name).filter((value): value is string => !!value)));
+      const names = new Set(this.state.personas!.map(item => item.name));
+      let name = uniqueAgentName(session.sessionId, names);
+      while (this.state.personas!.some(item => item.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+        names.add(name);
+        name = uniqueAgentName(session.sessionId, names);
+      }
       const agent: Agent = { id, deskIndex, archived: false, workspace, workspaceKind: "scratch", createdAt: now, updatedAt: now, sessionId: session.sessionId, persona, name,
-        phase: "idle", activity: "Ready to chat", messages: [] };
+        personaId: id, assignmentId: id, phase: "idle", activity: "Ready to chat", messages: [] };
       this.state.agents.push(agent);
+      this.state.personas!.push({ id, name, artId: persona, createdAt: now, updatedAt: now,
+        profile: { workingStyle: "", specialties: [], title: "", rank: "" }, memories: [] });
+      this.state.assignments!.push({ id, personaId: id, sessionId: session.sessionId, workspace,
+        startedAt: now, status: "active", messages: agent.messages });
       if (this.state.usage) this.state.usage.stale = true;
       this.attach(id, session);
       this.state.connected = true;
@@ -256,6 +342,109 @@ export class RoomController {
     const agent = this.state.agents.find(item => item.id === agentId);
     if (!agent) throw new Error("Unknown agent.");
     return agent;
+  }
+
+  private persona(personaId: string): AgentPersona {
+    const persona = this.state.personas!.find(item => item.id === personaId);
+    if (!persona) throw new Error("Unknown persona.");
+    return persona;
+  }
+
+  async editPersona(personaId: string, input: {
+    name: string; artId: number; workingStyle: string; specialties: string[]; title: string; rank: string
+  }): Promise<void> {
+    const persona = this.persona(personaId);
+    const name = input.name.trim();
+    if (!name || name.length > 80 || !Number.isInteger(input.artId) || input.artId < 0 || input.artId >= MAX_AGENTS ||
+      [input.workingStyle, input.title, input.rank].some(value => typeof value !== "string" || value.length > 1000) ||
+      !Array.isArray(input.specialties) || input.specialties.length > 20 ||
+      input.specialties.some(value => typeof value !== "string" || !value.trim() || value.length > 80)) {
+      throw new Error("Invalid persona profile.");
+    }
+    if (this.state.personas!.some(other => other.id !== personaId &&
+      other.name.toLocaleLowerCase() === name.toLocaleLowerCase())) throw new Error("Persona name must be unique.");
+    const agent = this.state.agents.find(item => item.personaId === personaId);
+    if (agent && this.lifecycle.has(agent.id)) throw new Error("Persona is changing assignments.");
+    if (agent && !agent.archived && this.state.agents.some(other => other.id !== agent.id &&
+      !other.archived && other.persona === input.artId)) throw new Error("This art is already in use at an active desk.");
+    persona.name = name;
+    persona.artId = input.artId;
+    persona.profile = { workingStyle: input.workingStyle.trim(), specialties: input.specialties.map(s => s.trim()),
+      title: input.title.trim(), rank: input.rank.trim() };
+    persona.updatedAt = Date.now();
+    if (agent) { agent.name = name; agent.persona = input.artId; agent.updatedAt = persona.updatedAt; }
+    await this.publish();
+  }
+
+  async addMemory(personaId: string, text: string, provenance: string): Promise<void> {
+    const persona = this.persona(personaId);
+    if (!text.trim() || text.length > 2000 || !provenance.trim() || provenance.length > 500) {
+      throw new Error("Memory requires a note and its provenance.");
+    }
+    persona.memories.push({ id: randomUUID(), text: text.trim(), provenance: provenance.trim(), approvedAt: Date.now() });
+    persona.updatedAt = Date.now();
+    await this.publish();
+  }
+
+  async removeMemory(personaId: string, memoryId: string): Promise<void> {
+    const persona = this.persona(personaId);
+    const index = persona.memories.findIndex(item => item.id === memoryId);
+    if (index < 0) throw new Error("Unknown memory note.");
+    persona.memories.splice(index, 1);
+    persona.updatedAt = Date.now();
+    await this.publish();
+  }
+
+  async newAssignment(agentId: string, outcome = ""): Promise<void> {
+    const agent = this.agent(agentId);
+    if (agent.archived) throw new Error("Restore this persona before assigning new work.");
+    this.availableForLifecycle(agent);
+    if (!this.sessions.has(agentId)) throw new Error("Connect this persona's SDK session before switching assignments.");
+    if (outcome.length > 1000) throw new Error("Outcome is too long.");
+    this.lifecycle.add(agentId);
+    const assignmentId = randomUUID();
+    try {
+      const workspace = await this.adapter.prepareWorkspace(this.state.workspace, assignmentId);
+      const session = await this.adapter.create(workspace,
+        request => this.permission(agentId, request, assignmentId),
+        undefined, undefined, intent => this.requestAccessForAssignment(agentId, assignmentId, intent),
+        () => this.agent(agentId).assignmentId === assignmentId ? this.agent(agentId).repository : undefined);
+      if (this.state.assignments!.some(item => item.sessionId === session.sessionId)) {
+        throw new Error("SDK returned an existing session identity; assignment was not changed.");
+      }
+      try {
+        await this.sessions.get(agentId)!.disconnect();
+      } catch (error) {
+        await session.disconnect();
+        throw error;
+      }
+      this.unsubscribers.get(agentId)?.();
+      this.sessions.delete(agentId);
+      this.unsubscribers.delete(agentId);
+      const previous = this.state.assignments!.find(item => item.id === agent.assignmentId)!;
+      previous.status = "completed";
+      previous.endedAt = Date.now();
+      previous.outcome = outcome.trim();
+      previous.messages = agent.messages;
+      previous.repository = agent.repository;
+      agent.assignmentId = assignmentId;
+      agent.sessionId = session.sessionId;
+      agent.workspace = workspace;
+      agent.workspaceKind = "scratch";
+      agent.repository = undefined;
+      agent.messages = [];
+      agent.phase = "idle";
+      agent.activity = "New assignment · no repository access";
+      agent.updatedAt = Date.now();
+      this.armedTaskGrants.delete(agentId);
+      this.state.assignments!.push({ id: assignmentId, personaId: agent.personaId!, sessionId: session.sessionId,
+        workspace, startedAt: agent.updatedAt, status: "active", messages: agent.messages });
+      this.attach(agentId, session);
+      if (this.state.usage) this.state.usage.stale = true;
+      await this.publish();
+    } finally {
+      this.lifecycle.delete(agentId);
+    }
   }
 
   private availableForLifecycle(agent: Agent): void {
@@ -318,7 +507,8 @@ export class RoomController {
     }
   }
 
-  async sendHome(agentId: string): Promise<void> {
+  async fire(agentId: string, retention: "keep" | "delete-sdk"): Promise<void> {
+    if (retention !== "keep" && retention !== "delete-sdk") throw new Error("Choose a retention policy.");
     const agent = this.agent(agentId);
     this.availableForLifecycle(agent);
     this.lifecycle.add(agentId);
@@ -327,18 +517,29 @@ export class RoomController {
       this.unsubscribers.get(agentId)?.();
       this.unsubscribers.delete(agentId);
       this.sessions.delete(agentId);
-      try {
-        await this.adapter.deleteSession(agent.sessionId);
-      } catch (error) {
-        this.report(error, agent);
-        throw error;
+      if (retention === "delete-sdk") {
+        try {
+          await this.adapter.deleteSession(agent.sessionId);
+        } catch (error) {
+          this.report(error, agent);
+          throw error;
+        }
       }
+      const assignment = this.state.assignments!.find(item => item.id === agent.assignmentId)!;
+      assignment.status = "completed";
+      assignment.endedAt = Date.now();
+      assignment.outcome = "Persona fired; files and recorded assignment history retained";
+      assignment.retention = retention;
       this.state.agents.splice(this.state.agents.indexOf(agent), 1);
       if (this.state.usage) this.state.usage.stale = true;
       await this.publish();
     } finally {
       this.lifecycle.delete(agentId);
     }
+  }
+
+  async sendHome(agentId: string): Promise<void> {
+    await this.fire(agentId, "delete-sdk");
   }
 
   requestAccess(agentId: string, intent: AccessIntent): Promise<string> {
@@ -365,6 +566,13 @@ export class RoomController {
       void this.publish().catch(cause => console.error("Cannot save access lookup failure:", cause));
     });
     return decision;
+  }
+
+  private requestAccessForAssignment(agentId: string, assignmentId: string | undefined, intent: AccessIntent): Promise<string> {
+    if (this.state.agents.find(agent => agent.id === agentId)?.assignmentId !== assignmentId) {
+      return Promise.resolve(JSON.stringify({ status: "denied", reason: "This SDK assignment is no longer active." }));
+    }
+    return this.requestAccess(agentId, intent);
   }
 
   guidedAccess(agentId: string): RepositoryRequest {
@@ -721,8 +929,11 @@ export class RoomController {
     void this.publish().catch(error => console.error("Cannot save SDK event:", error));
   }
 
-  private permission(agentId: string, request: PermissionRequest): Promise<PermissionRequestResult> {
+  private permission(agentId: string, request: PermissionRequest, assignmentId?: string): Promise<PermissionRequestResult> {
     const agent = this.state.agents.find(item => item.id === agentId);
+    if (!agent || agent.assignmentId !== assignmentId) {
+      return Promise.resolve({ kind: "reject", feedback: "This SDK assignment is no longer active." });
+    }
     if (request.kind === "custom-tool" && request.toolName === "research_attached_repository") {
       return Promise.resolve(agent?.repository && !agent.archived && !this.lifecycle.has(agentId) ?
         { kind: "approve-once" } : { kind: "reject", feedback: "No active repository research grant." });
