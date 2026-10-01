@@ -350,6 +350,32 @@
 .activity-row-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .activity-row-heading strong { font-size: 12px; font-weight: 650; }
 .activity-row p { margin: 7px 0 0; color: var(--office-secondary); font-size: 11.5px; line-height: 1.55; }
+.project-lookup, .project-confirm {
+  display: flex;
+  align-items: end;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 10px;
+}
+.project-lookup label, .project-confirm label { flex: 1 1 180px; }
+.project-lookup input, .project-confirm select { width: 100%; min-width: 0; box-sizing: border-box; }
+.project-list, .persona-projects ul { list-style: none; padding: 0; margin: 9px 0 0; }
+.project-list li, .persona-projects li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+  border-top: 1px solid var(--office-border);
+  padding: 9px 0;
+  font-size: 11px;
+}
+.project-list li > div, .persona-projects li > div:first-child { display: grid; gap: 3px; min-width: 0; }
+.project-list strong, .persona-projects strong { overflow-wrap: anywhere; }
+.project-list small, .persona-projects li span { color: var(--office-secondary); }
+.project-list label { display: inline-flex; align-items: center; gap: 4px; }
+.project-actions { display: flex; flex-wrap: wrap; gap: 5px; }
+.persona-projects { margin-top: 14px; }
 .activity-tag {
   flex: none;
   padding: 4px 7px;

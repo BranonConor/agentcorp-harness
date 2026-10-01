@@ -54,6 +54,7 @@ class MockAdapter implements Adapter {
   missing = new Set<string>();
   deleted: string[] = [];
   grants = new Map<string, RepositoryGrant | undefined>();
+  research = new Map<string, (fullName: string) => Promise<RepositoryGrant | undefined>>();
   deleteError: Error | null = null;
   modelListError: Error | null = null;
   profiles = new Map<string, ModelProfile>();
@@ -68,25 +69,27 @@ class MockAdapter implements Adapter {
     return `${root}/agents/${agentId}`;
   }
   async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant,
-    _requestAccess?: unknown, _getGrant?: unknown, profile: ModelProfile = COPILOT_PROFILE): Promise<LiveSession> {
+    _requestAccess?: unknown, getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile: ModelProfile = COPILOT_PROFILE): Promise<LiveSession> {
     const id = sessionId ?? `sdk-session-${this.nextSession++}`;
     const session = new MockSession(id);
     this.sessions.set(id, session);
     this.workspaces.set(id, workspace);
     this.permissions.set(id, permission);
     this.grants.set(id, repository);
+    if (getGrant) this.research.set(id, getGrant);
     this.profiles.set(id, profile);
     this.recreated = sessionId;
     return session;
   }
   async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, repository?: RepositoryGrant,
-    _requestAccess?: unknown, _getGrant?: unknown, profile: ModelProfile = COPILOT_PROFILE): Promise<LiveSession> {
+    _requestAccess?: unknown, getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile: ModelProfile = COPILOT_PROFILE): Promise<LiveSession> {
     this.resumed.push(id);
     if (this.failResume.has(id)) throw new Error("CLI temporarily unavailable");
     if (this.missing.has(id)) throw new Error(`Failed to load session events: Session not found: ${id}`);
     if (this.workspaces.get(id) !== workspace) throw new Error("Wrong agent workspace");
     this.permissions.set(id, permission);
     this.grants.set(id, repository);
+    if (getGrant) this.research.set(id, getGrant);
     this.profiles.set(id, profile);
     return this.sessions.get(id)!;
   }
@@ -177,7 +180,8 @@ class FixtureSource implements RepositorySource {
   constructor(readonly path: string) {}
   async lookup(hint: string): Promise<RemoteRepository[]> {
     this.lookups++;
-    return [{ fullName: `Fixture/${hint}`, url: canonicalGitHubUrl(`Fixture/${hint}`),
+    const fullName = hint.includes("/") ? hint : `Fixture/${hint}`;
+    return [{ fullName, url: canonicalGitHubUrl(fullName),
       defaultBranch: "main", privacy: "public", sizeKiB: 4 }];
   }
   async provision(repo: RemoteRepository, _signal?: AbortSignal): Promise<RepositorySnapshot> {
@@ -574,7 +578,7 @@ test("real tool lifecycle events drive only the owning sprite", async () => {
   await room.close();
 });
 
-test("repository research grant stays per agent through archive and restart; revoke and send home remove it", async () => {
+test("unverified local paths cannot grant research, while persona projects survive archive and restart", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentcorp-grant-"));
   try {
     const resolvedRoot = await realpath(root);
@@ -583,27 +587,27 @@ test("repository research grant stays per agent through archive and restart; rev
     execFileSync("git", ["-C", root, "add", "README.md"]);
     const store = new MemoryStore();
     const adapter = new MockAdapter();
-    const room = await RoomController.open(adapter, store, "/dedicated");
+    const source = new FixtureSource(resolvedRoot);
+    const room = await RoomController.open(adapter, store, "/dedicated", join(root, "trees"), source);
     const a = await room.create(0);
     const b = await room.create(1);
-    await assert.rejects(room.setRepository(a.id, "/does-not-exist"), /ENOENT|not a git repository/);
-    await room.setRepository(a.id, root);
-    assert.deepEqual(a.repository, { path: resolvedRoot, name: root.split("/").at(-1) });
+    await assert.rejects(room.setRepository(a.id, root), /Local paths cannot/);
+    await room.addProject((await room.lookupProject("fixture"))[0], false);
+    await room.setPersonaProject(a.id, "Fixture/fixture", "read");
+    assert.equal(room.state.personas![0].repositoryPolicies![0].read, true);
     assert.equal(adapter.grants.get(b.sessionId), undefined);
-    assert.equal(adapter.grants.get(a.sessionId)?.path, resolvedRoot);
+    assert.equal((await adapter.research.get(a.sessionId)! ("Fixture/fixture"))?.path, resolvedRoot);
     assert.equal(a.sessionId, adapter.sessions.get(a.sessionId)?.sessionId);
     await room.archive(a.id);
     await room.close();
-    const restarted = await RoomController.open(adapter, store, "/dedicated");
+    const restarted = await RoomController.open(adapter, store, "/dedicated", join(root, "trees"), source);
     await restarted.connect();
-    assert.equal(restarted.state.agents[0].repository?.path, resolvedRoot);
+    assert.equal(restarted.state.personas![0].repositoryPolicies![0].read, true);
     assert.equal(adapter.grants.get(b.sessionId), undefined);
     await restarted.restore(a.id);
-    assert.equal(adapter.grants.get(a.sessionId)?.path, resolvedRoot);
-    await restarted.setRepository(a.id, null);
-    assert.equal(restarted.state.agents[0].repository, undefined);
-    assert.equal(adapter.grants.get(a.sessionId), undefined);
-    await restarted.setRepository(a.id, root);
+    assert.equal((await adapter.research.get(a.sessionId)! ("Fixture/fixture"))?.path, resolvedRoot);
+    await restarted.setPersonaProject(a.id, "Fixture/fixture", "remove");
+    assert.equal(await adapter.research.get(a.sessionId)! ("Fixture/fixture"), undefined);
     await restarted.sendHome(a.id);
     assert.equal(restarted.state.agents.some(agent => agent.id === a.id), false);
     assert.equal(restarted.state.agents[0].id, b.id);
@@ -641,25 +645,26 @@ test("STOP aborts only the active SDK turn, rejects pending permission and repor
   await room.close();
 });
 
-test("explicit research grant authorizes only its own read-only SDK tool, never shell or writes", async () => {
+test("verified research policy authorizes only selected read-only SDK tool, never shell or writes", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentcorp-permission-"));
   try {
     execFileSync("git", ["init", "-q", root]);
     const adapter = new MockAdapter();
-    const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated");
+    const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated", join(root, "trees"), new FixtureSource(root));
     const agent = await room.create(0);
     const attachedRequest = { kind: "custom-tool", toolCallId: "read-1",
       toolName: "research_attached_repository", toolDescription: "Read tracked files",
-      args: { action: "read", path: "README.md" } } as PermissionRequest;
+      args: { repository: "Fixture/fixture", action: "read", path: "README.md" } } as PermissionRequest;
     assert.deepEqual(await adapter.permissions.get(agent.sessionId)!(attachedRequest), { kind: "reject", feedback: "No active repository research grant." });
-    await room.setRepository(agent.id, root);
+    await room.addProject((await room.lookupProject("fixture"))[0], false);
+    await room.setPersonaProject(agent.id, "Fixture/fixture", "read");
     assert.deepEqual(await adapter.permissions.get(agent.sessionId)!(attachedRequest), { kind: "approve-once" });
     const noBrowserShell = await adapter.permissions.get(agent.sessionId)!(request);
     assert.deepEqual(noBrowserShell, { kind: "user-not-available" });
     const noBrowserWrite = await adapter.permissions.get(agent.sessionId)!({ kind: "custom-tool", toolCallId: "write-1",
       toolName: "other_tool", toolDescription: "Writes files", args: {} } as PermissionRequest);
     assert.deepEqual(noBrowserWrite, { kind: "user-not-available" });
-    await room.setRepository(agent.id, null);
+    await room.setPersonaProject(agent.id, "Fixture/fixture", "remove");
     assert.deepEqual(await adapter.permissions.get(agent.sessionId)!(attachedRequest), { kind: "reject", feedback: "No active repository research grant." });
     await room.close();
   } finally {
@@ -696,7 +701,7 @@ test("two agents: request denial, task expiry, session persistence and permissio
     assert.equal(second.repository, undefined);
     const read = { kind: "custom-tool", toolCallId: "research-1",
       toolName: "research_attached_repository", toolDescription: "Bounded tracked research",
-      args: { action: "read", path: "README.md" } } as PermissionRequest;
+      args: { repository: "Fixture/fixture", action: "read", path: "README.md" } } as PermissionRequest;
     assert.deepEqual(await adapter.permissions.get(first.sessionId)!(read), { kind: "approve-once" });
     assert.deepEqual(await adapter.permissions.get(first.sessionId)!(read), { kind: "approve-once" });
     assert.deepEqual(await adapter.permissions.get(second.sessionId)!(read),
@@ -761,6 +766,162 @@ test("a guided request survives restart for explicit re-lookup without granting 
   assert.equal(recovered.state.agents[0].accessRequest, undefined);
   await recovered.close();
   unsubscribe();
+});
+
+test("shared project read reaches current and future personas, exclusions override, and two repositories stay distinct", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "agentcorp-policy-")));
+  try {
+    execFileSync("git", ["init", "-q", root]);
+    const store = new MemoryStore();
+    const adapter = new MockAdapter();
+    const source = new FixtureSource(root);
+    const room = await RoomController.open(adapter, store, "/dedicated", join(root, "trees"), source);
+    const first = await room.create(0);
+    const second = await room.create(1);
+    const alpha = (await room.lookupProject("alpha"))[0];
+    const beta = (await room.lookupProject("beta"))[0];
+    await assert.rejects(room.addProject({ ...alpha, defaultBranch: "unverified" }, true), /changed/);
+    await room.addProject(alpha, true);
+    await room.addProject(beta, false);
+    assert.equal((await adapter.research.get(first.sessionId)!("Fixture/alpha"))?.name, "Fixture/alpha");
+    assert.equal((await adapter.research.get(second.sessionId)!("Fixture/alpha"))?.name, "Fixture/alpha");
+    assert.equal(await adapter.research.get(first.sessionId)!("Fixture/beta"), undefined);
+    await room.setPersonaProject(first.id, "Fixture/beta", "read");
+    assert.equal((await adapter.research.get(first.sessionId)!("Fixture/beta"))?.name, "Fixture/beta");
+    assert.equal(await adapter.research.get(second.sessionId)!("Fixture/beta"), undefined);
+    await room.setPersonaProject(second.id, "Fixture/alpha", "exclude");
+    assert.equal(await adapter.research.get(second.sessionId)!("Fixture/alpha"), undefined);
+    await room.setPersonaProject(second.id, "Fixture/alpha", "inherit");
+    assert.ok(await adapter.research.get(second.sessionId)!("Fixture/alpha"));
+    await room.setPersonaProject(first.id, "Fixture/alpha", "remove");
+    assert.equal(await adapter.research.get(first.sessionId)!("Fixture/alpha"), undefined,
+      "removal while globally shared becomes explicit exclusion");
+    await room.newAssignment(first.id, "New task");
+    assert.equal(await adapter.research.get(first.sessionId)!("Fixture/alpha"), undefined);
+    assert.ok(await adapter.research.get(first.sessionId)!("Fixture/beta"),
+      "personal grants persist across assignments");
+    const future = await room.create(2);
+    assert.ok(await adapter.research.get(future.sessionId)!("Fixture/alpha"));
+    await room.shareProject("Fixture/alpha", false);
+    assert.equal(await adapter.research.get(future.sessionId)!("Fixture/alpha"), undefined);
+    await room.close();
+    const resumed = await RoomController.open(adapter, store, "/dedicated", join(root, "trees"), source);
+    assert.equal(resumed.state.projects?.length, 2);
+    assert.equal(resumed.state.personas?.find(persona => persona.id === first.id)?.repositoryPolicies?.length, 2);
+    await resumed.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("policy revocation during a pending research clone never yields a stale grant", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "agentcorp-policy-race-")));
+  try {
+    execFileSync("git", ["init", "-q", root]);
+    const source = new FixtureSource(root);
+    let started!: () => void;
+    let finish!: () => void;
+    const pending = new Promise<void>(resolve => { finish = resolve; });
+    const begun = new Promise<void>(resolve => { started = resolve; });
+    const original = source.provision.bind(source);
+    source.provision = async (repo, signal) => {
+      started();
+      await pending;
+      return original(repo, signal);
+    };
+    const adapter = new MockAdapter();
+    const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated", join(root, "trees"), source);
+    const agent = await room.create(0);
+    await room.addProject((await room.lookupProject("alpha"))[0], true);
+    const attempt = adapter.research.get(agent.sessionId)!("Fixture/alpha");
+    await begun;
+    await room.setPersonaProject(agent.id, "Fixture/alpha", "exclude");
+    finish();
+    assert.equal(await attempt, undefined);
+    await room.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
+test("sharing changes cancel unresolved conversational and guided requests before stale lookup returns", async () => {
+  const source = new FixtureSource("/unused");
+  const room = await RoomController.open(new MockAdapter(), new MemoryStore(), "/dedicated", "/unused/trees", source);
+  const agent = await room.create(0);
+  await room.addProject((await room.lookupProject("alpha"))[0], true);
+  const unsubscribe = room.subscribe(() => {});
+  let finish!: () => void;
+  let started!: () => void;
+  const paused = new Promise<void>(resolve => { finish = resolve; });
+  const begun = new Promise<void>(resolve => { started = resolve; });
+  source.lookup = async hint => {
+    started();
+    await paused;
+    return [{ fullName: `Fixture/${hint}`, url: canonicalGitHubUrl(`Fixture/${hint}`),
+      defaultBranch: "main", privacy: "public", sizeKiB: 4 }];
+  };
+  const decision = room.requestAccess(agent.id, { repoHint: "alpha", purpose: "Read docs", scope: "read" });
+  await begun;
+  await room.shareProject("Fixture/alpha", false);
+  assert.match(await decision, /Policy for Fixture\/alpha changed/);
+  finish();
+  await new Promise(resolve => setTimeout(resolve, 0));
+  assert.equal(agent.accessRequest, undefined);
+  assert.equal(room.state.projects![0].sharedRead, false);
+  unsubscribe();
+  await room.close();
+});
+
+test("v2 state is backed up before v3 policy migration and can be restored intact", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "policy-v2-"));
+  try {
+    const path = join(directory, "state.json");
+    const store = new FileStore(path);
+    const room = await RoomController.open(new MockAdapter(), store, "/dedicated");
+    const agent = await room.create(0);
+    await room.addMemory(agent.id, "Important", "User");
+    await room.close();
+    const v2 = structuredClone(room.state);
+    v2.schemaVersion = 2;
+    delete v2.projects;
+    for (const persona of v2.personas!) delete persona.repositoryPolicies;
+    await writeFile(path, JSON.stringify(v2));
+    const migrated = await RoomController.open(new MockAdapter(), store, "/dedicated");
+    assert.equal(migrated.state.schemaVersion, 3);
+    assert.deepEqual(JSON.parse(await readFile(`${path}.v2.bak`, "utf8")), JSON.parse(JSON.stringify(v2)));
+    assert.equal(migrated.state.personas![0].memories[0].text, "Important");
+    assert.equal(migrated.state.assignments![0].sessionId, agent.sessionId);
+    await migrated.close();
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("v2 policy migration preserves sixteen distinct sessions, assignments, memories and remote grants", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const original = await RoomController.open(adapter, store, "/dedicated");
+  for (let desk = 0; desk < MAX_AGENTS; desk++) {
+    const agent = await original.create(desk);
+    await original.addMemory(agent.id, `Memory ${desk}`, "Human approval");
+    agent.messages.push({ id: `message-${desk}`, role: "user", content: `Task ${desk}` });
+    agent.repository = { path: `/cached/${desk}`, name: `Fixture/repo-${desk}`, scope: "session",
+      remote: { fullName: `Fixture/repo-${desk}`, url: canonicalGitHubUrl(`Fixture/repo-${desk}`),
+        ref: "main", privacy: "public", commit: `commit-${desk}`, fetchedAt: Date.now(),
+        path: `/cached/${desk}` } };
+    original.state.assignments!.find(assignment => assignment.id === agent.assignmentId)!.repository = agent.repository;
+  }
+  const v2 = structuredClone(original.state);
+  v2.schemaVersion = 2;
+  delete v2.projects;
+  for (const persona of v2.personas!) delete persona.repositoryPolicies;
+  store.saved = v2;
+  const migrated = await RoomController.open(adapter, store, "/dedicated");
+  assert.equal(migrated.state.schemaVersion, 3);
+  assert.equal(migrated.state.projects?.length, 16);
+  assert.deepEqual(migrated.state.agents.map(agent => agent.sessionId),
+    v2.agents.map(agent => agent.sessionId));
+  assert.deepEqual(migrated.state.assignments?.map(assignment => assignment.id),
+    v2.assignments?.map(assignment => assignment.id));
+  assert.deepEqual(migrated.state.personas?.map(persona => persona.memories[0].text),
+    v2.personas?.map(persona => persona.memories[0].text));
+  assert.ok(migrated.state.personas!.every(persona => persona.repositoryPolicies?.length === 1));
+  await migrated.close();
+  await original.close();
 });
 
 test("Stop cancels only the approving agent's clone and grants no repository access", async () => {
@@ -902,7 +1063,7 @@ test("all sixteen legacy identities, desk positions, grants, artifacts and trans
   for (const agent of legacy.agents) { delete agent.personaId; delete agent.assignmentId; }
   store.saved = legacy;
   const migrated = await RoomController.open(adapter, store, "/dedicated");
-  assert.equal(migrated.state.schemaVersion, 2);
+  assert.equal(migrated.state.schemaVersion, 3);
   assert.equal(migrated.state.personas?.length, 16);
   assert.equal(migrated.state.assignments?.length, 16);
   assert.deepEqual(migrated.state.agents.map(agent => ({
@@ -995,7 +1156,7 @@ test("atomic v1 backup supports rollback; unknown schema or invalid linkage cann
     await writeFile(path, JSON.stringify(legacy));
     const room = await RoomController.open(new MockAdapter(), store, "/dedicated");
     assert.deepEqual(JSON.parse(await readFile(`${path}.v1.bak`, "utf8")), legacy);
-    assert.equal(JSON.parse(await readFile(path, "utf8")).schemaVersion, 2);
+    assert.equal(JSON.parse(await readFile(path, "utf8")).schemaVersion, 3);
     await room.close();
     const damaged = { ...room.state, assignments: [{ id: "bad", personaId: "missing" }] };
     await writeFile(path, JSON.stringify(damaged));
@@ -1005,7 +1166,7 @@ test("atomic v1 backup supports rollback; unknown schema or invalid linkage cann
     await writeFile(path, JSON.stringify({ ...legacy, schemaVersion: 99 }));
     await assert.rejects(RoomController.open(new MockAdapter(), store, "/dedicated"), /Unknown state schema/);
     await writeFile(path, await readFile(`${path}.v1.bak`, "utf8"));
-    assert.equal((await RoomController.open(new MockAdapter(), store, "/dedicated")).state.schemaVersion, 2);
+    assert.equal((await RoomController.open(new MockAdapter(), store, "/dedicated")).state.schemaVersion, 3);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

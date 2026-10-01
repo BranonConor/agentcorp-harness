@@ -1,4 +1,28 @@
 import type { LiveNoticeActivity } from "../../agent-inc/game/sprite-art";
+import type { RemoteRepository } from "../../server/github-repositories";
+
+export type ProjectPolicy = { repository: RemoteRepository; sharedRead: boolean };
+export type PersonaRepositoryPolicy = { fullName: string; read: boolean; excluded: boolean };
+export type EffectiveProjectAccess = {
+  project: ProjectPolicy;
+  read: boolean;
+  source: "excluded" | "persona" | "office" | "assignment" | "none";
+};
+
+export function effectiveProjectAccess(
+  projects: readonly ProjectPolicy[],
+  policies: readonly PersonaRepositoryPolicy[] = [],
+  assignment?: { remote?: { fullName: string }; scope?: string },
+): EffectiveProjectAccess[] {
+  return projects.map(project => {
+    const policy = policies.find(item =>
+      item.fullName.toLowerCase() === project.repository.fullName.toLowerCase());
+    const source = policy?.excluded ? "excluded" : policy?.read ? "persona" :
+      project.sharedRead ? "office" : assignment?.remote?.fullName.toLowerCase() ===
+      project.repository.fullName.toLowerCase() ? "assignment" : "none";
+    return { project, source, read: source !== "excluded" && source !== "none" };
+  });
+}
 
 export type Status = "idle" | "thinking" | "tool" | "blocked" | "offline";
 export type RecentTool = {

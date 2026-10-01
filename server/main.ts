@@ -185,6 +185,31 @@ const server = createServer(async (request, response) => {
         await room.setRepository(body.agentId, body.path);
         return json(response, 200, room.state);
       }
+      if (url.pathname === "/api/project-lookup" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.hint !== "string") throw new Error("Enter a GitHub repository name or owner/repo.");
+        return json(response, 200, await room.lookupProject(body.hint));
+      }
+      if (url.pathname === "/api/project-policy" && request.method === "POST") {
+        const body = await payload(request);
+        if (!body.repository || typeof body.repository !== "object" || Array.isArray(body.repository) ||
+          typeof body.sharedRead !== "boolean") throw new Error("Select a verified project and sharing policy.");
+        await room.addProject(body.repository as Parameters<typeof room.addProject>[0], body.sharedRead);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/project-share" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.fullName !== "string" || typeof body.sharedRead !== "boolean") throw new Error("Select a project and sharing policy.");
+        await room.shareProject(body.fullName, body.sharedRead);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/persona-project" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.personaId !== "string" || typeof body.fullName !== "string" ||
+          !["read", "remove", "exclude", "inherit"].includes(String(body.choice))) throw new Error("Select a persona and project policy.");
+        await room.setPersonaProject(body.personaId, body.fullName, body.choice as "read" | "remove" | "exclude" | "inherit");
+        return json(response, 200, room.state);
+      }
       if (url.pathname === "/api/access-request" && request.method === "POST") {
         const body = await payload(request);
         if (typeof body.agentId !== "string") throw new Error("Choose an agent.");
@@ -200,10 +225,10 @@ const server = createServer(async (request, response) => {
       if (url.pathname === "/api/access-decision" && request.method === "POST") {
         const body = await payload(request);
         if (typeof body.agentId !== "string" || typeof body.id !== "string" ||
-          !["deny", "task", "session", "edit"].includes(String(body.choice)) ||
+          !["deny", "task", "session", "persona", "office", "edit"].includes(String(body.choice)) ||
           !(body.repository === undefined || typeof body.repository === "string") ||
           !(body.fresh === undefined || typeof body.fresh === "boolean")) throw new Error("Invalid repository decision.");
-        await room.decideAccess(body.agentId, body.id, body.choice as "deny" | "task" | "session" | "edit",
+        await room.decideAccess(body.agentId, body.id, body.choice as "deny" | "task" | "session" | "persona" | "office" | "edit",
           body.repository, body.fresh === true);
         return json(response, 200, room.state);
       }

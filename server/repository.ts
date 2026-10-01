@@ -133,22 +133,24 @@ export async function researchRepository(grant: RepositoryGrant, action: string,
   }
 }
 
-export function repositoryTool(getGrant: () => RepositoryGrant | undefined): Tool {
+export function repositoryTool(getGrant: (fullName: string) => Promise<RepositoryGrant | undefined>): Tool {
   return {
     name: "research_attached_repository",
-    description: "Read tracked files in this agent's explicitly authorized Git repository. Use action=list with path=\"\" to discover root entries, and action=read with a relative tracked file path. If access is not granted, call request_repository_access. This tool cannot read ignored, hidden, secret-like, symlinked, binary or oversized files or write anything.",
+    description: "Read tracked files in an authorized GitHub repository. Always specify its exact owner/repo identity as repository, even when only one is available. Use action=list with path=\"\" to discover root entries, and action=read with a relative tracked file path. If access is not granted, call request_repository_access. This tool cannot read ignored, hidden, secret-like, symlinked, binary or oversized files or write anything.",
     parameters: {
       type: "object",
-      properties: { action: { type: "string", enum: ["list", "read"] }, path: { type: "string" } },
-      required: ["action", "path"],
+      properties: { repository: { type: "string" }, action: { type: "string", enum: ["list", "read"] }, path: { type: "string" } },
+      required: ["repository", "action", "path"],
       additionalProperties: false
     },
     handler: async (args: unknown) => {
-      if (!args || typeof args !== "object" || !("action" in args) || !("path" in args) ||
-        typeof args.action !== "string" || typeof args.path !== "string") throw new Error("Invalid research request.");
-      const grant = getGrant();
-      if (!grant) throw new Error("This agent has no active repository research grant. Request access first.");
-      return researchRepository(grant.worktree ? { ...grant, path: grant.worktree.path } : grant, args.action, args.path);
+      if (!args || typeof args !== "object" || !("repository" in args) || !("action" in args) || !("path" in args) ||
+        typeof args.repository !== "string" || typeof args.action !== "string" || typeof args.path !== "string") throw new Error("Invalid research request.");
+      const grant = await getGrant(args.repository);
+      if (!grant) throw new Error("No effective read access to this verified GitHub repository. Request access first.");
+      const result = await researchRepository(grant.worktree ? { ...grant, path: grant.worktree.path } : grant, args.action, args.path);
+      if (!await getGrant(args.repository)) throw new Error("Repository access was revoked while research was running.");
+      return result;
     }
   };
 }

@@ -15,11 +15,12 @@ import {
 } from "../../agent-inc/game/live-layout";
 import { AGENTCORP_LETTERS, AGENTCORP_MARK, AGENTCORP_WORDMARK, agentPortrait } from "../../agent-inc/game/sprite-art";
 import { createWorld } from "../../agent-inc/game/world";
-import { noticeActivityForActor, roomActors } from "./room";
-import type { Actor, Room as OfficeRoom, Status } from "./room";
+import { effectiveProjectAccess, noticeActivityForActor, roomActors } from "./room";
+import type { Actor, PersonaRepositoryPolicy, ProjectPolicy, Room as OfficeRoom, Status } from "./room";
 import { SafeMarkdown } from "./markdown";
 import { greetingForPersona } from "./greeting";
 import type { ModelProfile } from "../../server/providers";
+import type { RemoteRepository } from "../../server/github-repositories";
 
 const LIVE_DESKS = [...DESKS, ...EXTRA_DESKS];
 const LIVE_COFFEE_SPOTS = COFFEE_SPOTS.map(({ x }) => ({ x, z: LIVE_COFFEE_Z + 0.75 }));
@@ -30,6 +31,7 @@ type AgentPersona = {
   id: string; name: string; artId: number; createdAt: number; updatedAt: number;
   profile: { workingStyle: string; specialties: string[]; title: string; rank: string };
   memories: { id: string; text: string; provenance: string; approvedAt: number }[];
+  repositoryPolicies?: PersonaRepositoryPolicy[];
 };
 type Assignment = {
   id: string; personaId: string; sessionId: string; workspace: string;
@@ -38,7 +40,8 @@ type Assignment = {
   messages: ServerAgent["messages"]; modelProfileId?: string; modelProfile?: ModelProfile;
 };
 type SdkAgent = ServerAgent & { personaId?: string; assignmentId?: string };
-type SdkRoom = ServerRoom & { agents: SdkAgent[]; personas?: AgentPersona[]; assignments?: Assignment[] };
+type SdkRoom = ServerRoom & { agents: SdkAgent[]; personas?: AgentPersona[]; assignments?: Assignment[];
+  projects?: ProjectPolicy[] };
 function personaFor(room: SdkRoom | null, agent: SdkAgent | undefined): AgentPersona | undefined {
   return room?.personas?.find(persona => persona.id === agent?.personaId);
 }
@@ -217,6 +220,10 @@ function LiveOffice() {
   const [hover, setHover] = useState<{ name: string; x: number; y: number } | null>(null);
   const [draft, setDraft] = useState("");
   const [repoHint, setRepoHint] = useState("");
+  const [projectHint, setProjectHint] = useState("");
+  const [projectCandidates, setProjectCandidates] = useState<RemoteRepository[]>([]);
+  const [projectCandidate, setProjectCandidate] = useState("");
+  const [projectLookingUp, setProjectLookingUp] = useState(false);
   const [selectedRepository, setSelectedRepository] = useState("");
   const [freshSnapshot, setFreshSnapshot] = useState(false);
   const [copiedId, setCopiedId] = useState("");
@@ -311,6 +318,27 @@ function LiveOffice() {
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
       return false;
+    }
+  };
+  const lookupProject = async () => {
+    setProjectLookingUp(true);
+    setProjectCandidates([]);
+    setProjectCandidate("");
+    setActionError("");
+    try {
+      const response = await fetch("/api/project-lookup", {
+        method: "POST", headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ hint: projectHint.trim() }),
+      });
+      const result: RemoteRepository[] | { error?: string } = await response.json();
+      if (!response.ok) throw new Error(!Array.isArray(result) && result.error || `Lookup failed (${response.status})`);
+      if (!Array.isArray(result)) throw new Error("Invalid GitHub repository lookup response.");
+      setProjectCandidates(result);
+      setProjectCandidate(result.length === 1 ? result[0].fullName : "");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+    } finally {
+      setProjectLookingUp(false);
     }
   };
 
@@ -743,6 +771,33 @@ function LiveOffice() {
     </form>
   </div>;
   };
+  const personaProjects = (persona: AgentPersona) => <div className="persona-projects">
+    <h4>GitHub project read access</h4>
+    <p>Office-wide sharing applies unless excluded here. Direct grants apply only to this persona.</p>
+    {!sdkRoom?.projects?.length && <p>No verified GitHub projects configured.</p>}
+    <ul>{effectiveProjectAccess(sdkRoom?.projects ?? [], persona.repositoryPolicies,
+      sdkRoom?.agents.find(agent => agent.personaId === persona.id)?.repository).map(({ project, read, source }) => {
+      const fullName = project.repository.fullName;
+      const policy = persona.repositoryPolicies?.find(item => item.fullName.toLowerCase() === fullName.toLowerCase());
+      const change = (choice: "read" | "remove" | "exclude" | "inherit") =>
+        void act("persona-project", { personaId: persona.id, fullName, choice });
+      return <li key={fullName}>
+        <div><strong>{fullName}</strong><span>{read ?
+          source === "persona" ? "Read · direct" : source === "assignment" ? "Read · current assignment" : "Read · office-wide" :
+          source === "excluded" ? "No read · excluded" : "No read access"}</span></div>
+        <div className="project-actions">
+          {!policy?.read ? <button type="button" disabled={!connected}
+            onClick={() => change("read")}>Grant to persona</button> :
+            <button type="button" disabled={!connected}
+              onClick={() => change("remove")}>Remove direct grant</button>}
+          {!policy?.excluded ? <button type="button" disabled={!connected}
+            onClick={() => change("exclude")}>Exclude</button> :
+            <button type="button" disabled={!connected}
+              onClick={() => change("inherit")}>Reinclude</button>}
+        </div>
+      </li>;
+    })}</ul>
+  </div>;
   const newAssignment = async () => {
     if (!assignmentAgent || !canStartAssignment(assignmentAgent) || assignmentSubmitting) return;
     setAssignmentSubmitting(true);
@@ -925,7 +980,11 @@ function LiveOffice() {
                       onClick={() => void act("access-revoke", { agentId: selectedAgent.id }).then(ok => {
                         if (ok) setChatOptionsOpen(false);
                       })}>Revoke access</button>
-                  </> : <span>No repository attached</span>}
+                  </> : <span>No assignment repository attached.</span>}
+                  {selectedPersona && <small>Effective project read: {effectiveProjectAccess(
+                    sdkRoom?.projects ?? [], selectedPersona.repositoryPolicies, selectedAgent.repository)
+                    .filter(item => item.read).map(item => item.project.repository.fullName).join(", ") || "none"}.
+                    Manage direct and office access in the agent inspector.</small>}
                   {!selectedAgent.archived && <button type="button" disabled={lifecycleBusy(selectedAgent)}
                     onClick={() => void act("access-request", { agentId: selectedAgent.id }).then(ok => {
                       if (ok) setChatOptionsOpen(false);
@@ -1046,6 +1105,47 @@ function LiveOffice() {
                     <span>{deskCount - activeAgents.length} open desks</span>
                     <span>{(sdkRoom?.agents.length ?? 0) - activeAgents.length} archived</span></div>
                 </div>
+                <div className="activity-row project-configurations">
+                  <div className="activity-row-heading"><strong>Configurations · GitHub projects</strong>
+                    <span className="activity-tag">{sdkRoom?.projects?.length ?? 0} verified</span></div>
+                  <p>Verified GitHub identities only. Office-wide read is inherited by personas unless excluded.
+                    Edit worktrees still require a separate request and approval.</p>
+                  <form className="project-lookup" onSubmit={event => { event.preventDefault(); void lookupProject(); }}>
+                    <label>Find a GitHub project <input value={projectHint} placeholder="owner/repo"
+                      maxLength={150} onChange={event => {
+                        setProjectHint(event.target.value);
+                        setProjectCandidates([]);
+                        setProjectCandidate("");
+                      }} /></label>
+                    <button type="submit" disabled={!connected || !projectHint.trim() || projectLookingUp}>
+                      {projectLookingUp ? "Looking up…" : "Verify on GitHub"}</button>
+                  </form>
+                  {projectCandidates.length > 0 && <div className="project-confirm">
+                    <label>Verified repository <select value={projectCandidate}
+                      onChange={event => setProjectCandidate(event.target.value)}>
+                      {projectCandidates.length > 1 && <option value="">Select owner/repo…</option>}
+                      {projectCandidates.map(candidate => <option key={candidate.fullName} value={candidate.fullName}>
+                        {candidate.fullName} · {candidate.privacy} · {candidate.defaultBranch}</option>)}
+                    </select></label>
+                    <button type="button" disabled={!connected || !projectCandidate ||
+                      !!sdkRoom?.projects?.some(project => project.repository.fullName.toLowerCase() === projectCandidate.toLowerCase())}
+                      onClick={() => void act("project-policy", {
+                        repository: projectCandidates.find(item => item.fullName === projectCandidate),
+                        sharedRead: false,
+                      }).then(ok => {
+                        if (ok) { setProjectCandidates([]); setProjectCandidate(""); setProjectHint(""); }
+                      })}>Add to office catalog</button>
+                  </div>}
+                  {!sdkRoom?.projects?.length && <p>No GitHub projects in the office catalog yet.</p>}
+                  <ul className="project-list">{sdkRoom?.projects?.map(project => <li key={project.repository.fullName}>
+                    <div><strong>{project.repository.fullName}</strong>
+                      <small>GitHub · {project.repository.privacy} · {project.repository.defaultBranch}</small></div>
+                    <label><input type="checkbox" checked={project.sharedRead} disabled={!connected}
+                      onChange={event => void act("project-share", {
+                        fullName: project.repository.fullName, sharedRead: event.target.checked,
+                      })} /> Shared read</label>
+                  </li>)}</ul>
+                </div>
                 <div className="activity-row">
                   <div className="activity-row-heading"><strong>Scratch workspace root</strong><span className="activity-tag">Local only</span></div>
                   <p className="workspace-path">{sdkRoom?.workspace || "Loading…"}</p>
@@ -1165,6 +1265,7 @@ function LiveOffice() {
                         {profileEditingId === persona.id ? profileEditor(persona) :
                           <button type="button" onClick={() => startProfileEdit(persona)}>Edit profile</button>}
                         {personaNotes(persona)}
+                        {personaProjects(persona)}
                         <div className="assignment-history"><h4>Preserved assignments</h4>
                           <ul>{(sdkRoom?.assignments ?? []).filter(assignment => assignment.personaId === persona.id)
                             .sort((a, b) => b.startedAt - a.startedAt).map(assignment =>
@@ -1206,6 +1307,7 @@ function LiveOffice() {
                         <button type="button" onClick={() => startProfileEdit(selectedPersona)}>Edit profile</button>
                       </>}
                       {personaNotes(selectedPersona)}
+                      {personaProjects(selectedPersona)}
                     </> : <p>Profile is not available for this agent yet.</p>}
                     <div className="assignment-history">
                       <h4>Assignment history</h4>
@@ -1303,8 +1405,12 @@ function LiveOffice() {
                             <button type="button" disabled={selectedAgent.accessRequest.status === "cloning"}
                               onClick={() => void act("access-decision", {
                                 agentId: selectedAgent.id, id: selectedAgent.accessRequest!.id, choice: "deny" })}>Deny</button>
-                            {([["task", "Read this task", "Read for this task"],
+                            {([...(selectedAgent.accessRequest.scope === "read" ?
+                              [["persona", "Read for persona (default)", "Grant read access to this persona"]] : []),
+                              ["task", "Read this task", "Read for this task"],
                               ["session", "Read this session", "Read for this agent session"],
+                              ...(selectedAgent.accessRequest.scope === "read" ?
+                                [["office", "Read for office", "Add verified repository to office catalog and share read access"]] : []),
                               ...(selectedAgent.accessRequest.scope === "edit" ?
                                 [["edit", "Edit worktree", "Edit in isolated worktree"]] : [])] as const)
                               .map(([choice, label, accessible]) => <button key={choice} type="button"
@@ -1325,7 +1431,9 @@ function LiveOffice() {
                             {cachedSnapshot && <label><input type="checkbox" checked={freshSnapshot}
                               disabled={selectedAgent.accessRequest.status === "cloning"}
                               onChange={event => setFreshSnapshot(event.target.checked)} /> Fetch fresh snapshot</label>}
-                            <span>Only this agent gets access. A request expires after 90 seconds; grants do not.
+                            <span>Task and session grants apply only to this agent. Persona read survives assignments;
+                              office read is shared with all personas except those excluded in their inspector.
+                              A request expires after 90 seconds; grants do not.
                               Reads are guarded; shell/writes still need separate approval. Worktrees are not sandboxes.</span>
                           </details>}
                         </section>

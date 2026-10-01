@@ -13,7 +13,9 @@ export type AgentPersona = {
   id: string; name: string; artId: number; createdAt: number; updatedAt: number;
   profile: { workingStyle: string; specialties: string[]; title: string; rank: string };
   memories: PersonaMemory[];
+  repositoryPolicies?: { fullName: string; read: boolean; excluded: boolean }[];
 };
+export type ProjectPolicy = { repository: RemoteRepository; sharedRead: boolean };
 export type Assignment = {
   id: string; personaId: string; sessionId: string; workspace: string;
   modelProfileId?: string; modelProfile?: ModelProfile;
@@ -43,7 +45,8 @@ export type Agent = {
   persona?: number;
   name?: string;
 };
-export type Room = { schemaVersion?: 2; personas?: AgentPersona[]; assignments?: Assignment[];
+export type Room = { schemaVersion?: 2 | 3; personas?: AgentPersona[]; assignments?: Assignment[];
+  projects?: ProjectPolicy[];
   modelProfiles?: ModelProfile[]; defaultModelProfileId?: string;
   agents: Agent[]; error: string | null; connected: boolean; workspace: string; revision: number;
   knownRepositories?: string[]; usage?: UsageSummary;
@@ -73,10 +76,10 @@ export interface Adapter {
   prepareWorkspace(root: string, agentId: string): Promise<string>;
   create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>,
     sessionId?: string, repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>,
-    getGrant?: () => RepositoryGrant | undefined, profile?: ModelProfile): Promise<LiveSession>;
+    getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile?: ModelProfile): Promise<LiveSession>;
   resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>,
     repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>,
-    getGrant?: () => RepositoryGrant | undefined, profile?: ModelProfile): Promise<LiveSession>;
+    getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile?: ModelProfile): Promise<LiveSession>;
   deleteSession(id: string): Promise<void>;
   stop(): Promise<void>;
 }

@@ -52,7 +52,20 @@ export function canonicalGitHubUrl(fullName: string): string {
     !slug.test(part) || part === "." || part === ".." || part.endsWith(".git"))) {
     throw new Error("Invalid GitHub repository identity.");
   }
+
   return `https://github.com/${parts[0]}/${parts[1]}.git`;
+}
+
+export function validateRemoteRepository(repository: RemoteRepository): RemoteRepository {
+  if (!repository || typeof repository.fullName !== "string" ||
+    canonicalGitHubUrl(repository.fullName) !== repository.url ||
+    typeof repository.defaultBranch !== "string" || !branch.test(repository.defaultBranch) ||
+    repository.defaultBranch.includes("..") || repository.defaultBranch.includes("//") ||
+    repository.defaultBranch.endsWith("/") || repository.defaultBranch.endsWith(".lock") ||
+    !["public", "private"].includes(repository.privacy) ||
+    typeof repository.sizeKiB !== "number" || !Number.isFinite(repository.sizeKiB) ||
+    repository.sizeKiB < 0) throw new Error("Invalid verified GitHub repository identity or default branch.");
+  return repository;
 }
 
 function metadata(value: unknown, expected?: string): RemoteRepository {
@@ -72,8 +85,8 @@ function metadata(value: unknown, expected?: string): RemoteRepository {
   if (data.clone_url !== url || data.html_url !== url.slice(0, -4)) {
     throw new Error("GitHub returned a noncanonical clone or source URL; refusing this repository.");
   }
-  return { fullName: data.full_name, url, defaultBranch: data.default_branch,
-    privacy: data.private ? "private" : "public", sizeKiB: data.size };
+  return validateRemoteRepository({ fullName: data.full_name, url, defaultBranch: data.default_branch,
+    privacy: data.private ? "private" : "public", sizeKiB: data.size });
 }
 
 export class GitHubRepositories implements RepositorySource {

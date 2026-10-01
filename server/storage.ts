@@ -24,19 +24,23 @@ export class FileStore implements Store {
     const snapshot = JSON.stringify(room);
     const next = this.queue.then(async () => {
       await mkdir(dirname(this.file), { recursive: true });
-      if (room.schemaVersion === 2) {
+      if (room.schemaVersion === 2 || room.schemaVersion === 3) {
         try {
           const previous = JSON.parse(await readFile(this.file, "utf8")) as { schemaVersion?: number };
-          if (previous.schemaVersion === undefined) {
-            await copyFile(this.file, `${this.file}.v1.bak`, constants.COPYFILE_EXCL).catch(error => {
+          if (previous.schemaVersion === undefined || previous.schemaVersion === 2 && room.schemaVersion === 3) {
+            const backupPath = `${this.file}.v${previous.schemaVersion ?? 1}.bak`;
+            await copyFile(this.file, backupPath, constants.COPYFILE_EXCL).catch(async error => {
               if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+              if (await readFile(backupPath, "utf8") !== await readFile(this.file, "utf8")) {
+                throw new Error(`Existing ${backupPath} differs from the current state; refusing migration without a matching backup.`);
+              }
             });
-            const backup = await open(`${this.file}.v1.bak`, "r");
+            const backup = await open(backupPath, "r");
             try {
               await backup.chmod(0o600);
               await backup.sync();
             } finally { await backup.close(); }
-          } else if (previous.schemaVersion !== 2) {
+          } else if (previous.schemaVersion !== room.schemaVersion) {
             throw new Error("Unknown state schema; refusing to overwrite it.");
           }
         } catch (error) {

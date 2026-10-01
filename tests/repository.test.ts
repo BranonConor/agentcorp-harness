@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, realpath, rm, symlink, writeFile } from "node:fs/promis
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { researchRepository, validateRepository } from "../server/repository.js";
+import { repositoryTool, researchRepository, validateRepository } from "../server/repository.js";
 
 test("research tool reads only bounded tracked text, refuses secrets, untracked files and symlink escapes", async () => {
   const parent = await mkdtemp(join(tmpdir(), "agentcorp-research-"));
@@ -40,6 +40,18 @@ test("research tool reads only bounded tracked text, refuses secrets, untracked 
       await assert.rejects(researchRepository(grant, "read", excluded));
     }
     assert.match(await researchRepository(grant, "read", "src/summary.md"), /Safe tracked summary/);
+    let allowed = true;
+    let checks = 0;
+    const tool = repositoryTool(async identity => {
+      checks++;
+      if (checks === 2) allowed = false;
+      return identity === "Fixture/fixture" && allowed ? grant : undefined;
+    });
+    await assert.rejects(async () => tool.handler!({ repository: "Fixture/fixture", action: "read", path: "src/summary.md" },
+      {} as never), /revoked while research/);
+    assert.equal(checks, 2, "policy checked both before and after an in-flight read");
+    await assert.rejects(async () => tool.handler!({ repository: "Fixture/other", action: "list", path: "" },
+      {} as never), /No effective read access/);
     await assert.rejects(researchRepository(grant, "read", "escape.txt"), /exact tracked/);
     await assert.rejects(researchRepository(grant, "read", "large.txt"), /64 KiB/);
     await assert.rejects(researchRepository(grant, "read", "binary.dat"), /Binary/);
