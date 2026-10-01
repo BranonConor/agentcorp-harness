@@ -5,6 +5,7 @@ import { mkdir, realpath, writeFile } from "node:fs/promises";
 import type { Adapter, LiveSession } from "./types.js";
 import { repositoryTool, repositoryRequestTool, validateRepository, validateResearchWorktree, type AccessIntent, type RepositoryGrant } from "./repository.js";
 import { WebSearch } from "./web-search.js";
+import { COPILOT_PROFILE, sessionModel, type ModelProfile } from "./providers.js";
 
 function officeInstructions(workspace: string, search: WebSearch): string {
   return `This is a local experiment. Your initial scratch directory is ${workspace}. To create another office agent, the user clicks + at a desk; chat does not create office agents. When asked to research or edit a GitHub repository not already attached, call request_repository_access with an owner/repo or short name hint, purpose and read/edit scope BEFORE saying the repository is unavailable. The user reviews its GitHub identity and approves an automatic clone of the remote default branch into an app-managed cache; local unpushed changes in other checkouts are not included. Never guess a local path or ask the user to run Git commands. Only after explicit approval use research_attached_repository for tracked file research. An edit approval changes your current SDK working directory to an isolated Git worktree, NOT the original checkout; the scratch directory remains available for later recovery. Follow the current SDK working directory after such a change. Every shell/write still requires individual human permission. Do not claim filesystem isolation. Web search capability: ${search.capability.reason} ${search.capability.available ? "Use search_web for current public web information; cite source URLs and never claim a search succeeded on error. Never send secrets in queries." : "Do not claim to have searched the web; hosted search is not guaranteed for this model or provider."}`;
@@ -38,6 +39,7 @@ export class SdkAdapter implements Adapter {
         workingDirectory: this.workspace,
         baseDirectory: join(homedir(), ".copilot"),
         useLoggedInUser: true,
+        logLevel: "none",
         mode: "empty"
       });
       try {
@@ -52,9 +54,18 @@ export class SdkAdapter implements Adapter {
     try { return await this.starting; } finally { this.starting = null; }
   }
 
-  async probe(): Promise<void> {
+  async probe(profile: ModelProfile = COPILOT_PROFILE): Promise<void> {
+    sessionModel(profile);
+    if (profile.kind !== "copilot") {
+      await this.ready();
+      return;
+    }
     const status = await (await this.ready()).getAuthStatus();
     if (!status.isAuthenticated) throw new Error(`GitHub Copilot CLI is not signed in. Run "copilot login" in your terminal, then click Retry connection. ${status.statusMessage ?? ""}`.trim());
+  }
+  async listModels(): Promise<{ id: string; name: string }[]> {
+    await this.probe();
+    return (await (await this.ready()).listModels()).map(({ id, name }) => ({ id, name }));
   }
   async prepareWorkspace(root: string, agentId: string): Promise<string> {
     const parent = join(root, "agents");
@@ -65,12 +76,13 @@ export class SdkAdapter implements Adapter {
     await writeFile(join(folder, ".deskbound-workspace"), "AgentCorp dedicated agent working directory\n", { flag: "wx" });
     return folder;
   }
-  async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>, getGrant?: () => RepositoryGrant | undefined): Promise<LiveSession> {
+  async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>, getGrant?: () => RepositoryGrant | undefined, profile: ModelProfile = COPILOT_PROFILE): Promise<LiveSession> {
+    const model = sessionModel(profile);
     const client = await this.ready();
     if (repository) await validateRepository(repository.path);
     const session = await client.createSession({
       sessionId,
-      model: "auto",
+      ...model,
       streaming: true,
       workingDirectory: workspace,
       availableTools: this.tools(),
@@ -81,12 +93,14 @@ export class SdkAdapter implements Adapter {
     return this.wrap(session);
   }
 
-  async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>, getGrant?: () => RepositoryGrant | undefined): Promise<LiveSession> {
+  async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>, getGrant?: () => RepositoryGrant | undefined, profile: ModelProfile = COPILOT_PROFILE): Promise<LiveSession> {
+    const model = sessionModel(profile);
     if (await realpath(workspace) !== workspace) throw new Error("Agent working directory is no longer the selected directory; refusing to resume.");
     if (repository && (await validateRepository(repository.path)).path !== repository.path) throw new Error("Repository grant no longer matches its original directory.");
     if (repository?.worktree) await validateResearchWorktree(repository);
     const client = await this.ready();
     const session = await client.resumeSession(id, {
+      ...model,
       workingDirectory: repository?.worktree?.path ?? workspace,
       streaming: true,
       availableTools: this.tools(),

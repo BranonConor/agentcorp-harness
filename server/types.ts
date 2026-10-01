@@ -2,6 +2,7 @@ export type Phase = "idle" | "thinking" | "working" | "permission" | "interrupte
 export type Message = { id: string; role: "user" | "assistant" | "system"; content: string; pending?: boolean };
 export type Review = { id: string; kind: string; detail: string; tool: string };
 import type { RemoteRepository, RepositorySnapshot } from "./github-repositories.js";
+import type { ModelProfile } from "./providers.js";
 export type RepositoryRequest = { id: string; repoHint: string; purpose: string; scope: "read" | "edit";
   status?: "resolving" | "review" | "cloning" | "error"; candidates?: RemoteRepository[];
   error?: string; progress?: string };
@@ -15,6 +16,7 @@ export type AgentPersona = {
 };
 export type Assignment = {
   id: string; personaId: string; sessionId: string; workspace: string;
+  modelProfileId?: string; modelProfile?: ModelProfile;
   repository?: RepositoryGrant; startedAt: number; endedAt?: number; outcome?: string;
   status: "active" | "completed" | "interrupted"; messages: Message[];
   retention?: "keep" | "delete-sdk";
@@ -42,6 +44,7 @@ export type Agent = {
   name?: string;
 };
 export type Room = { schemaVersion?: 2; personas?: AgentPersona[]; assignments?: Assignment[];
+  modelProfiles?: ModelProfile[]; defaultModelProfileId?: string;
   agents: Agent[]; error: string | null; connected: boolean; workspace: string; revision: number;
   knownRepositories?: string[]; usage?: UsageSummary;
   snapshots?: RepositorySnapshot[];
@@ -65,14 +68,15 @@ export interface LiveSession {
   disconnect(): Promise<void>;
 }
 export interface Adapter {
-  probe(): Promise<void>;
+  probe(profile?: ModelProfile): Promise<void>;
+  listModels?(): Promise<{ id: string; name: string }[]>;
   prepareWorkspace(root: string, agentId: string): Promise<string>;
   create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>,
     sessionId?: string, repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>,
-    getGrant?: () => RepositoryGrant | undefined): Promise<LiveSession>;
+    getGrant?: () => RepositoryGrant | undefined, profile?: ModelProfile): Promise<LiveSession>;
   resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>,
     repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>,
-    getGrant?: () => RepositoryGrant | undefined): Promise<LiveSession>;
+    getGrant?: () => RepositoryGrant | undefined, profile?: ModelProfile): Promise<LiveSession>;
   deleteSession(id: string): Promise<void>;
   stop(): Promise<void>;
 }

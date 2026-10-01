@@ -6,6 +6,7 @@ import type { Store } from "./storage.js";
 import { createResearchWorktree, validateRepository, type AccessIntent, type RepositoryGrant } from "./repository.js";
 import { uniqueAgentName } from "../agent-inc-live/src/room.js";
 import { CACHE_AGE_MS, type RemoteRepository, type RepositorySnapshot, type RepositorySource } from "./github-repositories.js";
+import { COPILOT_PROFILE, safeProviderError, sessionModel, validateProfile, type ModelProfile } from "./providers.js";
 
 const EXPIRE_MS = 90_000;
 type Pending = { agentId: string; resolve: (decision: PermissionRequestResult) => void; timer: NodeJS.Timeout };
@@ -151,6 +152,33 @@ export class RoomController {
         agent.assignmentId = agent.id;
       }
     }
+    state.modelProfiles ??= [COPILOT_PROFILE];
+    if (!Array.isArray(state.modelProfiles)) {
+      throw new Error("Saved model profiles are invalid; state was not changed.");
+    }
+    state.modelProfiles = state.modelProfiles.map(validateProfile);
+    if (new Set(state.modelProfiles.map(profile => profile.id)).size !== state.modelProfiles.length) {
+      throw new Error("Saved model profiles contain duplicate IDs; state was not changed.");
+    }
+    if (!state.modelProfiles.some(profile => profile.id === "copilot")) state.modelProfiles.unshift(COPILOT_PROFILE);
+    state.defaultModelProfileId ??= "copilot";
+    if (!state.modelProfiles.some(profile => profile.id === state.defaultModelProfileId) ||
+      state.assignments!.some(assignment => !state.modelProfiles!.some(profile => profile.id === (assignment.modelProfileId ?? "copilot")))) {
+      throw new Error("An assignment references an unavailable model profile; state was not changed.");
+    }
+    for (const assignment of state.assignments!) {
+      assignment.modelProfileId ??= "copilot";
+      const profile = state.modelProfiles.find(item => item.id === assignment.modelProfileId)!;
+      if (assignment.modelProfile) {
+        const saved = validateProfile(assignment.modelProfile);
+        const entries = (value: ModelProfile) => JSON.stringify(Object.entries(value).sort(([a], [b]) => a.localeCompare(b)));
+        if (entries(saved) !== entries(profile)) {
+          throw new Error(`Assignment ${assignment.id} model profile changed since creation; refusing to resume.`);
+        }
+      } else {
+        assignment.modelProfile = structuredClone(profile);
+      }
+    }
     for (const agent of room.state.agents) {
       agent.review = undefined;
       if (agent.archived) continue;
@@ -192,7 +220,7 @@ export class RoomController {
   }
 
   private report(error: unknown, agent?: Agent): void {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = this.redact(error);
     if (agent) {
       agent.phase = "error";
       agent.activity = message;
@@ -201,6 +229,11 @@ export class RoomController {
       this.state.error = message;
     }
     void this.publish().catch(cause => console.error("Cannot save room:", cause));
+  }
+
+  private redact(text: unknown): string {
+    return safeProviderError(text, process.env, this.state.modelProfiles?.flatMap(profile =>
+      profile.credentialEnv ? [profile.credentialEnv] : []) ?? []);
   }
 
   connect(): Promise<void> {
@@ -212,7 +245,7 @@ export class RoomController {
 
   private async connectSessions(): Promise<void> {
     try {
-      await this.adapter.probe();
+      await this.adapter.probe(this.profile(this.state.defaultModelProfileId!));
       this.state.connected = true;
       this.state.error = null;
     } catch (error) {
@@ -220,6 +253,7 @@ export class RoomController {
       this.report(error);
       throw error;
     }
+
     for (const agent of this.state.agents) {
       if (agent.archived) continue;
       if (this.sessions.has(agent.id) && agent.phase !== "error") continue;
@@ -243,8 +277,35 @@ export class RoomController {
     await this.publish();
   }
 
+  private profile(id: string): ModelProfile {
+    const profile = this.state.modelProfiles?.find(item => item.id === id);
+    if (!profile) throw new Error(`Model profile ${id} is unavailable; session was not changed.`);
+    return profile;
+  }
+
+  async addModelProfile(input: unknown): Promise<void> {
+    const profile = validateProfile(input);
+    if (this.state.modelProfiles!.some(item => item.id === profile.id)) throw new Error("Model profile ID already exists; profiles are immutable to preserve assignment provenance.");
+    this.state.modelProfiles!.push(profile);
+    await this.publish();
+  }
+
+  async chooseDefaultModelProfile(id: string): Promise<void> {
+    const profile = this.profile(id);
+    sessionModel(profile);
+    this.state.defaultModelProfileId = id;
+    await this.publish();
+    await this.connect();
+  }
+
+  async listCopilotModels(): Promise<{ id: string; name: string }[]> {
+    if (!this.adapter.listModels) throw new Error("Model listing is not supported by this adapter.");
+    return this.adapter.listModels();
+  }
+
   private async resumeAgent(agent: Agent, repository: RepositoryGrant | null = agent.repository ?? null): Promise<LiveSession> {
     const grant = repository ?? undefined;
+    const profile = this.profile(this.state.assignments!.find(item => item.id === agent.assignmentId)!.modelProfileId!);
     if (grant?.remote) {
       if (!this.repositories) throw new Error("GitHub cache verifier unavailable; cannot resume a repository grant.");
       await this.repositories.verify(grant.remote);
@@ -254,7 +315,7 @@ export class RoomController {
       const session = await this.adapter.resume(agent.sessionId, agent.workspace,
         request => this.permission(agent.id, request, assignmentId), grant,
         intent => this.requestAccessForAssignment(agent.id, assignmentId, intent),
-        () => this.agent(agent.id).assignmentId === assignmentId ? this.agent(agent.id).repository : undefined);
+        () => this.agent(agent.id).assignmentId === assignmentId ? this.agent(agent.id).repository : undefined, profile);
       if (session.sessionId !== agent.sessionId) {
         await session.disconnect();
         throw new Error("SDK resumed a different session identity; repository access was not changed.");
@@ -267,7 +328,7 @@ export class RoomController {
       const session = await this.adapter.create(agent.workspace,
         request => this.permission(agent.id, request, assignmentId), agent.sessionId, grant,
         intent => this.requestAccessForAssignment(agent.id, assignmentId, intent),
-        () => this.agent(agent.id).assignmentId === assignmentId ? this.agent(agent.id).repository : undefined);
+        () => this.agent(agent.id).assignmentId === assignmentId ? this.agent(agent.id).repository : undefined, profile);
       if (session.sessionId !== agent.sessionId) {
         await session.disconnect();
         throw new Error("SDK returned a different identity for the empty-session recovery.");
@@ -290,11 +351,13 @@ export class RoomController {
     if (this.availableDesk(deskIndex) !== deskIndex) throw new Error("This desk is already occupied.");
     this.creating.add(deskIndex);
     const id = randomUUID();
+    const profile = this.profile(this.state.defaultModelProfileId!);
+    sessionModel(profile);
     try {
       const workspace = await this.adapter.prepareWorkspace(this.state.workspace, id);
       const session = await this.adapter.create(workspace, request => this.permission(id, request, id), undefined, undefined,
         intent => this.requestAccessForAssignment(id, id, intent),
-        () => this.agent(id).assignmentId === id ? this.agent(id).repository : undefined);
+        () => this.agent(id).assignmentId === id ? this.agent(id).repository : undefined, profile);
       if (this.state.assignments!.some(assignment => assignment.sessionId === session.sessionId)) {
         throw new Error("SDK returned a session identity already assigned in recorded history.");
       }
@@ -319,6 +382,7 @@ export class RoomController {
       this.state.personas!.push({ id, name, artId: persona, createdAt: now, updatedAt: now,
         profile: { workingStyle: "", specialties: [], title: "", rank: "" }, memories: [] });
       this.state.assignments!.push({ id, personaId: id, sessionId: session.sessionId, workspace,
+        modelProfileId: profile.id, modelProfile: structuredClone(profile),
         startedAt: now, status: "active", messages: agent.messages });
       if (this.state.usage) this.state.usage.stale = true;
       this.attach(id, session);
@@ -395,12 +459,15 @@ export class RoomController {
     await this.publish();
   }
 
-  async newAssignment(agentId: string, outcome = ""): Promise<void> {
+  async newAssignment(agentId: string, outcome = "", modelProfileId?: string): Promise<void> {
     const agent = this.agent(agentId);
     if (agent.archived) throw new Error("Restore this persona before assigning new work.");
     this.availableForLifecycle(agent);
     if (!this.sessions.has(agentId)) throw new Error("Connect this persona's SDK session before switching assignments.");
     if (outcome.length > 1000) throw new Error("Outcome is too long.");
+    const previous = this.state.assignments!.find(item => item.id === agent.assignmentId)!;
+    const profile = this.profile(modelProfileId ?? previous.modelProfileId!);
+    sessionModel(profile);
     this.lifecycle.add(agentId);
     const assignmentId = randomUUID();
     try {
@@ -408,7 +475,7 @@ export class RoomController {
       const session = await this.adapter.create(workspace,
         request => this.permission(agentId, request, assignmentId),
         undefined, undefined, intent => this.requestAccessForAssignment(agentId, assignmentId, intent),
-        () => this.agent(agentId).assignmentId === assignmentId ? this.agent(agentId).repository : undefined);
+        () => this.agent(agentId).assignmentId === assignmentId ? this.agent(agentId).repository : undefined, profile);
       if (this.state.assignments!.some(item => item.sessionId === session.sessionId)) {
         throw new Error("SDK returned an existing session identity; assignment was not changed.");
       }
@@ -421,7 +488,6 @@ export class RoomController {
       this.unsubscribers.get(agentId)?.();
       this.sessions.delete(agentId);
       this.unsubscribers.delete(agentId);
-      const previous = this.state.assignments!.find(item => item.id === agent.assignmentId)!;
       previous.status = "completed";
       previous.endedAt = Date.now();
       previous.outcome = outcome.trim();
@@ -438,7 +504,8 @@ export class RoomController {
       agent.updatedAt = Date.now();
       this.armedTaskGrants.delete(agentId);
       this.state.assignments!.push({ id: assignmentId, personaId: agent.personaId!, sessionId: session.sessionId,
-        workspace, startedAt: agent.updatedAt, status: "active", messages: agent.messages });
+        workspace, modelProfileId: profile.id, modelProfile: structuredClone(profile),
+        startedAt: agent.updatedAt, status: "active", messages: agent.messages });
       this.attach(agentId, session);
       if (this.state.usage) this.state.usage.stale = true;
       await this.publish();
@@ -859,6 +926,7 @@ export class RoomController {
     if (!session) throw new Error("Session unavailable. Retry connection before sending.");
     const prompt = text.trim();
     if (!prompt || prompt.length > 12000) throw new Error("Prompt must contain 1–12000 characters.");
+    if (this.redact(prompt) !== prompt) throw new Error("Prompt contains a configured credential; remove it before sending.");
     if (["thinking", "working", "permission"].includes(agent.phase)) throw new Error("Wait for the current turn to finish.");
     this.stopped.delete(agentId);
     this.armedTaskGrants.delete(agentId);
@@ -890,7 +958,7 @@ export class RoomController {
           draft = { id: randomUUID(), role: "assistant", content: "", pending: true };
           agent.messages.push(draft);
         }
-        draft.content += delta;
+        draft.content = this.redact(draft.content + delta);
         agent.phase = "thinking";
         agent.activity = "Speaking";
         break;
@@ -898,10 +966,10 @@ export class RoomController {
       case "assistant.message": {
         const last = agent.messages.at(-1);
         if (last?.role === "assistant" && last.pending) {
-          last.content = event.data.content;
+          last.content = this.redact(event.data.content);
           last.pending = false;
         } else if (event.data.content) {
-          agent.messages.push({ id: randomUUID(), role: "assistant", content: event.data.content });
+          agent.messages.push({ id: randomUUID(), role: "assistant", content: this.redact(event.data.content) });
         }
         break;
       }
@@ -920,7 +988,7 @@ export class RoomController {
         break;
       case "session.error":
         agent.phase = "error";
-        agent.activity = event.data.message || "SDK session error";
+        agent.activity = event.data.message ? this.redact(event.data.message) : "SDK session error";
         break;
       default:
         return;

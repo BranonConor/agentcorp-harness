@@ -19,6 +19,7 @@ import { noticeActivityForActor, roomActors } from "./room";
 import type { Actor, Room as OfficeRoom, Status } from "./room";
 import { SafeMarkdown } from "./markdown";
 import { greetingForPersona } from "./greeting";
+import type { ModelProfile } from "../../server/providers";
 
 const LIVE_DESKS = [...DESKS, ...EXTRA_DESKS];
 const LIVE_COFFEE_SPOTS = COFFEE_SPOTS.map(({ x }) => ({ x, z: LIVE_COFFEE_Z + 0.75 }));
@@ -34,7 +35,7 @@ type Assignment = {
   id: string; personaId: string; sessionId: string; workspace: string;
   repository?: ServerAgent["repository"]; startedAt: number; endedAt?: number;
   outcome?: string; status: "active" | "completed" | "interrupted";
-  messages: ServerAgent["messages"];
+  messages: ServerAgent["messages"]; modelProfileId?: string; modelProfile?: ModelProfile;
 };
 type SdkAgent = ServerAgent & { personaId?: string; assignmentId?: string };
 type SdkRoom = ServerRoom & { agents: SdkAgent[]; personas?: AgentPersona[]; assignments?: Assignment[] };
@@ -231,7 +232,15 @@ function LiveOffice() {
   const [confirmSubmitting, setConfirmSubmitting] = useState(false);
   const [assignmentAgentId, setAssignmentAgentId] = useState<string | null>(null);
   const [assignmentOutcome, setAssignmentOutcome] = useState("");
+  const [assignmentModelProfileId, setAssignmentModelProfileId] = useState("");
   const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
+  const [modelDraft, setModelDraft] = useState({
+    id: "", kind: "ollama" as ModelProfile["kind"], model: "", endpoint: "http://127.0.0.1:11434/v1",
+    credentialEnv: "", wireApi: "completions" as "completions" | "responses", wireModel: "",
+    maxPromptTokens: "", maxOutputTokens: "", maxContextWindowTokens: "", azureApiVersion: "",
+    supportsVision: false, supportsReasoningEffort: false
+  });
+  const [copilotModels, setCopilotModels] = useState<{ id: string; name: string }[] | null>(null);
   const [profileEditingId, setProfileEditingId] = useState<string | null>(null);
   const [profileDraft, setProfileDraft] = useState({
     name: "", artId: 0, workingStyle: "", specialties: "", title: "", rank: "",
@@ -738,10 +747,12 @@ function LiveOffice() {
     if (!assignmentAgent || !canStartAssignment(assignmentAgent) || assignmentSubmitting) return;
     setAssignmentSubmitting(true);
     try {
-      if (await act("new-assignment", { agentId: assignmentAgent.id, ...(assignmentOutcome.trim() ?
-        { outcome: assignmentOutcome.trim() } : {}) })) {
+      if (await act("new-assignment", { agentId: assignmentAgent.id, modelProfileId: assignmentModelProfileId ||
+        sdkRoom?.assignments?.find(item => item.id === assignmentAgent.assignmentId)?.modelProfileId || "copilot",
+        ...(assignmentOutcome.trim() ? { outcome: assignmentOutcome.trim() } : {}) })) {
         setAssignmentAgentId(null);
         setAssignmentOutcome("");
+        setAssignmentModelProfileId("");
         backToActivity();
       }
     } finally {
@@ -950,8 +961,87 @@ function LiveOffice() {
                     <span className={blocked ? "attention" : ""}>{blocked} need attention</span></div>
                 </div>
                 <div className="activity-row">
+                  <div className="activity-row-heading"><strong>Model provider</strong>
+                    <span className="activity-tag">{sdkRoom?.defaultModelProfileId ?? "copilot"}</span></div>
+                  <p>Copilot account uses <code>copilot login</code>. Bring-your-own-model sessions do not require Copilot sign-in. GitHub repository access is separate: public metadata needs no sign-in; private repositories may require <code>gh auth login</code>.</p>
+                  <p>External providers receive prompts, conversation context and tool results. Local Ollama stays on this machine. Streaming and tool calling depend on model compatibility. Shell, file-write and repository permissions still require review. Never paste an API key here; set the environment variable before starting the server.</p>
+                  <label>Default for new agents <select value={sdkRoom?.defaultModelProfileId ?? "copilot"}
+                    onChange={event => void act("model-default", { id: event.target.value })}>
+                    {(sdkRoom?.modelProfiles ?? [{ id: "copilot", kind: "copilot", model: "auto" }]).map(profile =>
+                      <option key={profile.id} value={profile.id}>{profile.id} · {profile.kind} / {profile.model}</option>)}
+                  </select></label>
+                  <p>Changing this default does not switch existing sessions. Choose a model when starting an agent's next assignment to preserve its previous transcript and model provenance.</p>
+                  <form onSubmit={event => {
+                    event.preventDefault();
+                    const profile: ModelProfile = {
+                      id: modelDraft.id.trim(), kind: modelDraft.kind, model: modelDraft.model.trim(),
+                      ...(modelDraft.kind !== "copilot" ? { endpoint: modelDraft.endpoint.trim() } : {}),
+                      ...(modelDraft.kind !== "copilot" && modelDraft.credentialEnv.trim() ?
+                        { credentialEnv: modelDraft.credentialEnv.trim() } : {}),
+                      ...(["openai", "azure"].includes(modelDraft.kind) ? { wireApi: modelDraft.wireApi } : {}),
+                      ...(modelDraft.kind !== "copilot" && modelDraft.wireModel.trim() ? { wireModel: modelDraft.wireModel.trim() } : {}),
+                      ...(modelDraft.azureApiVersion.trim() && modelDraft.kind === "azure" ?
+                        { azureApiVersion: modelDraft.azureApiVersion.trim() } : {}),
+                      ...(modelDraft.kind !== "copilot" && modelDraft.maxPromptTokens ? { maxPromptTokens: Number(modelDraft.maxPromptTokens) } : {}),
+                      ...(modelDraft.kind !== "copilot" && modelDraft.maxOutputTokens ? { maxOutputTokens: Number(modelDraft.maxOutputTokens) } : {}),
+                      ...(modelDraft.kind !== "copilot" && modelDraft.maxContextWindowTokens ?
+                        { maxContextWindowTokens: Number(modelDraft.maxContextWindowTokens) } : {}),
+                      ...(modelDraft.kind !== "copilot" && modelDraft.supportsVision ? { supportsVision: true } : {}),
+                      ...(modelDraft.kind !== "copilot" && modelDraft.supportsReasoningEffort ? { supportsReasoningEffort: true } : {})
+                    };
+                    void act("model-profile", profile);
+                  }}>
+                    <strong>Add immutable model profile</strong>
+                    <label>Profile ID <input required pattern="[a-zA-Z][a-zA-Z0-9_-]*" maxLength={64} value={modelDraft.id}
+                      onChange={event => setModelDraft(draft => ({ ...draft, id: event.target.value }))} /></label>
+                    <label>Provider <select value={modelDraft.kind} onChange={event => setModelDraft(draft => ({
+                      ...draft, kind: event.target.value as ModelProfile["kind"],
+                      endpoint: event.target.value === "ollama" ? "http://127.0.0.1:11434/v1" : ""
+                    }))}>
+                      <option value="copilot">Copilot account model</option><option value="ollama">Local Ollama</option><option value="openai">OpenAI-compatible HTTPS</option>
+                      <option value="anthropic">Anthropic HTTPS</option><option value="azure">Azure HTTPS</option>
+                    </select></label>
+                    <label>Model ID <input required value={modelDraft.model}
+                      onChange={event => setModelDraft(draft => ({ ...draft, model: event.target.value }))} /></label>
+                    {modelDraft.kind !== "copilot" && <label>Endpoint <input required type="url" value={modelDraft.endpoint}
+                      onChange={event => setModelDraft(draft => ({ ...draft, endpoint: event.target.value }))} /></label>}
+                    {modelDraft.kind !== "copilot" && <label>API key environment variable name {modelDraft.kind === "ollama" && "(optional)"}
+                      <input required={modelDraft.kind !== "ollama"} placeholder="MY_PROVIDER_API_KEY" value={modelDraft.credentialEnv}
+                        onChange={event => setModelDraft(draft => ({ ...draft, credentialEnv: event.target.value }))} /></label>}
+                    {["openai", "azure"].includes(modelDraft.kind) && <label>Wire API
+                      <select value={modelDraft.wireApi} onChange={event => setModelDraft(draft => ({
+                        ...draft, wireApi: event.target.value as "completions" | "responses"
+                      }))}><option value="completions">Chat completions</option><option value="responses">Responses</option></select></label>}
+                    {modelDraft.kind !== "copilot" && <details><summary>Advanced model settings</summary>
+                      <label>Wire model / Azure deployment <input value={modelDraft.wireModel}
+                        onChange={event => setModelDraft(draft => ({ ...draft, wireModel: event.target.value }))} /></label>
+                      {modelDraft.kind === "azure" && <label>Azure API version <input placeholder="2024-10-21" value={modelDraft.azureApiVersion}
+                        onChange={event => setModelDraft(draft => ({ ...draft, azureApiVersion: event.target.value }))} /></label>}
+                      <label>Max prompt tokens <input type="number" min="1024" value={modelDraft.maxPromptTokens}
+                        onChange={event => setModelDraft(draft => ({ ...draft, maxPromptTokens: event.target.value }))} /></label>
+                      <label>Max output tokens <input type="number" min="1" value={modelDraft.maxOutputTokens}
+                        onChange={event => setModelDraft(draft => ({ ...draft, maxOutputTokens: event.target.value }))} /></label>
+                      <label>Context window tokens <input type="number" min="1024" value={modelDraft.maxContextWindowTokens}
+                        onChange={event => setModelDraft(draft => ({ ...draft, maxContextWindowTokens: event.target.value }))} /></label>
+                      <label><input type="checkbox" checked={modelDraft.supportsVision}
+                        onChange={event => setModelDraft(draft => ({ ...draft, supportsVision: event.target.checked }))} /> Model supports vision</label>
+                      <label><input type="checkbox" checked={modelDraft.supportsReasoningEffort}
+                        onChange={event => setModelDraft(draft => ({ ...draft, supportsReasoningEffort: event.target.checked }))} /> Model supports reasoning effort</label>
+                    </details>}
+                    <button type="submit" className="focus-button">Save profile (no secrets)</button>
+                  </form>
+                  <button type="button" className="focus-button" onClick={() => void fetch("/api/copilot-models").then(async response => {
+                    const result: unknown = await response.json();
+                    if (!response.ok) throw new Error((result as { error?: string }).error ?? `Model list returned ${response.status}`);
+                    if (!Array.isArray(result)) throw new Error("Invalid model list.");
+                    setCopilotModels(result as { id: string; name: string }[]);
+                  }).catch(error => setActionError(`Copilot model list unavailable: ${error instanceof Error ? error.message : String(error)}`))}>
+                    List Copilot account models</button>
+                  {copilotModels && <p>{copilotModels.length ? copilotModels.map(model => `${model.name} (${model.id})`).join(", ") :
+                    "No Copilot account models returned."}</p>}
+                </div>
+                <div className="activity-row">
                   <div className="activity-row-heading"><strong>The office</strong><span className="activity-tag">{deskCount} desks</span></div>
-                  <p>Configurations coming soon!</p>
                   <div className="activity-chips"><span>{activeAgents.length} at desks</span>
                     <span>{deskCount - activeAgents.length} open desks</span>
                     <span>{(sdkRoom?.agents.length ?? 0) - activeAgents.length} archived</span></div>
@@ -1024,6 +1114,7 @@ function LiveOffice() {
                           onClick={() => {
                             setAssignmentAgentId(agent.id);
                             setAssignmentOutcome("");
+                            setAssignmentModelProfileId(sdkRoom?.assignments?.find(item => item.id === agent.assignmentId)?.modelProfileId ?? "copilot");
                             setMenuAgentId(null);
                           }}>New assignment…</button>
                         {agent.archived ?
@@ -1079,6 +1170,7 @@ function LiveOffice() {
                             .sort((a, b) => b.startedAt - a.startedAt).map(assignment =>
                               <li key={assignment.id}><strong>{assignment.outcome || "Assignment"}</strong>
                                 <span>{assignment.status} · {new Date(assignment.startedAt).toLocaleString()}</span>
+                                <span>Model: {assignment.modelProfile?.model ?? "auto"} · profile {assignment.modelProfileId ?? "copilot"}</span>
                                 {assignment.retention && <span>SDK session: {assignment.retention === "keep" ? "retained" : "deleted by request"}</span>}
                                 <span>Workspace: <code>{assignment.workspace}</code></span>
                                 <span>{assignment.messages.length} messages preserved</span>
@@ -1118,12 +1210,15 @@ function LiveOffice() {
                     <div className="assignment-history">
                       <h4>Assignment history</h4>
                       {currentAssignment && <p>Current: started {new Date(currentAssignment.startedAt).toLocaleString()}
+                        {" · model "}{currentAssignment.modelProfile?.model ?? "auto"}
+                        {" ("}{currentAssignment.modelProfileId ?? "copilot"}{")"}
                         {currentAssignment.outcome && <> · {currentAssignment.outcome}</>}</p>}
                       {!previousAssignments.length && <p>No previous assignments.</p>}
                       <ul>{previousAssignments.map(assignment => <li key={assignment.id}>
                         <strong>{assignment.outcome || "Previous assignment"}</strong>
                         <span>{assignment.status} · {new Date(assignment.startedAt).toLocaleString()}
                           {assignment.endedAt && <> – {new Date(assignment.endedAt).toLocaleString()}</>}</span>
+                        <span>Model: {assignment.modelProfile?.model ?? "auto"} · profile {assignment.modelProfileId ?? "copilot"}</span>
                         <span>Workspace: <code>{assignment.workspace}</code></span>
                         {assignment.repository && <span>Repository: {assignment.repository.name}</span>}
                         <span>{assignment.messages.length} messages preserved</span>
@@ -1140,6 +1235,7 @@ function LiveOffice() {
                         onClick={() => {
                           setAssignmentAgentId(selectedAgent.id);
                           setAssignmentOutcome("");
+                          setAssignmentModelProfileId(currentAssignment?.modelProfileId ?? "copilot");
                         }}>New assignment…</button>}
                     </div>
                   </div>
@@ -1296,6 +1392,13 @@ function LiveOffice() {
           <label className="assignment-outcome">Outcome of previous assignment (optional)
             <input autoFocus maxLength={240} value={assignmentOutcome}
               onChange={event => setAssignmentOutcome(event.target.value)} placeholder="What did the previous assignment accomplish?" />
+          </label>
+          <label className="assignment-outcome">Model profile for new SDK session
+            <select value={assignmentModelProfileId || sdkRoom?.assignments?.find(item => item.id === assignmentAgent.assignmentId)?.modelProfileId || "copilot"}
+              onChange={event => setAssignmentModelProfileId(event.target.value)}>
+              {(sdkRoom?.modelProfiles ?? []).map(profile => <option key={profile.id} value={profile.id}>
+                {profile.id} · {profile.kind} / {profile.model}</option>)}
+            </select>
           </label>
           <div className="send-home-buttons">
             <button type="button" disabled={assignmentSubmitting} onClick={() => setAssignmentAgentId(null)}>Cancel</button>

@@ -8,6 +8,7 @@ import { FileStore } from "./storage.js";
 import { SdkAdapter } from "./sdk.js";
 import { RoomController } from "./room.js";
 import { GitHubRepositories } from "./github-repositories.js";
+import { safeProviderError } from "./providers.js";
 
 const args = process.argv.slice(2);
 const value = (flag: string): string | undefined => {
@@ -132,11 +133,26 @@ const server = createServer(async (request, response) => {
       }
       if (url.pathname === "/api/new-assignment" && request.method === "POST") {
         const body = await payload(request);
-        if (typeof body.agentId !== "string" || (body.outcome !== undefined && typeof body.outcome !== "string")) {
+        if (typeof body.agentId !== "string" || (body.outcome !== undefined && typeof body.outcome !== "string") ||
+          (body.modelProfileId !== undefined && typeof body.modelProfileId !== "string")) {
           throw new Error("Choose a persona and optional outcome.");
         }
-        await room.newAssignment(body.agentId, body.outcome as string | undefined);
+        await room.newAssignment(body.agentId, body.outcome as string | undefined, body.modelProfileId as string | undefined);
         return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/model-profile" && request.method === "POST") {
+        const body = await payload(request);
+        await room.addModelProfile(body);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/model-default" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.id !== "string") throw new Error("Choose a model profile.");
+        await room.chooseDefaultModelProfile(body.id);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/copilot-models" && request.method === "GET") {
+        return json(response, 200, await room.listCopilotModels());
       }
       if (url.pathname === "/api/persona-profile" && request.method === "POST") {
         const body = await payload(request);
@@ -222,8 +238,10 @@ const server = createServer(async (request, response) => {
       throw error;
     }
   } catch (error) {
-    console.error("Request failed:", error);
-    json(response, error instanceof SyntaxError ? 400 : 422, { error: error instanceof Error ? error.message : String(error) });
+    const message = safeProviderError(error, process.env,
+      room.state.modelProfiles?.flatMap(profile => profile.credentialEnv ? [profile.credentialEnv] : []) ?? []);
+    console.error("Request failed:", message);
+    json(response, error instanceof SyntaxError ? 400 : 422, { error: message });
   }
 });
 server.listen(port, "127.0.0.1", () => console.log(`AgentCorp SDK office: ${origin}\nTool workspace: ${workspace}`));

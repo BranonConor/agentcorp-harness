@@ -11,6 +11,7 @@ import { validateResearchWorktree, type RepositoryGrant } from "../server/reposi
 import { MAX_AGENTS, type Adapter, type LegacyRoom, type LiveSession, type Room } from "../server/types.js";
 import { FileStore, type Store } from "../server/storage.js";
 import { canonicalGitHubUrl, type RemoteRepository, type RepositorySnapshot, type RepositorySource } from "../server/github-repositories.js";
+import { COPILOT_PROFILE, type ModelProfile } from "../server/providers.js";
 
 class MemoryStore implements Store {
   saved: Room | LegacyRoom | null = null;
@@ -54,28 +55,39 @@ class MockAdapter implements Adapter {
   deleted: string[] = [];
   grants = new Map<string, RepositoryGrant | undefined>();
   deleteError: Error | null = null;
-  async probe(): Promise<void> {}
+  modelListError: Error | null = null;
+  profiles = new Map<string, ModelProfile>();
+  probed: ModelProfile | undefined;
+  async probe(profile?: ModelProfile): Promise<void> { this.probed = profile; }
+  async listModels(): Promise<{ id: string; name: string }[]> {
+    if (this.modelListError) throw this.modelListError;
+    return [{ id: "account-model", name: "Account model" }];
+  }
   async prepareWorkspace(root: string, agentId: string): Promise<string> {
     this.prepared.push(agentId);
     return `${root}/agents/${agentId}`;
   }
-  async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant): Promise<LiveSession> {
+  async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant,
+    _requestAccess?: unknown, _getGrant?: unknown, profile: ModelProfile = COPILOT_PROFILE): Promise<LiveSession> {
     const id = sessionId ?? `sdk-session-${this.nextSession++}`;
     const session = new MockSession(id);
     this.sessions.set(id, session);
     this.workspaces.set(id, workspace);
     this.permissions.set(id, permission);
     this.grants.set(id, repository);
+    this.profiles.set(id, profile);
     this.recreated = sessionId;
     return session;
   }
-  async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, repository?: RepositoryGrant): Promise<LiveSession> {
+  async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, repository?: RepositoryGrant,
+    _requestAccess?: unknown, _getGrant?: unknown, profile: ModelProfile = COPILOT_PROFILE): Promise<LiveSession> {
     this.resumed.push(id);
     if (this.failResume.has(id)) throw new Error("CLI temporarily unavailable");
     if (this.missing.has(id)) throw new Error(`Failed to load session events: Session not found: ${id}`);
     if (this.workspaces.get(id) !== workspace) throw new Error("Wrong agent workspace");
     this.permissions.set(id, permission);
     this.grants.set(id, repository);
+    this.profiles.set(id, profile);
     return this.sessions.get(id)!;
   }
   async deleteSession(id: string): Promise<void> {
@@ -87,6 +99,78 @@ class MockAdapter implements Adapter {
 }
 const event = (type: string, data: Record<string, unknown> = {}): SessionEvent => ({ type, data } as SessionEvent);
 const request = { kind: "shell", toolCallId: "call-1", fullCommandText: "rm -rf important" } as PermissionRequest;
+
+test("v2 state gains nonsecret Copilot defaults and preserves model provenance on restart and assignment switch", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  await room.connect();
+  const initial = await room.create(0);
+  assert.equal(room.state.assignments?.[0].modelProfileId, "copilot");
+  const external = { id: "local-model", kind: "ollama", model: "qwen2.5:7b", endpoint: "http://127.0.0.1:11434/v1" };
+  await room.addModelProfile(external);
+  await room.chooseDefaultModelProfile("local-model");
+  assert.equal(adapter.probed?.kind, "ollama");
+  await room.newAssignment(initial.id, "Old task completed", "local-model");
+  const current = room.state.agents[0];
+  assert.equal(room.state.assignments?.[0].modelProfileId, "copilot");
+  assert.equal(room.state.assignments?.[1].modelProfileId, "local-model");
+  assert.equal(room.state.assignments?.[1].modelProfile?.model, external.model);
+  assert.equal(adapter.profiles.get(current.sessionId)?.model, external.model);
+  const persisted = JSON.stringify(store.saved);
+  assert.ok(!persisted.includes("apiKey"));
+  await room.close();
+  const restarted = await RoomController.open(adapter, store, "/dedicated");
+  await restarted.connect();
+  assert.equal(adapter.profiles.get(current.sessionId)?.id, "local-model");
+  assert.equal(restarted.state.assignments?.[0].modelProfileId, "copilot");
+  assert.equal(restarted.state.assignments?.[1].modelProfileId, "local-model");
+  await restarted.close();
+  const changed = structuredClone(store.saved) as Room;
+  changed.modelProfiles!.find(profile => profile.id === "local-model")!.model = "different-model";
+  store.saved = changed;
+  await assert.rejects(RoomController.open(adapter, store, "/dedicated"), /model profile changed since creation/);
+});
+
+test("missing model credentials do not change the default or end the prior assignment", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  await room.connect();
+  const agent = await room.create(0);
+  await room.addModelProfile({ id: "missing", kind: "anthropic", model: "claude-sonnet-4",
+    endpoint: "https://example.com", credentialEnv: "TEST_UNSET_PROVIDER_KEY" });
+  const before = room.state.assignments?.length;
+  await assert.rejects(room.chooseDefaultModelProfile("missing"), /requires environment variable/);
+  await assert.rejects(room.newAssignment(agent.id, "", "missing"), /requires environment variable/);
+  assert.equal(room.state.defaultModelProfileId, "copilot");
+  assert.equal(room.state.assignments?.length, before);
+  assert.equal(room.state.agents[0].sessionId, agent.sessionId);
+  await room.close();
+});
+
+test("Copilot model-list failures surface and provider credential is never recorded in a message", async () => {
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated");
+  adapter.modelListError = new Error("Model service unavailable");
+  await assert.rejects(room.listCopilotModels(), /Model service unavailable/);
+  adapter.modelListError = null;
+  assert.equal((await room.listCopilotModels())[0].id, "account-model");
+  process.env.AGENTCORP_TEST_CREDENTIAL = "short";
+  try {
+    await room.addModelProfile({ id: "credential-test", kind: "anthropic", model: "claude-sonnet-4",
+      endpoint: "https://example.com", credentialEnv: "AGENTCORP_TEST_CREDENTIAL" });
+    await room.chooseDefaultModelProfile("credential-test");
+    const agent = await room.create(0);
+    await assert.rejects(room.send(agent.id, "this prompt contains short"), /configured credential/);
+    adapter.sessions.get(agent.sessionId)!.emit(event("session.error", { message: "Provider said short" }));
+    assert.equal(room.state.agents[0].activity, "Provider said [redacted]");
+    assert.ok(!JSON.stringify(room.state).includes("short"));
+  } finally {
+    delete process.env.AGENTCORP_TEST_CREDENTIAL;
+    await room.close();
+  }
+});
 class FixtureSource implements RepositorySource {
   lookups = 0;
   clones = 0;
