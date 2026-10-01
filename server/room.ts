@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { join, resolve } from "node:path";
 import type { PermissionRequest, PermissionRequestResult, SessionEvent } from "@github/copilot-sdk";
-import { MAX_AGENTS, type Adapter, type Agent, type AgentPersona, type LiveSession, type Review, type Room, type RepositoryRequest } from "./types.js";
+import { MAX_AGENTS, type Adapter, type Agent, type AgentPersona, type LiveSession, type Meeting, type Review, type Room, type RepositoryRequest } from "./types.js";
 import type { Store } from "./storage.js";
 import { createResearchWorktree, validateRepository, validateResearchWorktree, type AccessIntent, type RepositoryGrant } from "./repository.js";
 import { uniqueAgentName } from "../agent-inc-live/src/room.js";
@@ -9,6 +9,7 @@ import { CACHE_AGE_MS, validateRemoteRepository, type RemoteRepository, type Rep
 import { COPILOT_PROFILE, safeProviderError, sessionModel, validateProfile, type ModelProfile } from "./providers.js";
 
 const EXPIRE_MS = 90_000;
+const MEETING_TIMEOUT_MS = 120_000;
 type Pending = { agentId: string; resolve: (decision: PermissionRequestResult) => void; timer: NodeJS.Timeout };
 type PendingAccess = { agentId: string; resolve: (result: string) => void; timer: NodeJS.Timeout };
 
@@ -26,18 +27,23 @@ export class RoomController {
   private stopped = new Set<string>();
   private armedTaskGrants = new Set<string>();
   private clones = new Map<string, AbortController>();
+  private meetingTurns = new Map<string, { meetingId: string; start: number; handoffText: string; timer: NodeJS.Timeout }>();
 
   private constructor(private readonly adapter: Adapter, private readonly store: Store, state: Room,
-    private readonly worktreeRoot: string, private readonly repositories?: RepositorySource) {
+    private readonly worktreeRoot: string, private readonly repositories?: RepositorySource,
+    private readonly meetingTimeoutMs = MEETING_TIMEOUT_MS) {
     this.state = state;
   }
 
   static async open(adapter: Adapter, store: Store, workspace: string, worktreeRoot = resolve(".local/worktrees"),
-    repositories?: RepositorySource): Promise<RoomController> {
+    repositories?: RepositorySource, meetingTimeoutMs = MEETING_TIMEOUT_MS): Promise<RoomController> {
+    if (!Number.isInteger(meetingTimeoutMs) || meetingTimeoutMs < 1 || meetingTimeoutMs > MEETING_TIMEOUT_MS) {
+      throw new Error("Meeting timeout must be a positive bounded number of milliseconds.");
+    }
     const saved = await store.read();
     if (saved && saved.workspace !== workspace) throw new Error(`Saved sessions belong to ${saved.workspace}. Choose that workspace or move .local/state.json aside deliberately.`);
     if (saved && !("agents" in saved) && !("agent" in saved)) throw new Error("Unrecognized saved room format; state was not changed.");
-    if (saved && "schemaVersion" in saved && saved.schemaVersion !== undefined && saved.schemaVersion !== 2 && saved.schemaVersion !== 3) {
+    if (saved && "schemaVersion" in saved && saved.schemaVersion !== undefined && saved.schemaVersion !== 2 && saved.schemaVersion !== 3 && saved.schemaVersion !== 4) {
       throw new Error("Unknown state schema; state was not changed.");
     }
     const now = Date.now();
@@ -65,7 +71,7 @@ export class RoomController {
           !agent.archived && !other.archived && other.deskIndex === agent.deskIndex) !== index)) {
       throw new Error("Saved agent roster is invalid; state was not changed.");
     }
-    const room = new RoomController(adapter, store, state, worktreeRoot, repositories);
+    const room = new RoomController(adapter, store, state, worktreeRoot, repositories, meetingTimeoutMs);
     room.state.connected = false;
     room.state.error = null;
     if (room.state.usage) room.state.usage.stale = true;
@@ -80,7 +86,7 @@ export class RoomController {
       if (!Number.isInteger(agent.persona) || agent.persona < 0 || agent.persona >= MAX_AGENTS ||
         (!agent.archived && used.has(agent.persona))) throw new Error("Saved sprite personas collide or are invalid; state was not changed.");
       if (!agent.archived) used.add(agent.persona);
-      if ((state.schemaVersion === 2 || state.schemaVersion === 3) && agent.name && assigned.has(agent.name)) {
+      if ((state.schemaVersion === 2 || state.schemaVersion === 3 || state.schemaVersion === 4) && agent.name && assigned.has(agent.name)) {
         throw new Error("Saved agent names collide; state was not changed.");
       }
       const name = agent.name && !assigned.has(agent.name) ? agent.name : uniqueAgentName(agent.sessionId, names);
@@ -98,7 +104,7 @@ export class RoomController {
       if (agent.repository?.scope === "task") agent.repository = undefined;
       if (agent.repository && !room.state.knownRepositories.includes(agent.repository.path)) room.state.knownRepositories.push(agent.repository.path);
     }
-    if (state.schemaVersion === 2 || state.schemaVersion === 3) {
+    if (state.schemaVersion === 2 || state.schemaVersion === 3 || state.schemaVersion === 4) {
       if (!Array.isArray(state.personas) || !Array.isArray(state.assignments)) {
         throw new Error("Saved persona roster is invalid; state was not changed.");
       }
@@ -167,6 +173,42 @@ export class RoomController {
         });
       }
       state.schemaVersion = 3;
+    }
+    if (state.schemaVersion === 3) {
+      state.meetings = [];
+      state.schemaVersion = 4;
+    }
+    if (!Array.isArray(state.meetings) || state.meetings.some((meeting, index) =>
+      !meeting?.id || state.meetings!.findIndex(other => other.id === meeting.id) !== index ||
+      !["meeting", "review"].includes(meeting.kind) ||
+      !["open", "running", "completed", "cancelled", "interrupted"].includes(meeting.status) ||
+      typeof meeting.agenda !== "string" || !meeting.agenda.trim() || typeof meeting.sharedText !== "string" ||
+      meeting.sharedText.length > 6000 || meeting.agenda.length > 1000 ||
+      meeting.repository !== undefined && (typeof meeting.repository !== "string" ||
+        !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(meeting.repository)) ||
+      !Array.isArray(meeting.participantIds) || meeting.participantIds.length < 2 || meeting.participantIds.length > 4 ||
+      new Set(meeting.participantIds).size !== meeting.participantIds.length ||
+      meeting.participantIds.some(id => !state.personas!.some(persona => persona.id === id)) ||
+      !Number.isInteger(meeting.maxTurns) || meeting.maxTurns < 1 || meeting.maxTurns > 8 ||
+      !Number.isInteger(meeting.nextIndex) || meeting.nextIndex < 0 || meeting.nextIndex > meeting.maxTurns ||
+      !Array.isArray(meeting.turns) || meeting.turns.length !== meeting.nextIndex ||
+      meeting.turns.some((turn, turnIndex) => turn.agentId !== meeting.participantIds[turnIndex % meeting.participantIds.length] ||
+        typeof turn.response !== "string" || typeof turn.handoffText !== "string" ||
+        turn.response.length > 6000 || turn.handoffText.length > 4000 || !Number.isFinite(turn.at)) ||
+      typeof meeting.summary !== "string" || meeting.summary.length > 4000 ||
+      !Array.isArray(meeting.owners) || meeting.owners.some(owner =>
+        !owner || !meeting.participantIds.includes(owner.agentId) || typeof owner.task !== "string" ||
+        !owner.task.trim() || owner.task.length > 500 ||
+        owner.assignmentId !== undefined && !state.assignments!.some(assignment => assignment.id === owner.assignmentId)) ||
+      !Number.isFinite(meeting.createdAt) || !Number.isFinite(meeting.updatedAt))) {
+      throw new Error("Saved meeting history is invalid; state was not changed.");
+    }
+    for (const meeting of state.meetings) {
+      if (meeting.status === "running") {
+        meeting.status = "interrupted";
+        meeting.error = "Turn interrupted by restart; review the agent transcript before starting another handoff.";
+        meeting.updatedAt = Date.now();
+      }
     }
     state.projects ??= [];
     if (!Array.isArray(state.projects) || state.projects.some((project, index) =>
@@ -348,7 +390,8 @@ export class RoomController {
       const session = await this.adapter.resume(agent.sessionId, agent.workspace,
         request => this.permission(agent.id, request, assignmentId), grant,
         intent => this.requestAccessForAssignment(agent.id, assignmentId, intent),
-        fullName => this.researchGrant(agent.id, assignmentId, fullName), profile);
+        fullName => this.researchGrant(agent.id, assignmentId, fullName), profile,
+        () => this.meetingTurns.has(agent.id));
       if (session.sessionId !== agent.sessionId) {
         await session.disconnect();
         throw new Error("SDK resumed a different session identity; repository access was not changed.");
@@ -361,7 +404,8 @@ export class RoomController {
       const session = await this.adapter.create(agent.workspace,
         request => this.permission(agent.id, request, assignmentId), agent.sessionId, grant,
         intent => this.requestAccessForAssignment(agent.id, assignmentId, intent),
-        fullName => this.researchGrant(agent.id, assignmentId, fullName), profile);
+        fullName => this.researchGrant(agent.id, assignmentId, fullName), profile,
+        () => this.meetingTurns.has(agent.id));
       if (session.sessionId !== agent.sessionId) {
         await session.disconnect();
         throw new Error("SDK returned a different identity for the empty-session recovery.");
@@ -390,7 +434,7 @@ export class RoomController {
       const workspace = await this.adapter.prepareWorkspace(this.state.workspace, id);
       const session = await this.adapter.create(workspace, request => this.permission(id, request, id), undefined, undefined,
         intent => this.requestAccessForAssignment(id, id, intent),
-        fullName => this.researchGrant(id, id, fullName), profile);
+        fullName => this.researchGrant(id, id, fullName), profile, () => this.meetingTurns.has(id));
       if (this.state.assignments!.some(assignment => assignment.sessionId === session.sessionId)) {
         throw new Error("SDK returned a session identity already assigned in recorded history.");
       }
@@ -460,6 +504,173 @@ export class RoomController {
     return !policy?.excluded && (!!policy?.read || project.sharedRead ||
       agent.repository?.remote?.fullName.toLowerCase() === fullName.toLowerCase() &&
       ["task", "session", "edit"].includes(agent.repository.scope ?? ""));
+  }
+
+  async createMeeting(input: { kind: "meeting" | "review"; participantIds: string[]; agenda: string;
+    sharedText: string; repository?: string; maxTurns: number }): Promise<Meeting> {
+    if (!["meeting", "review"].includes(input.kind) || !Array.isArray(input.participantIds) ||
+      input.participantIds.length < 2 || input.participantIds.length > 4 ||
+      new Set(input.participantIds).size !== input.participantIds.length ||
+      typeof input.agenda !== "string" || !input.agenda.trim() || input.agenda.length > 1000 ||
+      typeof input.sharedText !== "string" || input.sharedText.length > 6000 ||
+      input.kind === "review" && !input.sharedText.trim() ||
+      !Number.isInteger(input.maxTurns) || input.maxTurns < 1 || input.maxTurns > 8 ||
+      input.repository !== undefined && (typeof input.repository !== "string" ||
+        !/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/.test(input.repository))) {
+      throw new Error("Choose 2–4 agents, an agenda, explicit review material, and 1–8 turns.");
+    }
+    if (this.state.meetings!.some(meeting => meeting.status === "open" || meeting.status === "running")) {
+      throw new Error("Finish or cancel the current handoff before starting another.");
+    }
+    for (const id of input.participantIds) {
+      const agent = this.agent(id);
+      this.meetingAgent(agent, input.repository);
+    }
+    const now = Date.now();
+    const meeting: Meeting = { id: randomUUID(), kind: input.kind, status: "open",
+      participantIds: [...input.participantIds], agenda: input.agenda.trim(),
+      sharedText: input.sharedText.trim(), repository: input.repository, maxTurns: input.maxTurns,
+      nextIndex: 0, turns: [], summary: "", owners: [], createdAt: now, updatedAt: now };
+    this.state.meetings!.push(meeting);
+    await this.publish();
+    return meeting;
+  }
+
+  private meeting(id: string): Meeting {
+    const meeting = this.state.meetings!.find(item => item.id === id);
+    if (!meeting) throw new Error("Unknown meeting.");
+    return meeting;
+  }
+
+  private meetingAgent(agent: Agent, repository?: string): void {
+    if (agent.archived || agent.phase !== "idle" || agent.review || agent.accessRequest ||
+      this.lifecycle.has(agent.id) || !this.sessions.has(agent.id) || this.meetingTurns.has(agent.id)) {
+      throw new Error(`${agent.name ?? "Agent"} is not available for this handoff.`);
+    }
+    if (repository && !this.canRead(agent, repository)) {
+      throw new Error(`${agent.name ?? "Agent"} cannot read ${repository}; no material was shared.`);
+    }
+  }
+
+  async advanceMeeting(id: string, handoffText = ""): Promise<void> {
+    const meeting = this.meeting(id);
+    if (meeting.status !== "open" || meeting.nextIndex >= meeting.maxTurns) {
+      throw new Error("This meeting has no approved turns remaining.");
+    }
+    if (typeof handoffText !== "string" || handoffText.length > 4000) throw new Error("Handoff excerpt is too long.");
+    const agentId = meeting.participantIds[meeting.nextIndex % meeting.participantIds.length];
+    const agent = this.agent(agentId);
+    this.meetingAgent(agent, meeting.repository);
+    if (meeting.repository && meeting.participantIds.some(participantId =>
+      !this.canRead(this.agent(participantId), meeting.repository!))) {
+      throw new Error("A participant lost repository access; do not forward material from this project.");
+    }
+    if (this.redact(handoffText) !== handoffText || this.redact(meeting.sharedText) !== meeting.sharedText ||
+      this.redact(meeting.agenda) !== meeting.agenda) throw new Error("Meeting material contains a configured credential.");
+    const prompt = `Explicit ${meeting.kind} handoff (${meeting.nextIndex + 1}/${meeting.maxTurns}). ` +
+      `Respond only to the supplied agenda and material. Do not use tools or consult other repositories or prior transcripts. ` +
+      `Do not assume a repository grant or tool approval from this handoff.\n` +
+      `Agenda:\n${meeting.agenda}\n` +
+      `Shared material${meeting.repository ? ` (source: ${meeting.repository})` : ""}:\n${meeting.sharedText || "(none)"}\n` +
+      `User-approved excerpt for this turn:\n${handoffText.trim() || "(none)"}\n` +
+      `Give a concise actionable result, proposed owner and next step.`;
+    if (prompt.length > 12000) throw new Error("Meeting prompt exceeds the SDK message limit.");
+    meeting.status = "running";
+    meeting.error = undefined;
+    meeting.updatedAt = Date.now();
+    const timer = setTimeout(() => {
+      void this.stop(agentId).catch(error => {
+        this.endMeetingTurn(agentId, "Timed-out handoff could not be stopped: " + this.redact(error));
+        this.report(error, agent);
+      });
+    }, this.meetingTimeoutMs);
+    this.meetingTurns.set(agentId, { meetingId: id, start: agent.messages.length, handoffText: handoffText.trim(), timer });
+    try {
+      await this.send(agentId, prompt, id);
+    } catch (error) {
+      this.endMeetingTurn(agentId, "Could not send handoff: " + this.redact(error));
+      throw error;
+    }
+  }
+
+  private endMeetingTurn(agentId: string, error?: string): void {
+    const active = this.meetingTurns.get(agentId);
+    if (!active) return;
+    clearTimeout(active.timer);
+    this.meetingTurns.delete(agentId);
+    const meeting = this.meeting(active.meetingId);
+    if (meeting.status !== "running") return;
+    const agent = this.agent(agentId);
+    if (!error) {
+      const response = agent.messages.slice(active.start).filter(message => message.role === "assistant" && !message.pending)
+        .map(message => message.content).join("\n").slice(0, 6000);
+      if (response.trim()) {
+        meeting.turns.push({ agentId, handoffText: active.handoffText, response, at: Date.now() });
+        meeting.nextIndex++;
+        meeting.status = "open";
+      } else error = "The agent finished without a response; review its transcript before proceeding.";
+    }
+    if (error) { meeting.status = "interrupted"; meeting.error = error; }
+    meeting.updatedAt = Date.now();
+    void this.publish().catch(cause => console.error("Cannot save meeting result:", cause));
+  }
+
+  async cancelMeeting(id: string): Promise<void> {
+    const meeting = this.meeting(id);
+    if (!["open", "running", "interrupted"].includes(meeting.status)) throw new Error("Meeting already ended.");
+    const active = [...this.meetingTurns.entries()].find(([, turn]) => turn.meetingId === id);
+    if (active) {
+      try {
+        await this.stop(active[0]);
+      } catch (error) {
+        meeting.status = "interrupted";
+        meeting.error = "SDK could not confirm cancellation: " + this.redact(error);
+        meeting.updatedAt = Date.now();
+        await this.publish();
+        throw error;
+      }
+    }
+    meeting.status = "cancelled";
+    meeting.updatedAt = Date.now();
+    await this.publish();
+  }
+
+  async finishMeeting(id: string, summary: string, owners: { agentId: string; task: string }[]): Promise<void> {
+    const meeting = this.meeting(id);
+    if (!["open", "interrupted"].includes(meeting.status)) throw new Error("Wait for the turn or cancel the meeting.");
+    if (typeof summary !== "string" || !summary.trim() || summary.length > 4000 ||
+      !Array.isArray(owners) || owners.length > 4 || owners.some(owner =>
+        !owner || !meeting.participantIds.includes(owner.agentId) || typeof owner.task !== "string" ||
+        !owner.task.trim() || owner.task.length > 500)) throw new Error("Add a decision summary and up to four participant follow-ups.");
+    if (this.redact(summary) !== summary || owners.some(owner => this.redact(owner.task) !== owner.task)) {
+      throw new Error("Meeting result contains a configured credential.");
+    }
+    meeting.summary = summary.trim();
+    meeting.owners = owners.map(owner => {
+      const assignment = this.state.assignments!.find(item => item.id ===
+        this.state.agents.find(agent => agent.id === owner.agentId)?.assignmentId) ??
+        [...this.state.assignments!].reverse().find(item => item.personaId === owner.agentId);
+      return { agentId: owner.agentId, task: owner.task.trim(), assignmentId: assignment?.id };
+    });
+    for (const owner of meeting.owners) {
+      if (owner.assignmentId) this.state.assignments!.find(item => item.id === owner.assignmentId)!.followUps ??= [];
+      if (owner.assignmentId) this.state.assignments!.find(item => item.id === owner.assignmentId)!.followUps!.push({
+        meetingId: id, task: owner.task
+      });
+    }
+    meeting.status = "completed";
+    meeting.updatedAt = Date.now();
+    await this.publish();
+  }
+
+  private interruptMeetings(agentId: string): void {
+    for (const meeting of this.state.meetings!) {
+      if (meeting.status === "open" && meeting.participantIds.includes(agentId)) {
+        meeting.status = "interrupted";
+        meeting.error = "A participant's assignment or availability changed; finish partial results or cancel.";
+        meeting.updatedAt = Date.now();
+      }
+    }
   }
 
   private async researchGrant(agentId: string, assignmentId: string | undefined, fullName: string): Promise<RepositoryGrant | undefined> {
@@ -605,7 +816,8 @@ export class RoomController {
       const session = await this.adapter.create(workspace,
         request => this.permission(agentId, request, assignmentId),
         undefined, undefined, intent => this.requestAccessForAssignment(agentId, assignmentId, intent),
-        fullName => this.researchGrant(agentId, assignmentId, fullName), profile);
+        fullName => this.researchGrant(agentId, assignmentId, fullName), profile,
+        () => this.meetingTurns.has(agentId));
       if (this.state.assignments!.some(item => item.sessionId === session.sessionId)) {
         throw new Error("SDK returned an existing session identity; assignment was not changed.");
       }
@@ -636,6 +848,7 @@ export class RoomController {
       this.state.assignments!.push({ id: assignmentId, personaId: agent.personaId!, sessionId: session.sessionId,
         workspace, modelProfileId: profile.id, modelProfile: structuredClone(profile),
         startedAt: agent.updatedAt, status: "active", messages: agent.messages });
+      this.interruptMeetings(agentId);
       this.attach(agentId, session);
       if (this.state.usage) this.state.usage.stale = true;
       await this.publish();
@@ -667,6 +880,7 @@ export class RoomController {
       agent.archivedAt = Date.now();
       agent.activity = "Archived; conversation and SDK session preserved";
       agent.updatedAt = Date.now();
+      this.interruptMeetings(agentId);
       if (this.state.usage) this.state.usage.stale = true;
       await this.publish();
     } finally {
@@ -728,6 +942,7 @@ export class RoomController {
       assignment.outcome = "Persona fired; files and recorded assignment history retained";
       assignment.retention = retention;
       this.state.agents.splice(this.state.agents.indexOf(agent), 1);
+      this.interruptMeetings(agentId);
       if (this.state.usage) this.state.usage.stale = true;
       await this.publish();
     } finally {
@@ -741,7 +956,8 @@ export class RoomController {
 
   requestAccess(agentId: string, intent: AccessIntent): Promise<string> {
     const agent = this.agent(agentId);
-    if (agent.archived || !this.listeners.size || agent.accessRequest || agent.review || this.lifecycle.has(agentId)) {
+    if (agent.archived || !this.listeners.size || agent.accessRequest || agent.review ||
+      this.lifecycle.has(agentId) || this.meetingTurns.has(agentId)) {
       return Promise.resolve(JSON.stringify({ status: "denied", reason: "No available browser or another request is pending." }));
     }
     const id = randomUUID();
@@ -1057,6 +1273,7 @@ export class RoomController {
       if (agent.repository?.scope === "task") agent.repository = undefined;
       this.armedTaskGrants.delete(agentId);
       await abort;
+      this.endMeetingTurn(agentId, "Turn stopped; partial response remains in the agent transcript.");
       agent.review = undefined;
       const last = agent.messages.at(-1);
       if (last?.pending) last.pending = false;
@@ -1067,6 +1284,7 @@ export class RoomController {
       agent.updatedAt = Date.now();
       await this.publish();
     } catch (error) {
+      this.endMeetingTurn(agentId, "Could not stop handoff: " + this.redact(error));
       this.report(error, agent);
       throw error;
     } finally {
@@ -1074,9 +1292,11 @@ export class RoomController {
     }
   }
 
-  async send(agentId: string, text: string): Promise<void> {
+  async send(agentId: string, text: string, meetingId?: string): Promise<void> {
     const agent = this.agent(agentId);
     if (agent.archived || this.lifecycle.has(agentId)) throw new Error("This agent is not active in the office.");
+    const meetingTurn = this.meetingTurns.get(agentId);
+    if (meetingTurn && meetingTurn.meetingId !== meetingId) throw new Error("This agent has an approved meeting turn in progress.");
     const session = this.sessions.get(agentId);
     if (!session) throw new Error("Session unavailable. Retry connection before sending.");
     const prompt = text.trim();
@@ -1140,10 +1360,12 @@ export class RoomController {
         if (agent.repository?.scope === "task" && !this.armedTaskGrants.has(agentId)) agent.repository = undefined;
         agent.phase = "idle";
         agent.activity = this.stopped.has(agentId) ? "Turn stopped by user · ready to chat" : "Ready to chat";
+        if (this.meetingTurns.has(agentId)) this.endMeetingTurn(agentId);
         break;
       case "session.error":
         agent.phase = "error";
         agent.activity = event.data.message ? this.redact(event.data.message) : "SDK session error";
+        this.endMeetingTurn(agentId, agent.activity);
         break;
       default:
         return;
@@ -1156,6 +1378,9 @@ export class RoomController {
     const agent = this.state.agents.find(item => item.id === agentId);
     if (!agent || agent.assignmentId !== assignmentId) {
       return Promise.resolve({ kind: "reject", feedback: "This SDK assignment is no longer active." });
+    }
+    if (this.meetingTurns.has(agentId)) {
+      return Promise.resolve({ kind: "reject", feedback: "Meeting handoffs are limited to shared material; tools require a separate ordinary turn." });
     }
     if (request.kind === "custom-tool" && request.toolName === "research_attached_repository") {
       const name = typeof request.args === "object" && request.args !== null &&
@@ -1223,6 +1448,7 @@ export class RoomController {
 
   async close(): Promise<void> {
     this.denyPending();
+    for (const [agentId] of this.meetingTurns) this.endMeetingTurn(agentId, "Handoff interrupted by server shutdown.");
     for (const unsubscribe of this.unsubscribers.values()) unsubscribe();
     try {
       const results = await Promise.allSettled([...this.sessions.values()].map(session => session.disconnect()));

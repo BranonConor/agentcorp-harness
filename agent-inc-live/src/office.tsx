@@ -40,8 +40,15 @@ type Assignment = {
   messages: ServerAgent["messages"]; modelProfileId?: string; modelProfile?: ModelProfile;
 };
 type SdkAgent = ServerAgent & { personaId?: string; assignmentId?: string };
+type Meeting = {
+  id: string; kind: "meeting" | "review"; status: "open" | "running" | "completed" | "cancelled" | "interrupted";
+  agenda: string; participantIds: string[]; sharedText: string; repository?: string; maxTurns: number;
+  turns: { agentId: string; handoffText: string; response: string; at: number }[]; nextIndex: number;
+  summary: string; owners: { agentId: string; task: string; assignmentId?: string }[];
+  createdAt: number; updatedAt: number; error?: string;
+};
 type SdkRoom = ServerRoom & { agents: SdkAgent[]; personas?: AgentPersona[]; assignments?: Assignment[];
-  projects?: ProjectPolicy[] };
+  projects?: ProjectPolicy[]; meetings?: Meeting[] };
 function personaFor(room: SdkRoom | null, agent: SdkAgent | undefined): AgentPersona | undefined {
   return room?.personas?.find(persona => persona.id === agent?.personaId);
 }
@@ -214,7 +221,18 @@ function LiveOffice() {
   const [sdkRoom, setSdkRoom] = useState<SdkRoom | null>(null);
   const [connection, setConnection] = useState("Connecting to local Copilot SDK…");
   const [panelOpen, setPanelOpen] = useState(false);
-  const [tab, setTab] = useState<"office" | "agents">("office");
+  const [tab, setTab] = useState<"office" | "agents" | "meetings">("office");
+  const [meetingKind, setMeetingKind] = useState<Meeting["kind"]>("meeting");
+  const [meetingParticipants, setMeetingParticipants] = useState<string[]>([]);
+  const [meetingAgenda, setMeetingAgenda] = useState("");
+  const [meetingSharedText, setMeetingSharedText] = useState("");
+  const [meetingRepository, setMeetingRepository] = useState("");
+  const [meetingMaxTurns, setMeetingMaxTurns] = useState(4);
+  const [meetingId, setMeetingId] = useState("");
+  const [meetingHandoffs, setMeetingHandoffs] = useState<Record<string, string>>({});
+  const [meetingSummary, setMeetingSummary] = useState("");
+  const [meetingOwners, setMeetingOwners] = useState<Record<string, string>>({});
+  const [meetingBusy, setMeetingBusy] = useState(false);
   const [previewOffset, setPreviewOffset] = useState(0);
   const [selected, setSelected] = useState("");
   const [hover, setHover] = useState<{ name: string; x: number; y: number } | null>(null);
@@ -318,6 +336,20 @@ function LiveOffice() {
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
       return false;
+    }
+  };
+  const meetingAction = async (path: string, body: Record<string, unknown>): Promise<SdkRoom | null> => {
+    setMeetingBusy(true);
+    try {
+      setActionError("");
+      const next = await post(path, body);
+      updateRoom(next);
+      return next;
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
+      return null;
+    } finally {
+      setMeetingBusy(false);
     }
   };
   const lookupProject = async () => {
@@ -678,6 +710,72 @@ function LiveOffice() {
   const lifecycleBusy = (agent: SdkAgent) =>
     !!agent.review || !!agent.accessRequest || ["thinking", "working", "permission"].includes(agent.phase);
   const canStartAssignment = (agent: SdkAgent) => !agent.archived && agent.phase === "idle" && !lifecycleBusy(agent);
+  const meetings = [...(sdkRoom?.meetings ?? [])].sort((a, b) => b.createdAt - a.createdAt);
+  const currentMeeting = meetings.find(item => item.id === meetingId) ?? meetings[0];
+  const meetingName = (id: string) => sdkRoom?.personas?.find(persona => persona.id === id)?.name ??
+    agentName(sdkRoom, sdkRoom?.agents.find(agent => agent.id === id));
+  const meetingReady = (agent: SdkAgent) => isActive(agent) && canStartAssignment(agent);
+  const selectedMeetingAgents = meetingParticipants.map(id => sdkRoom?.agents.find(agent => agent.id === id));
+  const canCreateMeeting = connected && !meetingBusy &&
+    !meetings.some(meeting => meeting.status === "open" || meeting.status === "running") &&
+    (meetingKind !== "review" || !!meetingSharedText.trim()) &&
+    meetingAgenda.trim().length <= 1000 && meetingSharedText.length <= 6000 &&
+    meetingParticipants.length >= 2 &&
+    meetingParticipants.length <= 4 && selectedMeetingAgents.every(agent => agent && meetingReady(agent)) &&
+    !!meetingAgenda.trim() && Number.isInteger(meetingMaxTurns) && meetingMaxTurns >= 1 && meetingMaxTurns <= 8;
+  const meetingTurnPending = currentMeeting?.status === "running";
+  const handoffKey = currentMeeting ? `${currentMeeting.id}:${currentMeeting.nextIndex}` : "";
+  const handoffText = meetingHandoffs[handoffKey]?.trim() ?? "";
+  const nextMeetingAgent = currentMeeting?.participantIds[currentMeeting.nextIndex % currentMeeting.participantIds.length];
+  const nextMeetingParticipant = sdkRoom?.agents.find(agent => agent.id === nextMeetingAgent);
+  const canAdvanceMeeting = connected && !meetingBusy && currentMeeting?.status === "open" &&
+    currentMeeting.nextIndex < currentMeeting.maxTurns &&
+    (currentMeeting.turns.length === 0 || !!handoffText) &&
+    !!nextMeetingParticipant && meetingReady(nextMeetingParticipant);
+  const sceneMeeting = meetings.find(item => item.status === "open" || item.status === "running");
+  const createMeeting = async () => {
+    if (!canCreateMeeting) return;
+    const existing = new Set((sdkRoom?.meetings ?? []).map(item => item.id));
+    const next = await meetingAction("meeting-create", {
+      kind: meetingKind, participantIds: meetingParticipants, agenda: meetingAgenda.trim(),
+      sharedText: meetingSharedText.trim(), ...(meetingRepository.trim() ? { repository: meetingRepository.trim() } : {}),
+      maxTurns: meetingMaxTurns,
+    });
+    if (next) {
+      const created = next.meetings?.find(item => !existing.has(item.id));
+      if (created) setMeetingId(created.id);
+      setMeetingParticipants([]);
+      setMeetingAgenda("");
+      setMeetingSharedText("");
+      setMeetingRepository("");
+      setMeetingSummary("");
+      setMeetingOwners({});
+    }
+  };
+  const selectMeeting = (meeting: Meeting) => {
+    setMeetingId(meeting.id);
+    setMeetingSummary(meeting.summary);
+    setMeetingOwners(Object.fromEntries(meeting.owners.map(owner => [owner.agentId, owner.task])));
+  };
+  const finishMeeting = async () => {
+    if (!currentMeeting || !meetingSummary.trim()) return;
+    await meetingAction("meeting-finish", {
+      meetingId: currentMeeting.id, summary: meetingSummary.trim(),
+      owners: currentMeeting.participantIds.flatMap(agentId => {
+        const task = meetingOwners[agentId]?.trim();
+        return task ? [{ agentId, task }] : [];
+      }),
+    });
+  };
+  const advanceMeeting = async () => {
+    if (!currentMeeting || !canAdvanceMeeting) return;
+    const id = currentMeeting.id;
+    const key = handoffKey;
+    const next = await meetingAction("meeting-advance", {
+      meetingId: id, ...(handoffText ? { handoffText } : {}),
+    });
+    if (next) setMeetingHandoffs(handoffs => ({ ...handoffs, [key]: "" }));
+  };
   const startProfileEdit = (persona: AgentPersona) => {
     setProfileDraft({
       name: persona.name, artId: persona.artId, workingStyle: persona.profile.workingStyle,
@@ -868,6 +966,41 @@ function LiveOffice() {
 
   return (
     <main className={`shell live-shell ${panelOpen ? "activity-visible" : ""}`}>
+      <style>{`
+        .live-shell .activity-tabs { grid-template-columns: repeat(3, 1fr); }
+        .meeting-panel { display: grid; gap: 14px; }
+        .meeting-panel h3 { margin: 0; font-size: 13px; }
+        .meeting-panel p, .meeting-panel small { color: var(--office-secondary); font-size: 11px; line-height: 1.5; }
+        .meeting-panel p { margin: 0; }
+        .meeting-panel form, .meeting-detail { display: grid; gap: 11px; padding: 13px;
+          border: 1px solid var(--office-border); border-radius: 8px; background: var(--office-panel); }
+        .meeting-panel label { display: grid; gap: 5px; font-size: 11px; font-weight: 600; }
+        .meeting-panel input:not([type="checkbox"]), .meeting-panel textarea, .meeting-panel select {
+          width: 100%; min-width: 0; box-sizing: border-box; padding: 7px; border: 1px solid var(--office-border);
+          border-radius: 5px; color: var(--office-text); background: var(--office-muted); font: 12px var(--sans); }
+        .meeting-panel textarea { resize: vertical; }
+        .meeting-panel fieldset { display: grid; gap: 7px; margin: 0; padding: 9px; border: 1px solid var(--office-border); }
+        .meeting-panel legend { font-size: 11px; font-weight: 650; }
+        .meeting-panel fieldset label { display: flex; align-items: center; gap: 7px; font-weight: 400; }
+        .meeting-panel fieldset input { flex: none; }
+        .meeting-panel .meeting-owners label { display: grid; }
+        .meeting-panel button { min-height: 30px; padding: 5px 8px; border: 1px solid var(--office-border);
+          border-radius: 5px; color: var(--office-text); background: var(--office-muted); cursor: pointer; }
+        .meeting-panel button:disabled { opacity: .55; cursor: not-allowed; }
+        .meeting-panel .meeting-list { display: grid; gap: 5px; }
+        .meeting-panel .meeting-list button { text-align: left; overflow-wrap: anywhere; }
+        .meeting-panel .meeting-list button[aria-current="true"] { border-color: var(--office-accent); }
+        .meeting-panel .meeting-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+        .meeting-panel .meeting-turn { padding: 8px; border-left: 2px solid var(--office-accent);
+          background: var(--office-muted); overflow-wrap: anywhere; }
+        .meeting-panel .meeting-turn strong { font-size: 11px; }
+        .meeting-panel .meeting-turn .message-markdown { font-size: 12px; }
+        .meeting-panel .meeting-turn .message-markdown p { color: var(--office-text); }
+        .meeting-panel .meeting-status { font-weight: 650; text-transform: capitalize; }
+        .live-shell .keyboard-agent-target[data-meeting-participant="true"]::after {
+          content: ""; position: absolute; right: -3px; top: -3px; width: 9px; height: 9px;
+          border: 2px solid #fff; border-radius: 50%; background: #8254b7; box-shadow: 0 0 0 1px #483068; }
+      `}</style>
       <header className="topbar">
         <div className="identity">
           <span className="brand-icon" aria-hidden="true">
@@ -925,13 +1058,15 @@ function LiveOffice() {
                   onClick={() => void act("create", { deskIndex })}>+</button>)}
             {activeAgents.map(agent => {
               const actor = actors.find(item => item.key === agent.sessionId);
+              const inMeeting = sceneMeeting?.participantIds.includes(agent.id) ?? false;
               return <button key={agent.id} type="button" className="keyboard-agent-target"
                 data-agent-desk={agent.deskIndex}
-                aria-label={`Chat with ${actor?.name ?? "agent"} at desk ${agent.deskIndex + 1}`}
+                data-meeting-participant={inMeeting || undefined}
+                aria-label={`Chat with ${actor?.name ?? "agent"} at desk ${agent.deskIndex + 1}${inMeeting ? `; in ${sceneMeeting?.kind}` : ""}`}
                 onFocus={() => {
                   const point = worldRef.current?.projectAgent(agent.deskIndex);
                   hoverDeskRef.current = agent.deskIndex;
-                  if (point && actor) setHover({ name: actor.name, ...point });
+                  if (point && actor) setHover({ name: `${actor.name}${inMeeting ? ` · ${sceneMeeting?.kind}` : ""}`, ...point });
                 }}
                 onBlur={() => {
                   if (selectedRef.current !== agent.sessionId) {
@@ -951,6 +1086,10 @@ function LiveOffice() {
               <span className="callout-separator" aria-hidden="true" />
               <span>{activeAgents.length ? `${working} working · ${idle} idle${blocked ? ` · ${blocked} need permission` : ""}${unavailable ? ` · ${unavailable} unavailable` : ""}` :
                 connected ? "Click + at a desk to create an agent" : "Open Manage agents for connection details"}</span>
+              {sceneMeeting && <button type="button" className="office-status-link"
+                onClick={() => { unfocusActor(); setTab("meetings"); selectMeeting(sceneMeeting); setPanelOpen(true); }}>
+                {sceneMeeting.kind === "review" ? "Review" : "Meeting"} · {sceneMeeting.participantIds.length} agents
+              </button>}
             </div>
           </div>
         </section>
@@ -998,7 +1137,7 @@ function LiveOffice() {
             </div>
           </div>
           {!selectedAgent && <nav className="activity-tabs" aria-label="Activity views">
-            {([["office", "Overview"], ["agents", "Agents"]] as const).map(([item, label]) => (
+            {([["office", "Overview"], ["agents", "Agents"], ["meetings", "Meetings"]] as const).map(([item, label]) => (
               <button key={item} type="button" aria-pressed={tab === item}
                 onClick={() => setTab(item)}>{label}</button>
             ))}
@@ -1172,6 +1311,141 @@ function LiveOffice() {
                     {tree.branch} · {tree.path}</p>)}
                 </div>}
                 {!connected && <button type="button" className="focus-button" onClick={() => void act("retry", {})}>Retry SDK connection</button>}
+              </section>
+            )}
+            {!selectedAgent && tab === "meetings" && (
+              <section className="activity-view meeting-panel" aria-label="Manual meetings and reviews">
+                <div>
+                  <h3>Manual meeting / review</h3>
+                  <p>Only text you explicitly enter is shared between agents; responses and transcripts are never
+                    automatically relayed. Each turn needs your approval. Prompts go to existing SDK sessions with
+                    each agent’s own permissions; no approvals or repository access are inherited.</p>
+                </div>
+                <form onSubmit={event => { event.preventDefault(); void createMeeting(); }}>
+                  <label>Format
+                    <select value={meetingKind} disabled={meetingBusy}
+                      onChange={event => setMeetingKind(event.target.value as Meeting["kind"])}>
+                      <option value="meeting">Meeting</option><option value="review">Review</option>
+                    </select>
+                  </label>
+                  <fieldset>
+                    <legend>Participants · select 2–4 active, idle agents</legend>
+                    {activeAgents.length === 0 && <small>No agents at desks yet.</small>}
+                    {activeAgents.map(agent => {
+                      const checked = meetingParticipants.includes(agent.id);
+                      return <label key={agent.id}>
+                        <input type="checkbox" checked={checked}
+                          disabled={meetingBusy || !connected || (!checked && (!meetingReady(agent) || meetingParticipants.length >= 4))}
+                          onChange={() => setMeetingParticipants(ids => checked ?
+                            ids.filter(id => id !== agent.id) : [...ids, agent.id])} />
+                        {agentName(sdkRoom, agent)} · {agent.phase}{!meetingReady(agent) ? " (unavailable)" : ""}
+                      </label>;
+                    })}
+                    <small>{meetingParticipants.length}/4 selected. Participants must be idle when created.</small>
+                  </fieldset>
+                  <label>Agenda
+                    <textarea required rows={2} maxLength={1000} value={meetingAgenda}
+                      onChange={event => setMeetingAgenda(event.target.value)} placeholder="What should the agents discuss or review?" />
+                  </label>
+                  <label>Excerpts to share explicitly {meetingKind === "review" ? "(required for review)" : "(optional)"}
+                    <textarea rows={3} maxLength={6000} required={meetingKind === "review"} value={meetingSharedText}
+                      onChange={event => setMeetingSharedText(event.target.value)}
+                      placeholder="Paste only the facts or snippets these agents should see." />
+                  </label>
+                  <label>Repository identifier (optional; does not grant access)
+                    <input type="text" maxLength={240} value={meetingRepository}
+                      onChange={event => setMeetingRepository(event.target.value)} placeholder="owner/repo" />
+                  </label>
+                  <label>Maximum approved turns
+                    <select value={meetingMaxTurns} onChange={event => setMeetingMaxTurns(Number(event.target.value))}>
+                      {Array.from({ length: 8 }, (_, index) => index + 1).map(value =>
+                        <option value={value} key={value}>{value}</option>)}
+                    </select>
+                  </label>
+                  <button type="submit" disabled={!canCreateMeeting}>{meetingBusy ? "Saving…" : "Create handoff"}</button>
+                </form>
+                {meetings.length > 0 && <>
+                  <h3>Handoffs</h3>
+                  <div className="meeting-list" aria-label="Recorded handoffs">
+                    {meetings.map(meeting => <button type="button" key={meeting.id}
+                      aria-current={currentMeeting?.id === meeting.id}
+                      onClick={() => selectMeeting(meeting)}>
+                      {meeting.kind === "review" ? "Review" : "Meeting"} · {meeting.agenda}
+                      {" · "}{meeting.status} · {meeting.turns.length}/{meeting.maxTurns} turns
+                    </button>)}
+                  </div>
+                </>}
+                {currentMeeting && <div className="meeting-detail" key={currentMeeting.id}>
+                  <h3>{currentMeeting.kind === "review" ? "Review" : "Meeting"} · {currentMeeting.agenda}</h3>
+                  <p className="meeting-status" role="status">{currentMeeting.status}
+                    {meetingTurnPending && " · turn in progress"}
+                    {" · "}{currentMeeting.turns.length}/{currentMeeting.maxTurns} turns completed
+                  </p>
+                  <p>Participants: {currentMeeting.participantIds.map(meetingName).join(" · ")}</p>
+                  {currentMeeting.repository && <p>Repository context: <code>{currentMeeting.repository}</code> (no access granted)</p>}
+                  {currentMeeting.sharedText && <details><summary>Explicitly shared excerpts</summary>
+                    <div className="message-markdown"><SafeMarkdown content={currentMeeting.sharedText} /></div>
+                  </details>}
+                  {currentMeeting.error && <p role="alert">Partial result · {currentMeeting.error}</p>}
+                  {currentMeeting.turns.map((turn, index) => <div className="meeting-turn" key={`${index}-${turn.at}`}>
+                    <strong>Turn {index + 1} · {meetingName(turn.agentId)} · {new Date(turn.at).toLocaleString()}</strong>
+                    <div className="message-markdown"><SafeMarkdown content={turn.response} /></div>
+                  </div>)}
+                  {!currentMeeting.turns.length && <p>No turns yet. Creating a handoff does not send a turn.</p>}
+                  {(currentMeeting.status === "open" || currentMeeting.status === "running") && <>
+                    <p>{meetingTurnPending ? "Waiting for this turn to finish before another approval." :
+                      currentMeeting.nextIndex >= currentMeeting.maxTurns ? "Turn limit reached. Record the outcome or cancel." :
+                        `Next: ${meetingName(nextMeetingAgent ?? "")}. Approve only when ready.`}</p>
+                    {currentMeeting.status === "open" && currentMeeting.turns.length > 0 && <>
+                      <label>Curated handoff excerpt for the next agent (required)
+                        <textarea rows={3} maxLength={4000} value={meetingHandoffs[handoffKey] ?? ""}
+                          onChange={event => setMeetingHandoffs(handoffs =>
+                            ({ ...handoffs, [handoffKey]: event.target.value }))}
+                          placeholder="Write or paste only what the next agent should receive." />
+                      </label>
+                      <small>The previous response is displayed above for review, but is not automatically shared.
+                        Select only the relevant excerpt yourself before approving the next turn.</small>
+                    </>}
+                    <div className="meeting-actions">
+                      <button type="button" disabled={!canAdvanceMeeting}
+                        onClick={() => void advanceMeeting()}>
+                        Approve one next turn
+                      </button>
+                      <button type="button" disabled={meetingBusy}
+                        onClick={() => void meetingAction("meeting-cancel", { meetingId: currentMeeting.id })}>Cancel handoff</button>
+                    </div>
+                  </>}
+                  {(currentMeeting.status === "open" || currentMeeting.status === "interrupted") && <>
+                      <label>Outcome summary
+                        <textarea rows={3} maxLength={4000} value={meetingSummary}
+                          onChange={event => setMeetingSummary(event.target.value)}
+                          placeholder="Record the decision, findings, or next steps." />
+                      </label>
+                      <fieldset className="meeting-owners"><legend>Optional owner tasks (recorded, not automatically assigned)</legend>
+                        {currentMeeting.participantIds.map(agentId => <label key={agentId}>{meetingName(agentId)}
+                          <input type="text" maxLength={500} value={meetingOwners[agentId] ?? ""}
+                            onChange={event => setMeetingOwners(owners => ({ ...owners, [agentId]: event.target.value }))}
+                            placeholder="Follow-up task, if any" />
+                        </label>)}
+                      </fieldset>
+                      <button type="button" disabled={meetingBusy || !meetingSummary.trim()}
+                        onClick={() => void finishMeeting()}>Finish with summary</button>
+                  </>}
+                  {currentMeeting.status === "interrupted" && <div className="meeting-actions">
+                    <button type="button" disabled={meetingBusy}
+                      onClick={() => void meetingAction("meeting-cancel", { meetingId: currentMeeting.id })}>Cancel handoff</button>
+                    <small>Review the partial result above, then finish with a summary or cancel.</small>
+                  </div>}
+                  {(currentMeeting.status === "completed" || currentMeeting.status === "cancelled") && <>
+                    {currentMeeting.summary && <div><strong>Summary</strong>
+                      <div className="message-markdown"><SafeMarkdown content={currentMeeting.summary} /></div></div>}
+                    {!!currentMeeting.owners.length && <div><strong>Recorded owner tasks</strong>
+                      {currentMeeting.owners.map(owner => <p key={owner.agentId}>
+                        {meetingName(owner.agentId)}: {owner.task}
+                        {owner.assignmentId && <> · assignment {owner.assignmentId.slice(0, 8)}</>}</p>)}</div>}
+                    {!currentMeeting.summary && <p>Handoff ended without a final summary. Completed turns above remain available.</p>}
+                  </>}
+                </div>}
               </section>
             )}
             {!selectedAgent && tab === "agents" && (

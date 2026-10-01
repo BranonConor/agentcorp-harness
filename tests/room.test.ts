@@ -20,13 +20,17 @@ class MemoryStore implements Store {
 }
 class MockSession implements LiveSession {
   sent: string[] = [];
+  sendError: Error | null = null;
   aborts = 0;
   abortError: Error | null = null;
   disconnects = 0;
   directory = "";
   handler: ((event: SessionEvent) => void) | null = null;
   constructor(readonly sessionId: string) {}
-  async send(prompt: string): Promise<void> { this.sent.push(prompt); }
+  async send(prompt: string): Promise<void> {
+    if (this.sendError) throw this.sendError;
+    this.sent.push(prompt);
+  }
   async abort(): Promise<void> {
     if (this.abortError) throw this.abortError;
     this.aborts++;
@@ -102,6 +106,187 @@ class MockAdapter implements Adapter {
 }
 const event = (type: string, data: Record<string, unknown> = {}): SessionEvent => ({ type, data } as SessionEvent);
 const request = { kind: "shell", toolCallId: "call-1", fullCommandText: "rm -rf important" } as PermissionRequest;
+
+test("explicit meeting handoffs are bounded, private, and link decisions to assignments", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  const a = await room.create(0);
+  const b = await room.create(1);
+  const c = await room.create(2);
+  await assert.rejects(room.createMeeting({ kind: "review", participantIds: [a.id, b.id], agenda: "Review",
+    sharedText: "", maxTurns: 2 }), /explicit review material/);
+  await assert.rejects(room.createMeeting({ kind: "meeting", participantIds: [a.id, a.id], agenda: "Review",
+    sharedText: "diff", maxTurns: 2 }), /2–4 agents/);
+  await assert.rejects(room.createMeeting({ kind: "meeting", participantIds: [a.id, b.id], agenda: "Review",
+    sharedText: "diff", maxTurns: 9 }), /1–8 turns/);
+  const meeting = await room.createMeeting({ kind: "review", participantIds: [a.id, b.id], agenda: "Assess patch",
+    sharedText: "+ fixed boundary", maxTurns: 2 });
+  await room.advanceMeeting(meeting.id);
+  assert.equal(meeting.status, "running");
+  await assert.rejects(room.send(a.id, "Unapproved competing turn"), /meeting turn in progress/);
+  assert.equal(adapter.sessions.get(a.sessionId)!.sent.length, 1);
+  assert.ok(adapter.sessions.get(a.sessionId)!.sent[0].includes("+ fixed boundary"));
+  assert.ok(!adapter.sessions.get(a.sessionId)!.sent[0].includes("hidden author message"));
+  assert.deepEqual(await adapter.permissions.get(a.sessionId)!(request), {
+    kind: "reject", feedback: "Meeting handoffs are limited to shared material; tools require a separate ordinary turn."
+  });
+  adapter.sessions.get(a.sessionId)!.emit(event("assistant.message", { content: "Consider boundary test" }));
+  adapter.sessions.get(a.sessionId)!.emit(event("session.idle"));
+  assert.equal(meeting.nextIndex, 1);
+  assert.equal(meeting.turns[0].response, "Consider boundary test");
+  await room.advanceMeeting(meeting.id, "Only share: add boundary test");
+  assert.equal(adapter.sessions.get(b.sessionId)!.sent.length, 1);
+  assert.ok(adapter.sessions.get(b.sessionId)!.sent[0].includes("Only share: add boundary test"));
+  assert.ok(!adapter.sessions.get(b.sessionId)!.sent[0].includes("Consider boundary test"));
+  adapter.sessions.get(b.sessionId)!.emit(event("assistant.message", { content: "Approved with test" }));
+  adapter.sessions.get(b.sessionId)!.emit(event("session.idle"));
+  await assert.rejects(room.advanceMeeting(meeting.id), /no approved turns/);
+  await assert.rejects(room.finishMeeting(meeting.id, "Ship after test", [{ agentId: c.id, task: "test" }]),
+    /Add a decision summary/);
+  await room.finishMeeting(meeting.id, "Ship after test", [{ agentId: b.id, task: "Add boundary test" }]);
+  assert.equal(meeting.status, "completed");
+  assert.equal(meeting.owners[0].assignmentId, b.assignmentId);
+  assert.deepEqual(room.state.assignments!.find(item => item.id === b.assignmentId)!.followUps,
+    [{ meetingId: meeting.id, task: "Add boundary test" }]);
+  assert.equal((store.saved as Room).schemaVersion, 4);
+  await room.close();
+});
+
+test("meeting cancellation, failure, restart and archived participants preserve partial results", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  const a = await room.create(0);
+  const b = await room.create(1);
+  const meeting = await room.createMeeting({ kind: "meeting", participantIds: [a.id, b.id],
+    agenda: "Decide", sharedText: "short excerpt", maxTurns: 3 });
+  await room.advanceMeeting(meeting.id);
+  await room.cancelMeeting(meeting.id);
+  assert.equal(adapter.sessions.get(a.sessionId)!.aborts, 1);
+  assert.equal(meeting.status, "cancelled");
+  assert.equal(meeting.turns.length, 0);
+  adapter.sessions.get(a.sessionId)!.emit(event("session.idle"));
+  assert.equal(meeting.status, "cancelled");
+  const second = await room.createMeeting({ kind: "meeting", participantIds: [a.id, b.id],
+    agenda: "Decide", sharedText: "", maxTurns: 2 });
+  await room.advanceMeeting(second.id);
+  adapter.sessions.get(a.sessionId)!.emit(event("assistant.message", { content: "Partial decision" }));
+  adapter.sessions.get(a.sessionId)!.emit(event("session.idle"));
+  await room.advanceMeeting(second.id, "Partial decision");
+  adapter.sessions.get(b.sessionId)!.emit(event("session.error", { message: "Provider unavailable" }));
+  assert.equal(second.status, "interrupted");
+  assert.equal(second.turns.length, 1);
+  await room.finishMeeting(second.id, "Keep the partial decision", []);
+  assert.equal(second.status, "completed");
+  await room.close();
+  const recovered = await RoomController.open(adapter, store, "/dedicated");
+  assert.equal(recovered.state.meetings?.[1].turns[0].response, "Partial decision");
+  await recovered.connect();
+  const third = await recovered.createMeeting({ kind: "meeting", participantIds: [a.id, b.id],
+    agenda: "Next", sharedText: "", maxTurns: 2 });
+  await recovered.archive(b.id);
+  assert.equal(third.status, "interrupted");
+  await assert.rejects(recovered.advanceMeeting(third.id), /no approved turns/);
+  await recovered.close();
+});
+
+test("v3 state migrates to backed-up v4; running meetings interrupt on restart", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "agentcorp-meeting-"));
+  try {
+    const file = join(dir, "state.json");
+    const original: Room = { schemaVersion: 3, agents: [], personas: [], assignments: [],
+      projects: [], connected: false, workspace: "/dedicated", error: null, revision: 1 };
+    await writeFile(file, JSON.stringify(original));
+    const store = new FileStore(file);
+    const adapter = new MockAdapter();
+    const room = await RoomController.open(adapter, store, "/dedicated");
+    assert.equal(room.state.schemaVersion, 4);
+    assert.deepEqual(JSON.parse(await readFile(`${file}.v3.bak`, "utf8")), original);
+    const a = await room.create(0);
+    const b = await room.create(1);
+    const meeting = await room.createMeeting({ kind: "meeting", participantIds: [a.id, b.id],
+      agenda: "Check", sharedText: "", maxTurns: 2 });
+    await room.advanceMeeting(meeting.id);
+    const recovered = await RoomController.open(adapter, store, "/dedicated");
+    assert.equal(recovered.state.meetings?.[0].status, "interrupted");
+    assert.equal(recovered.state.meetings?.[0].nextIndex, 0);
+    assert.match(recovered.state.meetings![0].error!, /restart/);
+    await recovered.close();
+    await room.close();
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("meeting source requires every participant's effective grant and checks revocations again", async () => {
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated", undefined,
+    new FixtureSource("/unused-cache"));
+  const a = await room.create(0);
+  const b = await room.create(1);
+  const source = { fullName: "Fixture/review", url: canonicalGitHubUrl("Fixture/review"),
+    defaultBranch: "main", privacy: "public" as const, sizeKiB: 4 };
+  await room.addProject(source, false);
+  await room.setPersonaProject(a.id, source.fullName, "read");
+  const input = { kind: "review" as const, participantIds: [a.id, b.id],
+    agenda: "Assess diff", sharedText: "+ private-source line", repository: source.fullName, maxTurns: 2 };
+  await assert.rejects(room.createMeeting(input), /cannot read/);
+  assert.equal(room.state.meetings?.length, 0);
+  await room.setPersonaProject(b.id, source.fullName, "read");
+  const meeting = await room.createMeeting(input);
+  await room.setPersonaProject(b.id, source.fullName, "exclude");
+  await assert.rejects(room.advanceMeeting(meeting.id), /cannot read|lost repository access/);
+  assert.equal(adapter.sessions.get(a.sessionId)!.sent.length, 0);
+  await room.cancelMeeting(meeting.id);
+  await room.close();
+});
+
+test("failed dispatch and failed abort do not advance a meeting or claim cancellation", async () => {
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated");
+  const a = await room.create(0);
+  const b = await room.create(1);
+  const meeting = await room.createMeeting({ kind: "meeting", participantIds: [a.id, b.id],
+    agenda: "Plan", sharedText: "", maxTurns: 1 });
+  adapter.sessions.get(a.sessionId)!.sendError = new Error("provider disconnected");
+  await assert.rejects(room.advanceMeeting(meeting.id), /provider disconnected/);
+  assert.equal(meeting.status, "interrupted");
+  assert.equal(meeting.nextIndex, 0);
+  await room.finishMeeting(meeting.id, "No decision, provider unavailable", []);
+  const next = await room.createMeeting({ kind: "meeting", participantIds: [a.id, b.id],
+    agenda: "Plan", sharedText: "", maxTurns: 1 }).catch(error => {
+    assert.match(String(error), /not available/);
+    return null;
+  });
+  assert.equal(next, null);
+  await room.connect();
+  const retried = await room.createMeeting({ kind: "meeting", participantIds: [a.id, b.id],
+    agenda: "Plan", sharedText: "", maxTurns: 1 });
+  adapter.sessions.get(a.sessionId)!.sendError = null;
+  adapter.sessions.get(a.sessionId)!.abortError = new Error("abort unavailable");
+  await room.advanceMeeting(retried.id);
+  await assert.rejects(room.cancelMeeting(retried.id), /abort unavailable/);
+  assert.equal(retried.status, "interrupted");
+  assert.match(retried.error!, /could not confirm cancellation/i);
+  await room.close();
+});
+
+test("meeting timeout aborts its SDK turn and keeps an explicit partial result", async () => {
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated", undefined, undefined, 15);
+  const a = await room.create(0);
+  const b = await room.create(1);
+  const meeting = await room.createMeeting({ kind: "meeting", participantIds: [a.id, b.id],
+    agenda: "Bounded review", sharedText: "A small excerpt", maxTurns: 2 });
+  await room.advanceMeeting(meeting.id);
+  for (let i = 0; i < 50 && meeting.status === "running"; i++) {
+    await new Promise(resolve => setTimeout(resolve, 5));
+  }
+  assert.equal(adapter.sessions.get(a.sessionId)!.aborts, 1);
+  assert.equal(meeting.status, "interrupted");
+  assert.equal(meeting.nextIndex, 0);
+  assert.match(meeting.error!, /stopped/);
+  await room.close();
+});
 
 test("v2 state gains nonsecret Copilot defaults and preserves model provenance on restart and assignment switch", async () => {
   const store = new MemoryStore();
@@ -883,7 +1068,7 @@ test("v2 state is backed up before v3 policy migration and can be restored intac
     for (const persona of v2.personas!) delete persona.repositoryPolicies;
     await writeFile(path, JSON.stringify(v2));
     const migrated = await RoomController.open(new MockAdapter(), store, "/dedicated");
-    assert.equal(migrated.state.schemaVersion, 3);
+    assert.equal(migrated.state.schemaVersion, 4);
     assert.deepEqual(JSON.parse(await readFile(`${path}.v2.bak`, "utf8")), JSON.parse(JSON.stringify(v2)));
     assert.equal(migrated.state.personas![0].memories[0].text, "Important");
     assert.equal(migrated.state.assignments![0].sessionId, agent.sessionId);
@@ -911,7 +1096,7 @@ test("v2 policy migration preserves sixteen distinct sessions, assignments, memo
   for (const persona of v2.personas!) delete persona.repositoryPolicies;
   store.saved = v2;
   const migrated = await RoomController.open(adapter, store, "/dedicated");
-  assert.equal(migrated.state.schemaVersion, 3);
+  assert.equal(migrated.state.schemaVersion, 4);
   assert.equal(migrated.state.projects?.length, 16);
   assert.deepEqual(migrated.state.agents.map(agent => agent.sessionId),
     v2.agents.map(agent => agent.sessionId));
@@ -1063,7 +1248,7 @@ test("all sixteen legacy identities, desk positions, grants, artifacts and trans
   for (const agent of legacy.agents) { delete agent.personaId; delete agent.assignmentId; }
   store.saved = legacy;
   const migrated = await RoomController.open(adapter, store, "/dedicated");
-  assert.equal(migrated.state.schemaVersion, 3);
+  assert.equal(migrated.state.schemaVersion, 4);
   assert.equal(migrated.state.personas?.length, 16);
   assert.equal(migrated.state.assignments?.length, 16);
   assert.deepEqual(migrated.state.agents.map(agent => ({
@@ -1156,7 +1341,7 @@ test("atomic v1 backup supports rollback; unknown schema or invalid linkage cann
     await writeFile(path, JSON.stringify(legacy));
     const room = await RoomController.open(new MockAdapter(), store, "/dedicated");
     assert.deepEqual(JSON.parse(await readFile(`${path}.v1.bak`, "utf8")), legacy);
-    assert.equal(JSON.parse(await readFile(path, "utf8")).schemaVersion, 3);
+    assert.equal(JSON.parse(await readFile(path, "utf8")).schemaVersion, 4);
     await room.close();
     const damaged = { ...room.state, assignments: [{ id: "bad", personaId: "missing" }] };
     await writeFile(path, JSON.stringify(damaged));
@@ -1166,7 +1351,7 @@ test("atomic v1 backup supports rollback; unknown schema or invalid linkage cann
     await writeFile(path, JSON.stringify({ ...legacy, schemaVersion: 99 }));
     await assert.rejects(RoomController.open(new MockAdapter(), store, "/dedicated"), /Unknown state schema/);
     await writeFile(path, await readFile(`${path}.v1.bak`, "utf8"));
-    assert.equal((await RoomController.open(new MockAdapter(), store, "/dedicated")).state.schemaVersion, 3);
+    assert.equal((await RoomController.open(new MockAdapter(), store, "/dedicated")).state.schemaVersion, 4);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

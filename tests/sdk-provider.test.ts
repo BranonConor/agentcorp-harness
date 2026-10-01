@@ -4,8 +4,24 @@ import { createServer } from "node:http";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { CopilotClient } from "@github/copilot-sdk";
+import { CopilotClient, type Tool } from "@github/copilot-sdk";
 import { sessionModel, validateProfile } from "../server/providers.js";
+import { restrictToolsDuringMeeting } from "../server/sdk.js";
+
+test("meeting guard blocks even permission-free custom tools before external calls", async () => {
+  let called = 0;
+  let meeting = true;
+  const tool: Tool = { name: "search_web", description: "External web search", skipPermission: true,
+    parameters: { type: "object", properties: {} },
+    handler: async () => { called++; return "result"; } };
+  const guarded = restrictToolsDuringMeeting([tool], () => meeting)[0];
+  const invoke = () => guarded.handler!({}, {} as Parameters<NonNullable<Tool["handler"]>>[1]);
+  await assert.rejects(async () => await invoke(), /cannot use tools/);
+  assert.equal(called, 0);
+  meeting = false;
+  assert.equal(await invoke(), "result");
+  assert.equal(called, 1);
+});
 
 test("unsigned SDK session streams an OpenAI-compatible local model response", { timeout: 45_000 }, async () => {
   const workspace = await mkdtemp(join(tmpdir(), "agentcorp-unsigned-sdk-"));

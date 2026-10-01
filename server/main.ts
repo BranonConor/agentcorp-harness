@@ -93,6 +93,32 @@ const server = createServer(async (request, response) => {
         await room.send(body.agentId, body.prompt);
         return json(response, 200, room.state);
       }
+      if (url.pathname === "/api/meeting-create" && request.method === "POST") {
+        const body = await payload(request);
+        await room.createMeeting(body as Parameters<typeof room.createMeeting>[0]);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/meeting-advance" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.meetingId !== "string" || body.handoffText !== undefined && typeof body.handoffText !== "string") {
+          throw new Error("Choose a meeting and an optional approved excerpt.");
+        }
+        await room.advanceMeeting(body.meetingId, body.handoffText as string | undefined);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/meeting-cancel" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.meetingId !== "string") throw new Error("Choose a meeting to cancel.");
+        await room.cancelMeeting(body.meetingId);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/meeting-finish" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.meetingId !== "string" || typeof body.summary !== "string" ||
+          !Array.isArray(body.owners)) throw new Error("Provide a meeting decision and owners.");
+        await room.finishMeeting(body.meetingId, body.summary, body.owners as { agentId: string; task: string }[]);
+        return json(response, 200, room.state);
+      }
       if (url.pathname === "/api/decision" && request.method === "POST") {
         const body = await payload(request);
         if (typeof body.id !== "string" || typeof body.agentId !== "string" || typeof body.allow !== "boolean") throw new Error("Invalid permission decision.");

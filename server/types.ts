@@ -22,6 +22,16 @@ export type Assignment = {
   repository?: RepositoryGrant; startedAt: number; endedAt?: number; outcome?: string;
   status: "active" | "completed" | "interrupted"; messages: Message[];
   retention?: "keep" | "delete-sdk";
+  followUps?: { meetingId: string; task: string }[];
+};
+export type Meeting = {
+  id: string; kind: "meeting" | "review";
+  status: "open" | "running" | "completed" | "cancelled" | "interrupted";
+  agenda: string; participantIds: string[]; sharedText: string; repository?: string;
+  maxTurns: number; nextIndex: number;
+  turns: { agentId: string; handoffText: string; response: string; at: number }[];
+  summary: string; owners: { agentId: string; task: string; assignmentId?: string }[];
+  createdAt: number; updatedAt: number; error?: string;
 };
 export type Agent = {
   id: string;
@@ -45,7 +55,8 @@ export type Agent = {
   persona?: number;
   name?: string;
 };
-export type Room = { schemaVersion?: 2 | 3; personas?: AgentPersona[]; assignments?: Assignment[];
+export type Room = { schemaVersion?: 2 | 3 | 4; personas?: AgentPersona[]; assignments?: Assignment[];
+  meetings?: Meeting[];
   projects?: ProjectPolicy[];
   modelProfiles?: ModelProfile[]; defaultModelProfileId?: string;
   agents: Agent[]; error: string | null; connected: boolean; workspace: string; revision: number;
@@ -76,10 +87,12 @@ export interface Adapter {
   prepareWorkspace(root: string, agentId: string): Promise<string>;
   create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>,
     sessionId?: string, repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>,
-    getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile?: ModelProfile): Promise<LiveSession>;
+    getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile?: ModelProfile,
+    isMeetingTurn?: () => boolean): Promise<LiveSession>;
   resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>,
     repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>,
-    getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile?: ModelProfile): Promise<LiveSession>;
+    getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile?: ModelProfile,
+    isMeetingTurn?: () => boolean): Promise<LiveSession>;
   deleteSession(id: string): Promise<void>;
   stop(): Promise<void>;
 }
