@@ -1007,6 +1007,7 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
   let pointerTravel = 0;
   let selectedAgent: number | null = null;
   let focusIndex: number | null = null;
+  let focusedZoom = isLive ? 1.45 : 1.3;
   type CameraView = { panX: number; panZ: number; zoom: number };
   let viewBeforeFocus: CameraView | null = null;
   let returningView: CameraView | null = null;
@@ -1074,8 +1075,10 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
   const onLeave = () => interaction?.onAgentHover(null, 0, 0);
   const onWheel = (event: WheelEvent) => {
     event.preventDefault();
-    clearFocusForCameraInteraction();
-    zoom = THREE.MathUtils.clamp(zoom * (event.deltaY > 0 ? 0.9 : 1.1), 0.74, isLive ? 1.95 : 1.65);
+    const current = focusIndex !== null ? focusedZoom : zoom;
+    const next = THREE.MathUtils.clamp(current * (event.deltaY > 0 ? 0.9 : 1.1), 0.74, isLive ? 1.95 : 1.65);
+    if (focusIndex !== null) focusedZoom = next;
+    else zoom = next;
   };
   const canvas = renderer.domElement;
   canvas.addEventListener("pointerdown", onDown);
@@ -1129,6 +1132,7 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
         viewBeforeFocus = null;
       }
       if (next !== null) returningView = null;
+      if (next !== null && next !== selectedAgent) focusedZoom = isLive ? 1.45 : 1.3;
       selectedAgent = next;
       focusIndex = selectedAgent;
     },
@@ -1378,7 +1382,7 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
         const easing = reducedMotion ? 1 : 1 - Math.exp(-frameDelta * 7);
         panX = THREE.MathUtils.lerp(panX, THREE.MathUtils.clamp(agent.x + 1.15, isLive ? -7.8 : -5.5, isLive ? 7.8 : 5.5), easing);
         panZ = THREE.MathUtils.lerp(panZ, THREE.MathUtils.clamp(agent.z, isLive ? -4.8 : -3.5, isLive ? 4.8 : 3.5), easing);
-        zoom = THREE.MathUtils.lerp(zoom, isLive ? 1.45 : 1.3, easing);
+        zoom = THREE.MathUtils.lerp(zoom, focusedZoom, easing);
       } else if (returningView) {
         const easing = reducedMotion ? 1 : 1 - Math.exp(-frameDelta * 7);
         panX = THREE.MathUtils.lerp(panX, returningView.panX, easing);

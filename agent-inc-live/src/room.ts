@@ -46,6 +46,13 @@ const givenNames = [
   "Inez", "Ira", "Jules", "Kaia", "Kit", "Lena", "Lio", "Luca",
   "Mara", "Mica", "Milo", "Mira", "Nell", "Nico", "Noor", "Oli",
   "Orla", "Pax", "Remy", "Rhea", "Rio", "Sage", "Soli", "Tavi",
+  "Abel", "Adira", "Alina", "Ansel", "Arlo", "Astrid", "Avery", "Bela",
+  "Briar", "Calla", "Cato", "Celine", "Cora", "Dorian", "Edda", "Elio",
+  "Elise", "Elowen", "Eren", "Faye", "Flora", "Galen", "Hana", "Hugo",
+  "Idris", "Imani", "Iris", "Jasper", "Juno", "Kavi", "Keira", "Leon",
+  "Livia", "Lyra", "Mae", "Maren", "Milan", "Nadia", "Nia", "Nolan",
+  "Oren", "Petra", "Quinn", "Rafi", "Rina", "Robin", "Rowan", "Sabine",
+  "Sora", "Talia", "Tess", "Uma", "Vera", "Wren", "Yara", "Zoe",
 ];
 const familyNames = [
   "Alder", "Arbor", "Ash", "Bell", "Birch", "Bloom", "Brooks", "Cedar",
@@ -53,6 +60,13 @@ const familyNames = [
   "Frost", "Grove", "Hart", "Haven", "Hollow", "Ivy", "Lake", "Lark",
   "Linden", "Marsh", "Meadow", "Moss", "Oak", "Orchard", "Pearl", "Pine",
   "Reed", "Ridge", "River", "Rowan", "Shore", "Silver", "Stone", "Vale",
+  "Amber", "Aspen", "Bay", "Beacon", "Brook", "Canyon", "Clay", "Clover",
+  "Coast", "Comet", "Coral", "Delta", "Ember", "Field", "Flint", "Fjord",
+  "Glen", "Harbor", "Hearth", "Hill", "Juniper", "Kestrel", "Leaf", "Maple",
+  "Meridian", "Moon", "North", "Olive", "Opal", "Pond", "Rain", "Rill",
+  "Sable", "Sage", "Sparrow", "Spring", "Star", "Summit", "Thorn", "Tide",
+  "Timber", "Violet", "Wells", "West", "Willow", "Wind", "Wood", "Wynn",
+  "Yew", "Zephyr",
 ];
 
 function hash(key: string): number {
@@ -70,6 +84,20 @@ export function agentName(key: string): string {
   return `${givenNames[hash(`given:${key}`) % givenNames.length]} ${familyNames[hash(`family:${key}`) % familyNames.length]}`;
 }
 
+export function uniqueAgentName(key: string, taken: ReadonlySet<string>): string {
+  const total = givenNames.length * familyNames.length;
+  const start = hash(`name:${key}`) % total;
+  for (let offset = 0; offset < total; offset++) {
+    const index = (start + offset) % total;
+    const name = `${givenNames[index % givenNames.length]} ${familyNames[Math.floor(index / givenNames.length)]}`;
+    if (!taken.has(name)) return name;
+  }
+  const base = agentName(key);
+  for (let suffix = 2; ; suffix++) {
+    const name = `${base} ${suffix}`;
+    if (!taken.has(name)) return name;
+  }
+}
 export function sessionName(session: Session, currentId: string): string {
   return session.title || (session.sessionId === currentId ?
     "Your session" : `Session ${session.sessionId.slice(0, 8)}`);

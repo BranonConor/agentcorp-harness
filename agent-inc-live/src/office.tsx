@@ -546,6 +546,26 @@ function LiveOffice() {
     selectedAgent && !selectedAgent.archived ?
       [{ id: `greeting-${selectedAgent.id}`, role: "assistant" as const,
         content: greetingForPersona(selectedAgent.persona ?? 0) }] : [];
+  useLayoutEffect(() => {
+    const bubbles = Array.from(chatScroll.current?.querySelectorAll<HTMLElement>(
+      ".conversation-message:not(.access-message) .message-bubble") ?? []);
+    const measure = () => {
+      for (const bubble of bubbles) {
+        const markdown = bubble.querySelector(".message-markdown");
+        const paragraph = markdown?.children.length === 1 ? markdown.firstElementChild : null;
+        const lineHeight = paragraph ? Number.parseFloat(getComputedStyle(paragraph).lineHeight) : 0;
+        bubble.classList.toggle("single-line", paragraph?.tagName === "P" &&
+          lineHeight > 0 && paragraph.getBoundingClientRect().height <= lineHeight + 1);
+      }
+    };
+    const observer = new ResizeObserver(measure);
+    for (const bubble of bubbles) {
+      const markdown = bubble.querySelector(".message-markdown");
+      if (markdown) observer.observe(markdown);
+    }
+    measure();
+    return () => observer.disconnect();
+  }, [selected, displayedMessages]);
   useEffect(() => {
     setCopiedId("");
   }, [selected]);
@@ -765,8 +785,10 @@ function LiveOffice() {
                 </div>
                 <div className="activity-row">
                   <div className="activity-row-heading"><strong>The office</strong><span className="activity-tag">{deskCount} desks</span></div>
-                  <p>Click + above an empty desk (or Add agent) to create a separate SDK session. Click its pixel sprite to open its chat. A prompt to an existing agent does not create another office agent.</p>
-                  {officeFull && <p>Office full: all {MAX_AGENTS} desks have independent agents. Existing conversations remain available.</p>}
+                  <p>Configurations coming soon!</p>
+                  <div className="activity-chips"><span>{activeAgents.length} at desks</span>
+                    <span>{deskCount - activeAgents.length} open desks</span>
+                    <span>{(sdkRoom?.agents.length ?? 0) - activeAgents.length} archived</span></div>
                 </div>
                 <div className="activity-row">
                   <div className="activity-row-heading"><strong>Scratch workspace root</strong><span className="activity-tag">Local only</span></div>
@@ -779,9 +801,11 @@ function LiveOffice() {
                   <div className="activity-row-heading"><strong>SDK usage · all recorded agents</strong>
                     <span className="activity-tag">On demand</span></div>
                   {sdkRoom?.usage ? <p>{sdkRoom.usage.status === "unavailable" ? "Usage unavailable from the SDK." :
-                    `${sdkRoom.usage.tokens.toLocaleString()} tokens · ${sdkRoom.usage.calls.toLocaleString()} model calls · ${sdkRoom.usage.filesChanged.toLocaleString()} session-file counts${sdkRoom.usage.status === "partial" ? " (partial)" : ""}.`}
-                    {" "}Measured {sdkRoom.usage.measured}/{sdkRoom.usage.total} sessions, active and archived, accumulated since {sdkRoom.usage.startedAt ?? "unknown start"}; refreshed {new Date(sdkRoom.usage.updatedAt).toLocaleString()}{sdkRoom.usage.stale ? " (outdated; refresh for recent work)" : ""}. File counts may overlap across sessions.</p> :
-                    <p>Not loaded. Query per-session SDK metrics to see available accumulated usage.</p>}
+                    `${sdkRoom.usage.tokens.toLocaleString()} tokens · ${sdkRoom.usage.calls.toLocaleString()} model calls · ${sdkRoom.usage.filesChanged.toLocaleString()} session-file counts.`}
+                    {" "}Last refreshed {new Date(sdkRoom.usage.updatedAt).toLocaleString()}
+                    {sdkRoom.usage.status === "partial" ? ` · Partial: ${sdkRoom.usage.measured}/${sdkRoom.usage.total} sessions measured.` : ""}
+                    {sdkRoom.usage.stale ? " · Outdated; refresh for recent work." : ""}</p> :
+                    <p>Usage not loaded yet.</p>}
                   <button type="button" className="focus-button" disabled={!connected} onClick={() => void act("usage", {})}>Refresh SDK usage</button>
                 </div>
                 {!!sdkRoom?.worktrees?.length && <div className="activity-row">
@@ -810,8 +834,10 @@ function LiveOffice() {
                         <img src={agentPortrait(agent.persona)} alt="" width="42" height="42" />}</span>
                       <span className="conversation-row-text">
                         <strong>{name}</strong>
-                        <small>{last ? `${last.role === "user" ? "You: " : ""}${last.content.slice(0, 110)}` :
-                          agent.archived ? "New conversation" : greetingForPersona(agent.persona ?? 0)}</small>
+                        <span className="conversation-preview">{last ? <>
+                          {last.role === "user" && "You: "}
+                          <SafeMarkdown content={last.content} preview />
+                        </> : agent.archived ? "New conversation" : greetingForPersona(agent.persona ?? 0)}</span>
                         <small>{agent.archived ? `Archived · former desk ${(agent.lastDeskIndex ?? 0) + 1}` :
                           `Desk ${agent.deskIndex! + 1} · ${agent.activity}`}</small>
                         {agent.repository && <small>{agent.repository.worktree ? "Worktree" : "Research"}: {agent.repository.name} · {agent.repository.scope === "task" ? "this task" : "this session"}</small>}

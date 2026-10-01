@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { PermissionRequest, PermissionRequestResult, SessionEvent } from "@github/copilot-sdk";
 import { RoomController } from "../server/room.js";
+import { uniqueAgentName } from "../agent-inc-live/src/room.js";
 import { validateResearchWorktree, type RepositoryGrant } from "../server/repository.js";
 import { MAX_AGENTS, type Adapter, type LegacyRoom, type LiveSession, type Room } from "../server/types.js";
 import type { Store } from "../server/storage.js";
@@ -212,6 +213,60 @@ test("a full office and occupied desks refuse extra sessions", async () => {
   assert.equal(new Set(room.state.agents.map(agent => agent.name)).size, MAX_AGENTS);
   await assert.rejects(room.create(0), /occupied|All office desks/);
   await room.close();
+});
+
+test("names stay unique across archived and active agents, with deterministic collision and exhaustion handling", async () => {
+  const taken = new Set<string>();
+  const names = Array.from({ length: 500 }, (_, index) => {
+    const name = uniqueAgentName(`sdk-${index}`, taken);
+    assert.ok(!taken.has(name));
+    taken.add(name);
+    return name;
+  });
+  assert.equal(new Set(names).size, 500);
+  assert.equal(uniqueAgentName("sdk-0", new Set()), names[0]);
+  assert.notEqual(uniqueAgentName("sdk-0", taken), names[0]);
+  const exhausted = new Set<string>();
+  let overflow = "";
+  for (let index = 0; index < 15_000; index++) {
+    const name = uniqueAgentName("exhaustion", exhausted);
+    if (name.split(" ").length > 2) { overflow = name; break; }
+    exhausted.add(name);
+  }
+  assert.match(overflow, / 2$/);
+  exhausted.add(overflow);
+  assert.match(uniqueAgentName("exhaustion", exhausted), / 3$/);
+});
+
+test("duplicate saved display names are repaired without changing session identities, transcripts or archived agents", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  const archived = await room.create(0);
+  archived.messages.push({ id: "kept-message", role: "assistant", content: "Kept **Markdown**" });
+  await room.archive(archived.id);
+  const active = await room.create(0);
+  const sharedName = active.name;
+  assert.ok(store.saved && "agents" in store.saved);
+  const saved = store.saved as Room;
+  saved.agents.find(agent => agent.id === archived.id)!.name = sharedName;
+  saved.agents.find(agent => agent.id === archived.id)!.messages = structuredClone(archived.messages);
+  await room.close();
+  const recovered = await RoomController.open(adapter, store, "/dedicated");
+  const old = recovered.state.agents.find(agent => agent.id === archived.id)!;
+  const current = recovered.state.agents.find(agent => agent.id === active.id)!;
+  assert.equal(current.name, sharedName);
+  assert.notEqual(old.name, sharedName);
+  assert.equal(old.archived, true);
+  assert.equal(old.sessionId, archived.sessionId);
+  assert.equal(old.persona, archived.persona);
+  assert.deepEqual(old.messages, archived.messages);
+  const repairedName = old.name;
+  await recovered.close();
+  const restarted = await RoomController.open(adapter, store, "/dedicated");
+  assert.equal(restarted.state.agents.find(agent => agent.id === archived.id)!.name, repairedName);
+  assert.equal(restarted.state.agents.find(agent => agent.id === active.id)!.name, sharedName);
+  await restarted.close();
 });
 
 test("archived sprite identity stays fixed and a conflicting restore is refused without changing it", async () => {

@@ -3,7 +3,7 @@
 .live-shell .activity-list-scroll .activity-empty { padding: 20px 18px; }
 .live-shell .overview-list .activity-row { padding: 13px 18px; }
 .live-shell .overview-list .activity-row:hover { background: var(--office-muted); }
-.live-shell .overview-list .focus-button { margin: 14px 18px; }
+.live-shell .overview-list .focus-button { align-self: flex-start; margin: 14px 18px; }
 .live-shell .conversation-scroll { display: flex; flex-direction: column; padding-bottom: 0; }
 .conversation-view { display: flex; flex-direction: column; flex: 1 0 auto; min-height: 100%; }
 .conversation-messages { flex: 1 0 auto; min-height: 180px; padding: 2px 0 48px; }
@@ -23,6 +23,8 @@
   font-size: 13px;
   overflow-wrap: anywhere;
 }
+.conversation-message.user .message-markdown { padding-left: 42px; }
+.conversation-message.assistant .message-markdown { padding-right: 42px; }
 .message-markdown p { margin: 0 0 10px; }
 .message-markdown p:last-child { margin-bottom: 0; }
 .message-markdown h1, .message-markdown h2, .message-markdown h3, .message-markdown h4 { margin: 16px 0 7px; line-height: 1.3; }
@@ -47,6 +49,7 @@
 .conversation-message.assistant { margin-right: 24px; }
 .copy-message { position: absolute; bottom: 5px; left: 6px; z-index: 1; display: grid; place-items: center; width: 27px; height: 27px; padding: 5px; border: 1px solid var(--office-border); border-radius: 6px; background: var(--office-panel); color: var(--office-secondary); cursor: pointer; opacity: 0; }
 .conversation-message.assistant .copy-message { left: auto; right: 6px; }
+.conversation-message .message-bubble.single-line .copy-message { bottom: 50%; transform: translateY(50%); }
 .copy-message svg { width: 17px; height: 17px; stroke: currentColor; stroke-width: 1.6; }
 .conversation-message:hover .copy-message, .conversation-message:focus-within .copy-message, .copy-message:focus-visible { opacity: 1; border-color: var(--office-border); }
 .copy-message:focus-visible { outline: 2px solid var(--office-accent); }
@@ -61,6 +64,12 @@
 .conversation-row-text { display: flex; flex: 1; flex-direction: column; min-width: 0; gap: 5px; }
 .conversation-row-text strong { font-size: 13px; }
 .conversation-row-text small { color: var(--office-secondary); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.conversation-preview { display: block; max-height: 1.5em; overflow: hidden; color: var(--office-secondary); font: 11px/1.5 var(--sans); white-space: nowrap; text-overflow: ellipsis; }
+.conversation-preview :is(p, h1, h2, h3, h4, h5, h6, ul, ol, li, blockquote, pre, table, thead, tbody, tr, td, th) {
+  display: inline; margin: 0; padding: 0; border: 0; font: inherit; white-space: normal;
+}
+.conversation-preview :is(p, li, blockquote, pre)::after { content: " "; }
+.conversation-preview code { font: inherit; }
 .conversation-row .activity-tag { flex: none; }
 .agent-actions { position: relative; flex: none; padding: 11px 0; }
 .agent-menu-toggle { display: grid; place-items: center; width: 27px; height: 27px; padding: 0; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 700 18px/1 var(--sans); cursor: pointer; }
@@ -94,7 +103,7 @@
 .chat-options-menu button { justify-self: start; min-height: 30px; padding: 5px 9px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
 .chat-options-menu button:disabled { opacity: .5; cursor: not-allowed; }
 .chat-options-menu button:hover:not(:disabled), .agent-action-menu button:hover:not(:disabled) { background: var(--office-accent-bg); }
-.activity-attention { display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 4px; border-radius: 11px; background: var(--office-warning-bg); color: var(--office-warning); font: 700 10px var(--sans); }
+.activity-attention { position: absolute; top: -9px; right: -8px; box-sizing: border-box; display: grid; place-items: center; min-width: 20px; height: 20px; padding: 0 3px; border: 1px solid var(--office-panel); border-radius: 11px; background: var(--office-warning-bg); color: var(--office-warning); font: 700 10px var(--sans); }
 .live-shell .activity-panel .activity-tabs { display: flex; gap: 8px; padding-top: 8px; padding-bottom: 8px; }
 .live-shell .activity-panel .activity-tabs button { flex: 1; min-height: 30px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
 .live-shell .activity-panel .activity-tabs button[aria-pressed="true"] { border-color: var(--office-border); background: var(--office-accent-bg); color: var(--office-accent); }
@@ -103,6 +112,7 @@
 .live-shell .activity-panel .focus-button:hover:not(:disabled) { background: var(--office-accent-bg); }
 .live-shell .top-stats .add-agent-button, .live-shell .top-stats .system-toggle {
   box-sizing: border-box;
+  position: relative;
   display: inline-flex;
   align-items: center;
   justify-content: center;

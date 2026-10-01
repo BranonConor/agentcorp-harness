@@ -24,3 +24,15 @@ test("does not render raw HTML or clickable dangerous links", () => {
   assert.match(html, /<span>unsafe<\/span>/);
   assert.match(html, /href="https:\/\/example.com"/);
 });
+
+test("agent-list preview renders Markdown safely without links nested in a row button", () => {
+  const html = renderToStaticMarkup(createElement(SafeMarkdown, {
+    content: "**Ready** [notes](https://example.com) <script>unsafe</script> " +
+      "[bad](javascript:alert(1)) ![icon](https://example.com/icon.png) `git status`",
+    preview: true,
+  }));
+  assert.match(html, /<strong>Ready<\/strong>/);
+  assert.match(html, /<span>notes<\/span>/);
+  assert.match(html, /<code>git status<\/code>/);
+  assert.doesNotMatch(html, /<a |<img |<script|href=|javascript:/);
+});

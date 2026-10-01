@@ -4,7 +4,7 @@ import type { PermissionRequest, PermissionRequestResult, SessionEvent } from "@
 import { MAX_AGENTS, type Adapter, type Agent, type LiveSession, type Review, type Room, type RepositoryRequest } from "./types.js";
 import type { Store } from "./storage.js";
 import { createResearchWorktree, validateRepository, type AccessIntent, type RepositoryGrant } from "./repository.js";
-import { agentName } from "../agent-inc-live/src/room.js";
+import { uniqueAgentName } from "../agent-inc-live/src/room.js";
 import { CACHE_AGE_MS, type RemoteRepository, type RepositorySnapshot, type RepositorySource } from "./github-repositories.js";
 
 const EXPIRE_MS = 90_000;
@@ -67,17 +67,18 @@ export class RoomController {
     room.state.worktrees ??= [];
     room.state.snapshots ??= [];
     const used = new Set<number>();
-    const names = new Set<string>();
+    const names = new Set(room.state.agents.map(agent => agent.name).filter((name): name is string => !!name));
+    const assigned = new Set<string>();
     for (const agent of [...room.state.agents].sort((a, b) => Number(a.archived) - Number(b.archived) || (a.deskIndex ?? a.lastDeskIndex ?? 0) - (b.deskIndex ?? b.lastDeskIndex ?? 0))) {
       if (agent.persona === undefined) agent.persona = Array.from({ length: MAX_AGENTS }, (_, i) => i).find(i => !used.has(i)) ?? (agent.lastDeskIndex ?? 0);
       if (!Number.isInteger(agent.persona) || agent.persona < 0 || agent.persona >= MAX_AGENTS ||
         (!agent.archived && used.has(agent.persona))) throw new Error("Saved sprite personas collide or are invalid; state was not changed.");
       if (!agent.archived) used.add(agent.persona);
-      let name = agent.name ?? agentName(agent.sessionId);
-      if (!agent.name) for (let suffix = 2; names.has(name); suffix++) name = `${agentName(agent.sessionId)} ${suffix}`;
-      if (names.has(name)) throw new Error("Saved agent names collide; state was not changed.");
+      const name = agent.name && !assigned.has(agent.name) ?
+        agent.name : uniqueAgentName(agent.sessionId, names);
       agent.name = name;
       names.add(name);
+      assigned.add(name);
       if (agent.accessRequest && agent.phase === "idle") {
         agent.accessRequest = { ...agent.accessRequest, status: "error", candidates: undefined, progress: undefined,
           purpose: agent.accessRequest.purpose === "Research or work on a local repository" ?
@@ -229,9 +230,7 @@ export class RoomController {
         choices.push(...all.filter(index => !active.has(index)));
       }
       const persona = choices[Math.floor(Math.random() * choices.length)];
-      const original = agentName(session.sessionId);
-      let name = original;
-      for (let suffix = 2; this.state.agents.some(item => item.name === name); suffix++) name = `${original} ${suffix}`;
+      const name = uniqueAgentName(session.sessionId, new Set(this.state.agents.map(item => item.name).filter((value): value is string => !!value)));
       const agent: Agent = { id, deskIndex, archived: false, workspace, workspaceKind: "scratch", createdAt: now, updatedAt: now, sessionId: session.sessionId, persona, name,
         phase: "idle", activity: "Ready to chat", messages: [] };
       this.state.agents.push(agent);
