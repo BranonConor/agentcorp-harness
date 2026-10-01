@@ -166,6 +166,26 @@ const server = createServer(async (request, response) => {
         await room.newAssignment(body.agentId, body.outcome as string | undefined, body.modelProfileId as string | undefined);
         return json(response, 200, room.state);
       }
+      if (url.pathname === "/api/outcome-confirm" && request.method === "POST") {
+        const body = await payload(request);
+        await room.confirmOutcome(body as Parameters<typeof room.confirmOutcome>[0]);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/pr-confirm" && request.method === "POST") {
+        const body = await payload(request);
+        await room.confirmMergedPr(body as Parameters<typeof room.confirmMergedPr>[0]);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/promotion" && request.method === "POST") {
+        const body = await payload(request);
+        await room.promote(body.personaId as string, body.rank as number, body.confirmed as boolean);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/upgrade-purchase" && request.method === "POST") {
+        const body = await payload(request);
+        await room.purchase(body.upgradeId as Parameters<typeof room.purchase>[0], body.confirmed as boolean);
+        return json(response, 200, room.state);
+      }
       if (url.pathname === "/api/model-profile" && request.method === "POST") {
         const body = await payload(request);
         await room.addModelProfile(body);

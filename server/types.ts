@@ -3,6 +3,7 @@ export type Message = { id: string; role: "user" | "assistant" | "system"; conte
 export type Review = { id: string; kind: string; detail: string; tool: string };
 import type { RemoteRepository, RepositorySnapshot } from "./github-repositories.js";
 import type { ModelProfile } from "./providers.js";
+import type { ProgressEvent } from "./progression.js";
 export type RepositoryRequest = { id: string; repoHint: string; purpose: string; scope: "read" | "edit";
   status?: "resolving" | "review" | "cloning" | "error"; candidates?: RemoteRepository[];
   error?: string; progress?: string };
@@ -55,8 +56,9 @@ export type Agent = {
   persona?: number;
   name?: string;
 };
-export type Room = { schemaVersion?: 2 | 3 | 4; personas?: AgentPersona[]; assignments?: Assignment[];
+export type Room = { schemaVersion?: 2 | 3 | 4 | 5; personas?: AgentPersona[]; assignments?: Assignment[];
   meetings?: Meeting[];
+  progression?: ProgressEvent[];
   projects?: ProjectPolicy[];
   modelProfiles?: ModelProfile[]; defaultModelProfileId?: string;
   agents: Agent[]; error: string | null; connected: boolean; workspace: string; revision: number;

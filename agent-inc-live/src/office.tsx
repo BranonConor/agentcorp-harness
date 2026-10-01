@@ -21,6 +21,8 @@ import { SafeMarkdown } from "./markdown";
 import { greetingForPersona } from "./greeting";
 import type { ModelProfile } from "../../server/providers";
 import type { RemoteRepository } from "../../server/github-repositories";
+import { progression, RANKS, SPECIALTIES, UPGRADES, assignmentEvidence, reviewEvidence,
+  type ProgressEvent, type Specialty } from "../../server/progression";
 
 const LIVE_DESKS = [...DESKS, ...EXTRA_DESKS];
 const LIVE_COFFEE_SPOTS = COFFEE_SPOTS.map(({ x }) => ({ x, z: LIVE_COFFEE_Z + 0.75 }));
@@ -259,6 +261,11 @@ function LiveOffice() {
   const [assignmentOutcome, setAssignmentOutcome] = useState("");
   const [assignmentModelProfileId, setAssignmentModelProfileId] = useState("");
   const [assignmentSubmitting, setAssignmentSubmitting] = useState(false);
+  const [outcomeTarget, setOutcomeTarget] = useState<{ source: "assignment" | "review" | "merged-pr"; sourceId: string; personaId: string } | null>(null);
+  const [outcomeEvidence, setOutcomeEvidence] = useState("");
+  const [prNumber, setPrNumber] = useState("");
+  const [outcomeSpecialty, setOutcomeSpecialty] = useState<Specialty>("Engineering");
+  const [outcomeConfirmed, setOutcomeConfirmed] = useState(false);
   const [modelDraft, setModelDraft] = useState({
     id: "", kind: "ollama" as ModelProfile["kind"], model: "", endpoint: "http://127.0.0.1:11434/v1",
     credentialEnv: "", wireApi: "completions" as "completions" | "responses", wireModel: "",
@@ -542,6 +549,7 @@ function LiveOffice() {
         world?.capturePositions();
         applyRoom(scene, nextActors, occupied);
         updatePersonas(world, update);
+        world?.setUpgrades((update.progression ?? []).filter(event => event.kind === "purchase").map(event => event.upgradeId));
         updateRoom(update);
         setConnection(update.connected ? connectedStatus : update.error || "SDK connection unavailable");
       } catch (error) {
@@ -641,6 +649,10 @@ function LiveOffice() {
   const activeAgents = sdkRoom?.agents.filter(isActive) ?? [];
   const formerPersonas = (sdkRoom?.personas ?? []).filter(persona =>
     !sdkRoom?.agents.some(agent => agent.personaId === persona.id));
+  const career = progression(sdkRoom?.progression ?? [], (sdkRoom?.personas ?? []).map(item => item.id),
+    sdkRoom?.assignments ?? [], sdkRoom?.meetings ?? []);
+  const rewardEvents = (sdkRoom?.progression ?? []).filter((event): event is Extract<ProgressEvent, { kind: "reward" }> =>
+    event.kind === "reward");
   const deskCount = MAX_LIVE_DESKS;
   const firstEmptyDesk = Array.from({ length: MAX_AGENTS }, (_, index) => index)
     .find(index => !activeAgents.some(agent => agent.deskIndex === index));
@@ -807,7 +819,7 @@ function LiveOffice() {
       onChange={event => setProfileDraft({ ...profileDraft, artId: Number(event.target.value) })} /></label>
     <label>Title <input maxLength={1000} value={profileDraft.title}
       onChange={event => setProfileDraft({ ...profileDraft, title: event.target.value })} /></label>
-    <label>Rank <input maxLength={1000} value={profileDraft.rank}
+    <label>Profile rank (self-described; not earned career level) <input maxLength={1000} value={profileDraft.rank}
       onChange={event => setProfileDraft({ ...profileDraft, rank: event.target.value })} /></label>
     <label>Working style <textarea rows={3} value={profileDraft.workingStyle}
       onChange={event => setProfileDraft({ ...profileDraft, workingStyle: event.target.value })} /></label>
@@ -868,6 +880,64 @@ function LiveOffice() {
       <button type="submit" disabled={profileBusy || !note.text.trim() || !note.provenance.trim()}>Add note</button>
     </form>
   </div>;
+  };
+  const personaCareer = (persona: AgentPersona) => {
+    const earned = career.xp.get(persona.id) ?? 0;
+    const level = career.ranks.get(persona.id) ?? 0;
+    const candidates = [
+      ...(sdkRoom?.assignments ?? []).filter(item => item.personaId === persona.id && assignmentEvidence(item))
+        .map(item => ({ source: "assignment" as const, sourceId: item.id, label: item.outcome || "Completed assignment" })),
+      ...(sdkRoom?.meetings ?? []).filter(item => reviewEvidence(item, persona.id))
+        .map(item => ({ source: "review" as const, sourceId: item.id, label: `Review: ${item.agenda}` })),
+    ].filter(item => !career.rewards.has(`${item.source}:${item.sourceId}:${item.source === "review" ? persona.id : ""}`) &&
+      (item.source !== "assignment" || !career.rewards.has(`pr-assignment:${item.sourceId}`)));
+    const prAssignments = (sdkRoom?.assignments ?? []).filter(item =>
+      item.personaId === persona.id && !!item.repository?.remote &&
+      !career.rewards.has(`assignment:${item.id}:`) && !career.rewards.has(`pr-assignment:${item.id}`));
+    const evidence = rewardEvents.filter(event => event.personaId === persona.id);
+    return <section className="career-panel" aria-label={`${persona.name} career`}>
+      <h4>Career · {RANKS[level].name}</h4>
+      <p>{earned} XP · {level + 1 < RANKS.length ?
+        `${RANKS[level + 1].xp - earned} XP to ${RANKS[level + 1].name}` : "Highest level eligible"}</p>
+      <div className="career-meter" role="progressbar" aria-label="Career XP" aria-valuenow={earned}
+        aria-valuemin={0} aria-valuemax={RANKS.at(-1)!.xp}><span style={{ width: `${Math.min(100, earned / RANKS.at(-1)!.xp * 100)}%` }} /></div>
+      <p>Earned specialties: {[...career.specialties.get(persona.id) ?? []]
+        .map(([name, points]) => `${name} ${points} XP`).join(" · ") || "None yet"}</p>
+      {level + 1 < RANKS.length && earned >= RANKS[level + 1].xp &&
+        <button type="button" onClick={() => {
+          if (window.confirm(`Promote ${persona.name} to ${RANKS[level + 1].name}? Cosmetic title only; no permissions change.`)) {
+            void act("promotion", { personaId: persona.id, rank: level + 1, confirmed: true });
+          }
+        }}>Confirm promotion to {RANKS[level + 1].name}</button>}
+      <h4>Outcome evidence</h4>
+      {!evidence.length && <p>No confirmed outcomes yet. Existing completion labels do not award XP.</p>}
+      <ul>{evidence.map(event => <li key={event.id}>
+        <strong>{event.source === "review" ? "Review" : event.source === "merged-pr" ? "GitHub-verified merged PR" :
+          "Assignment"} · {event.specialty} · +{event.xp} XP</strong>
+        <span>{event.evidence} · {new Date(event.at).toLocaleString()}</span>
+        <small>Source ID: {event.sourceId}{event.verifiedPr && ` · merge ${event.verifiedPr.mergeSha.slice(0, 12)}`}</small>
+      </li>)}</ul>
+      {candidates.length > 0 && <div className="career-candidates">
+        <h4>Confirm completed work</h4>
+        <p>Only you can confirm an outcome. A prompt/response or completed review is required;
+          a completion label alone is not evidence. Maximum three rewards per persona per UTC day.</p>
+        {candidates.map(item => <button type="button" key={`${item.source}:${item.sourceId}`}
+          onClick={() => {
+            setOutcomeTarget({ source: item.source, sourceId: item.sourceId, personaId: persona.id });
+            setOutcomeEvidence(""); setOutcomeConfirmed(false);
+            setOutcomeSpecialty(item.source === "review" ? "Review" : "Engineering");
+          }}>Review {item.label}…</button>)}
+      </div>}
+      {prAssignments.length > 0 && <div className="career-candidates">
+        <h4>Verify merged pull request</h4>
+        <p>Requires a recorded assignment repository, your explicit attribution and a live GitHub API check.
+          One PR award per assignment; an assignment outcome cannot also earn a separate award.</p>
+        {prAssignments.map(item => <button type="button" key={item.id} onClick={() => {
+          setOutcomeTarget({ source: "merged-pr", sourceId: item.id, personaId: persona.id });
+          setOutcomeEvidence(""); setOutcomeConfirmed(false); setPrNumber(""); setOutcomeSpecialty("Engineering");
+        }}>Verify PR for {item.repository?.remote?.fullName} · {item.outcome || "assignment"}…</button>)}
+      </div>}
+    </section>;
   };
   const personaProjects = (persona: AgentPersona) => <div className="persona-projects">
     <h4>GitHub project read access</h4>
@@ -968,6 +1038,26 @@ function LiveOffice() {
     <main className={`shell live-shell ${panelOpen ? "activity-visible" : ""}`}>
       <style>{`
         .live-shell .activity-tabs { grid-template-columns: repeat(3, 1fr); }
+        .career-panel, .upgrade-shop { display: grid; gap: 8px; padding: 12px; margin: 12px 0;
+          border: 1px solid var(--office-border); border-radius: 8px; background: var(--office-panel); }
+        .career-panel h4, .upgrade-shop h4 { margin: 4px 0; }
+        .career-panel p, .upgrade-shop p { margin: 0; }
+        .career-panel ul { display: grid; gap: 8px; padding-left: 17px; }
+        .career-panel li span, .career-panel li small { display: block; overflow-wrap: anywhere; }
+        .career-meter { height: 8px; border-radius: 8px; background: var(--office-muted); overflow: hidden; }
+        .career-meter span { display: block; height: 100%; background: var(--office-accent); }
+        .career-candidates, .upgrade-shop ul { display: grid; gap: 7px; }
+        .career-panel button, .upgrade-shop button, .outcome-dialog button { min-height: 30px; padding: 5px 9px;
+          border: 1px solid var(--office-border); border-radius: 5px; color: var(--office-text);
+          background: var(--office-muted); cursor: pointer; }
+        .career-panel button:disabled, .upgrade-shop button:disabled { opacity: .5; cursor: not-allowed; }
+        .upgrade-shop ul { padding: 0; margin: 0; list-style: none; }
+        .upgrade-shop li { display: grid; gap: 4px; padding: 8px; border: 1px solid var(--office-border);
+          border-radius: 6px; }
+        .outcome-dialog { display: grid; gap: 12px; }
+        .outcome-dialog label { display: grid; gap: 5px; }
+        .outcome-dialog textarea, .outcome-dialog select { width: 100%; padding: 7px; box-sizing: border-box;
+          background: var(--office-muted); color: var(--office-text); border: 1px solid var(--office-border); }
         .meeting-panel { display: grid; gap: 14px; }
         .meeting-panel h3 { margin: 0; font-size: 13px; }
         .meeting-panel p, .meeting-panel small { color: var(--office-secondary); font-size: 11px; line-height: 1.5; }
@@ -1302,6 +1392,31 @@ function LiveOffice() {
                     {sdkRoom.usage.stale ? " · Outdated; refresh for recent work." : ""}</p> :
                     <p>Usage not loaded yet.</p>}
                   <button type="button" className="focus-button" disabled={!connected} onClick={() => void act("usage", {})}>Refresh SDK usage</button>
+                  <p>Aggregate SDK-reported consumption only; not a monetary cost, XP source or credit source.
+                    Coverage reflects current recorded agent sessions, not all historical assignments.</p>
+                </div>
+                <div className="activity-row upgrade-shop">
+                  <div className="activity-row-heading"><strong>Office upgrades</strong>
+                    <span className="activity-tag">{career.balance} credits available</span></div>
+                  <p>Credits come only from confirmed completed outcomes (assignment +8, review +4).
+                    Purchases are permanent decorative changes, never tools or permissions.</p>
+                  <ul>{UPGRADES.map(upgrade => <li key={upgrade.id}>
+                    <strong>{upgrade.name} · {upgrade.price} credits</strong>
+                    <span>{upgrade.description}</span>
+                    {career.purchases.has(upgrade.id) ? <span>Installed in the 3D office</span> :
+                      <button type="button" disabled={career.balance < upgrade.price}
+                        onMouseEnter={() => worldRef.current?.setUpgrades([...career.purchases, upgrade.id])}
+                        onMouseLeave={() => worldRef.current?.setUpgrades([...career.purchases])}
+                        onFocus={() => worldRef.current?.setUpgrades([...career.purchases, upgrade.id])}
+                        onBlur={() => worldRef.current?.setUpgrades([...career.purchases])}
+                        onClick={() => {
+                        if (window.confirm(`Preview: ${upgrade.description}. Purchase ${upgrade.name} for ${upgrade.price} credits? Balance after: ${career.balance - upgrade.price}. Decorative only.`)) {
+                          void act("upgrade-purchase", { upgradeId: upgrade.id, confirmed: true });
+                        }
+                      }}>Preview and buy</button>}
+                  </li>)}</ul>
+                  <small>{rewardEvents.length} confirmed outcomes · {career.purchases.size} installed upgrades.
+                    No points for tokens, calls, turns or failed tests.</small>
                 </div>
                 {!!sdkRoom?.worktrees?.length && <div className="activity-row">
                   <div className="activity-row-heading"><strong>Preserved worktrees</strong>
@@ -1539,6 +1654,7 @@ function LiveOffice() {
                         {profileEditingId === persona.id ? profileEditor(persona) :
                           <button type="button" onClick={() => startProfileEdit(persona)}>Edit profile</button>}
                         {personaNotes(persona)}
+                        {personaCareer(persona)}
                         {personaProjects(persona)}
                         <div className="assignment-history"><h4>Preserved assignments</h4>
                           <ul>{(sdkRoom?.assignments ?? []).filter(assignment => assignment.personaId === persona.id)
@@ -1581,6 +1697,7 @@ function LiveOffice() {
                         <button type="button" onClick={() => startProfileEdit(selectedPersona)}>Edit profile</button>
                       </>}
                       {personaNotes(selectedPersona)}
+                      {personaCareer(selectedPersona)}
                       {personaProjects(selectedPersona)}
                     </> : <p>Profile is not available for this agent yet.</p>}
                     <div className="assignment-history">
@@ -1754,6 +1871,43 @@ function LiveOffice() {
           </form>}
         </aside>
       </div>
+      {outcomeTarget && <div className="send-home-backdrop">
+        <form className="send-home-dialog outcome-dialog" role="dialog" aria-modal="true"
+          aria-labelledby="outcome-heading" onSubmit={event => {
+            event.preventDefault();
+            const isPr = outcomeTarget.source === "merged-pr";
+            void act(isPr ? "pr-confirm" : "outcome-confirm", { ...(isPr ?
+              { assignmentId: outcomeTarget.sourceId, personaId: outcomeTarget.personaId, number: Number(prNumber) } :
+              outcomeTarget), evidence: outcomeEvidence,
+              specialty: outcomeSpecialty, confirmed: outcomeConfirmed }).then(ok => {
+              if (ok) setOutcomeTarget(null);
+            });
+          }}>
+          <h3 id="outcome-heading">Confirm completed {outcomeTarget.source} outcome</h3>
+          <p>Source: <code>{outcomeTarget.sourceId}</code>. Check the preserved transcript/review first.
+            This awards {outcomeTarget.source === "review" ? "10 XP and 4" :
+              outcomeTarget.source === "merged-pr" ? "30 XP and 12" : "20 XP and 8"} office credits once.</p>
+          {outcomeTarget.source === "merged-pr" && <label>Pull request number in the assignment repository
+            <input type="number" min="1" step="1" required value={prNumber}
+              onChange={event => setPrNumber(event.target.value)} /></label>}
+          <label>Outcome evidence in your words (10–500 characters)
+            <textarea required minLength={10} maxLength={500} value={outcomeEvidence}
+              onChange={event => setOutcomeEvidence(event.target.value)} rows={3} /></label>
+          <label>Specialty <select value={outcomeSpecialty}
+            onChange={event => setOutcomeSpecialty(event.target.value as Specialty)}>
+            {SPECIALTIES.map(item => <option key={item} value={item}>{item}</option>)}
+          </select></label>
+          <label><input type="checkbox" checked={outcomeConfirmed}
+            onChange={event => setOutcomeConfirmed(event.target.checked)} />
+            I reviewed the recorded work and confirm this outcome belongs to this persona and assignment.</label>
+          <div className="persona-actions">
+            <button type="button" onClick={() => setOutcomeTarget(null)}>Cancel</button>
+            <button type="submit" disabled={!outcomeConfirmed || outcomeEvidence.trim().length < 10 ||
+              outcomeTarget.source === "merged-pr" && (!Number.isSafeInteger(Number(prNumber)) || Number(prNumber) < 1)}>
+              {outcomeTarget.source === "merged-pr" ? "Verify on GitHub and record" : "Record once"}</button>
+          </div>
+        </form>
+      </div>}
       {assignmentAgent && <div className="send-home-backdrop">
         <div className="send-home-dialog" role="dialog" aria-modal="true"
           aria-labelledby="assignment-heading" aria-describedby="assignment-description"

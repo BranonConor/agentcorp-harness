@@ -7,6 +7,9 @@ import { createResearchWorktree, validateRepository, validateResearchWorktree, t
 import { uniqueAgentName } from "../agent-inc-live/src/room.js";
 import { CACHE_AGE_MS, validateRemoteRepository, type RemoteRepository, type RepositorySnapshot, type RepositorySource } from "./github-repositories.js";
 import { COPILOT_PROFILE, safeProviderError, sessionModel, validateProfile, type ModelProfile } from "./providers.js";
+import { progression, RANKS, SPECIALTIES, UPGRADES, assignmentEvidence, reviewEvidence,
+  type ProgressEvent, type Specialty, type UpgradeId } from "./progression.js";
+import { verifyMergedPullRequest, type MergedPullRequest } from "./merged-pr.js";
 
 const EXPIRE_MS = 90_000;
 const MEETING_TIMEOUT_MS = 120_000;
@@ -28,22 +31,25 @@ export class RoomController {
   private armedTaskGrants = new Set<string>();
   private clones = new Map<string, AbortController>();
   private meetingTurns = new Map<string, { meetingId: string; start: number; handoffText: string; timer: NodeJS.Timeout }>();
+  private economyQueue: Promise<void> = Promise.resolve();
 
   private constructor(private readonly adapter: Adapter, private readonly store: Store, state: Room,
     private readonly worktreeRoot: string, private readonly repositories?: RepositorySource,
-    private readonly meetingTimeoutMs = MEETING_TIMEOUT_MS) {
+    private readonly meetingTimeoutMs = MEETING_TIMEOUT_MS,
+    private readonly verifyPr: (repository: string, number: number) => Promise<MergedPullRequest> = verifyMergedPullRequest) {
     this.state = state;
   }
 
   static async open(adapter: Adapter, store: Store, workspace: string, worktreeRoot = resolve(".local/worktrees"),
-    repositories?: RepositorySource, meetingTimeoutMs = MEETING_TIMEOUT_MS): Promise<RoomController> {
+    repositories?: RepositorySource, meetingTimeoutMs = MEETING_TIMEOUT_MS,
+    verifyPr: (repository: string, number: number) => Promise<MergedPullRequest> = verifyMergedPullRequest): Promise<RoomController> {
     if (!Number.isInteger(meetingTimeoutMs) || meetingTimeoutMs < 1 || meetingTimeoutMs > MEETING_TIMEOUT_MS) {
       throw new Error("Meeting timeout must be a positive bounded number of milliseconds.");
     }
     const saved = await store.read();
     if (saved && saved.workspace !== workspace) throw new Error(`Saved sessions belong to ${saved.workspace}. Choose that workspace or move .local/state.json aside deliberately.`);
     if (saved && !("agents" in saved) && !("agent" in saved)) throw new Error("Unrecognized saved room format; state was not changed.");
-    if (saved && "schemaVersion" in saved && saved.schemaVersion !== undefined && saved.schemaVersion !== 2 && saved.schemaVersion !== 3 && saved.schemaVersion !== 4) {
+    if (saved && "schemaVersion" in saved && saved.schemaVersion !== undefined && saved.schemaVersion !== 2 && saved.schemaVersion !== 3 && saved.schemaVersion !== 4 && saved.schemaVersion !== 5) {
       throw new Error("Unknown state schema; state was not changed.");
     }
     const now = Date.now();
@@ -71,7 +77,7 @@ export class RoomController {
           !agent.archived && !other.archived && other.deskIndex === agent.deskIndex) !== index)) {
       throw new Error("Saved agent roster is invalid; state was not changed.");
     }
-    const room = new RoomController(adapter, store, state, worktreeRoot, repositories, meetingTimeoutMs);
+    const room = new RoomController(adapter, store, state, worktreeRoot, repositories, meetingTimeoutMs, verifyPr);
     room.state.connected = false;
     room.state.error = null;
     if (room.state.usage) room.state.usage.stale = true;
@@ -86,7 +92,7 @@ export class RoomController {
       if (!Number.isInteger(agent.persona) || agent.persona < 0 || agent.persona >= MAX_AGENTS ||
         (!agent.archived && used.has(agent.persona))) throw new Error("Saved sprite personas collide or are invalid; state was not changed.");
       if (!agent.archived) used.add(agent.persona);
-      if ((state.schemaVersion === 2 || state.schemaVersion === 3 || state.schemaVersion === 4) && agent.name && assigned.has(agent.name)) {
+      if ((state.schemaVersion === 2 || state.schemaVersion === 3 || state.schemaVersion === 4 || state.schemaVersion === 5) && agent.name && assigned.has(agent.name)) {
         throw new Error("Saved agent names collide; state was not changed.");
       }
       const name = agent.name && !assigned.has(agent.name) ? agent.name : uniqueAgentName(agent.sessionId, names);
@@ -104,7 +110,7 @@ export class RoomController {
       if (agent.repository?.scope === "task") agent.repository = undefined;
       if (agent.repository && !room.state.knownRepositories.includes(agent.repository.path)) room.state.knownRepositories.push(agent.repository.path);
     }
-    if (state.schemaVersion === 2 || state.schemaVersion === 3 || state.schemaVersion === 4) {
+    if (state.schemaVersion === 2 || state.schemaVersion === 3 || state.schemaVersion === 4 || state.schemaVersion === 5) {
       if (!Array.isArray(state.personas) || !Array.isArray(state.assignments)) {
         throw new Error("Saved persona roster is invalid; state was not changed.");
       }
@@ -177,6 +183,10 @@ export class RoomController {
     if (state.schemaVersion === 3) {
       state.meetings = [];
       state.schemaVersion = 4;
+    }
+    if (state.schemaVersion === 4) {
+      state.progression = [];
+      state.schemaVersion = 5;
     }
     if (!Array.isArray(state.meetings) || state.meetings.some((meeting, index) =>
       !meeting?.id || state.meetings!.findIndex(other => other.id === meeting.id) !== index ||
@@ -254,6 +264,8 @@ export class RoomController {
         assignment.modelProfile = structuredClone(profile);
       }
     }
+    if (!Array.isArray(state.progression)) throw new Error("Saved progression ledger is invalid; state was not changed.");
+    progression(state.progression, state.personas!.map(persona => persona.id), state.assignments!, state.meetings);
     for (const agent of room.state.agents) {
       agent.review = undefined;
       if (agent.archived) continue;
@@ -277,7 +289,8 @@ export class RoomController {
     };
   }
 
-  private async publish(): Promise<void> {
+  private async publish(fromEconomy = false): Promise<void> {
+    if (!fromEconomy) await this.economyQueue;
     this.state.revision++;
     for (const agent of this.state.agents) {
       const assignment = this.state.assignments?.find(item => item.id === agent.assignmentId);
@@ -290,8 +303,88 @@ export class RoomController {
     this.saving = this.saving.catch(error => {
       console.error("Previous room save failed:", error);
     }).then(() => this.store.write(snapshot));
-    for (const listener of this.listeners) listener(snapshot);
     await this.saving;
+    for (const listener of this.listeners) listener(snapshot);
+  }
+
+  private async recordProgress(makeEvent: () => ProgressEvent): Promise<void> {
+    const operation = this.economyQueue.then(async () => {
+      const event = makeEvent();
+      const ledger = this.state.progression!;
+      progression([...ledger, event], this.state.personas!.map(persona => persona.id),
+        this.state.assignments!, this.state.meetings!);
+      ledger.push(event);
+      try { await this.publish(true); }
+      catch (error) {
+        ledger.pop();
+        throw error;
+      }
+    });
+    this.economyQueue = operation.catch(() => {});
+    return operation;
+  }
+
+  async confirmOutcome(input: { source: "assignment" | "review"; sourceId: string; personaId: string;
+    evidence: string; specialty: Specialty; confirmed: boolean }): Promise<void> {
+    if (input.confirmed !== true || !["assignment", "review"].includes(input.source) ||
+      typeof input.sourceId !== "string" || typeof input.personaId !== "string" ||
+      typeof input.evidence !== "string" || !SPECIALTIES.includes(input.specialty) ||
+      input.evidence.trim().length < 10 || input.evidence.length > 500) {
+      throw new Error("Explicit confirmation, a specialty and 10–500 characters of outcome evidence are required.");
+    }
+
+    await this.recordProgress(() => {
+      const assignment = this.state.assignments!.find(item => item.id === input.sourceId);
+      const meeting = this.state.meetings!.find(item => item.id === input.sourceId);
+      if (input.source === "assignment" ?
+        !assignment || assignment.personaId !== input.personaId || !assignmentEvidence(assignment) :
+        !meeting || !reviewEvidence(meeting, input.personaId)) {
+        throw new Error("Only a completed assignment with a user prompt and agent response, or a completed review with a recorded response, can earn an outcome.");
+      }
+      const event: ProgressEvent = { id: `${input.source}:${input.sourceId}:${input.source === "review" ? input.personaId : ""}`,
+        kind: "reward", source: input.source, sourceId: input.sourceId, personaId: input.personaId,
+        evidence: input.evidence.trim(), specialty: input.specialty, xp: input.source === "assignment" ? 20 : 10,
+        credits: input.source === "assignment" ? 8 : 4, at: Date.now() };
+      return event;
+    });
+  }
+
+  async confirmMergedPr(input: { assignmentId: string; personaId: string; number: number;
+    evidence: string; specialty: Specialty; confirmed: boolean }): Promise<void> {
+    if (input.confirmed !== true || typeof input.assignmentId !== "string" ||
+      typeof input.personaId !== "string" || !Number.isSafeInteger(input.number) || input.number < 1 ||
+      typeof input.evidence !== "string" || input.evidence.trim().length < 10 ||
+      input.evidence.length > 500 || !SPECIALTIES.includes(input.specialty)) {
+      throw new Error("Confirm a PR number, attributed assignment, specialty and 10–500 characters of evidence.");
+    }
+    const assignment = this.state.assignments!.find(item => item.id === input.assignmentId);
+    if (!assignment || assignment.personaId !== input.personaId || !assignment.repository?.remote) {
+      throw new Error("The assignment must have a recorded verified GitHub repository for this persona.");
+    }
+    const verified = await this.verifyPr(assignment.repository.remote.fullName, input.number);
+    if (verified.repository.toLowerCase() !== assignment.repository.remote.fullName.toLowerCase() ||
+      verified.number !== input.number) throw new Error("Verified PR does not match the attributed repository and number.");
+    await this.recordProgress(() => ({
+      id: `merged-pr:${verified.repository.toLowerCase()}#${verified.number}:`,
+      kind: "reward", source: "merged-pr", sourceId: `${verified.repository.toLowerCase()}#${verified.number}`,
+      personaId: input.personaId, assignmentId: input.assignmentId, verifiedPr: verified,
+      evidence: input.evidence.trim(), specialty: input.specialty, xp: 30, credits: 12, at: Date.now(),
+    }));
+  }
+
+  async promote(personaId: string, rank: number, confirmed: boolean): Promise<void> {
+    if (confirmed !== true || typeof personaId !== "string" || !Number.isInteger(rank) || rank < 1 ||
+      rank >= RANKS.length) throw new Error("Confirm an eligible promotion.");
+    await this.recordProgress(() => ({ id: `promotion:${personaId}:${rank}`, kind: "promotion",
+      personaId, rank, at: Date.now() }));
+  }
+
+  async purchase(upgradeId: UpgradeId, confirmed: boolean): Promise<void> {
+    if (confirmed !== true || !UPGRADES.some(item => item.id === upgradeId)) {
+      throw new Error("Confirm a catalogued office upgrade.");
+    }
+    await this.recordProgress(() => ({ id: `purchase:${upgradeId}`, kind: "purchase", upgradeId,
+      credits: -UPGRADES.find(item => item.id === upgradeId)!.price, at: Date.now() }));
   }
 
   private report(error: unknown, agent?: Agent): void {
@@ -1456,6 +1549,7 @@ export class RoomController {
       if (failure?.status === "rejected") throw failure.reason;
     } finally {
       await this.adapter.stop();
+      await this.economyQueue;
       await this.saving;
     }
   }

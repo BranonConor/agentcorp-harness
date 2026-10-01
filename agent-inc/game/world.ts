@@ -323,6 +323,7 @@ function createAgent(id: number, shadowTexture: THREE.Texture, frames: AgentArt)
 
 export type World = {
   capturePositions: () => void;
+  setUpgrades: (ids: readonly string[]) => void;
   render: (elapsed: number, previewOffset: number, alpha: number, advanced: boolean) => void;
   focusAgent: (index: number | null) => void;
   setAgentPersona: (index: number, persona: number) => void;
@@ -925,6 +926,28 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
     if (index % 2) plant.scale.x = -1;
     contact(scene, x, z, 0.62 * size, 0.42 * size, 0.065, 0.4);
   });
+  const upgrades = new Map<string, THREE.Object3D>();
+  if (isLive) {
+    const garden = new THREE.Group();
+    for (const x of [-5.4, 5.4]) {
+      const plant = cutout(garden, leaves, x, 0.79, room.back + 0.82, 1.2, 1.5, true);
+      plant.scale.x = x < 0 ? -1 : 1;
+    }
+    scene.add(garden);
+    upgrades.set("garden", garden);
+    const loungeRug = new THREE.Mesh(new THREE.CylinderGeometry(1.35, 1.35, 0.02, 24),
+      material(0x936f9c));
+    loungeRug.position.set(0, 0.07, 4.6);
+    scene.add(loungeRug);
+    upgrades.set("rug", loungeRug);
+    const lanterns = new THREE.Group();
+    for (const x of [-7.1, 7.1]) {
+      block(lanterns, x, 1.0, room.back + 0.65, 0.21, 0.3, 0.21, 0xf8bb77, 0xf8bb77, 1);
+    }
+    scene.add(lanterns);
+    upgrades.set("lamp", lanterns);
+    for (const object of upgrades.values()) object.visible = false;
+  }
   const specks: THREE.Mesh[] = [];
   for (let i = 0; i < (isLive ? 0 : 9); i++) {
     const speck = block(scene, coreDisplay.x - 0.32 + (i % 3) * 0.32, 2.2 + (i % 2) * 0.2,
@@ -1120,6 +1143,9 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
 
   return {
     setAgentPersona,
+    setUpgrades(ids: readonly string[]) {
+      for (const [id, object] of upgrades) object.visible = ids.includes(id);
+    },
     capturePositions() {
       previousPositions = simulation.agents.map(({ x, z }) => ({ x, z }));
     },

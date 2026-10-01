@@ -12,6 +12,7 @@ import { MAX_AGENTS, type Adapter, type LegacyRoom, type LiveSession, type Room 
 import { FileStore, type Store } from "../server/storage.js";
 import { canonicalGitHubUrl, type RemoteRepository, type RepositorySnapshot, type RepositorySource } from "../server/github-repositories.js";
 import { COPILOT_PROFILE, type ModelProfile } from "../server/providers.js";
+import { progression, RANKS, type ProgressEvent } from "../server/progression.js";
 
 class MemoryStore implements Store {
   saved: Room | LegacyRoom | null = null;
@@ -149,7 +150,7 @@ test("explicit meeting handoffs are bounded, private, and link decisions to assi
   assert.equal(meeting.owners[0].assignmentId, b.assignmentId);
   assert.deepEqual(room.state.assignments!.find(item => item.id === b.assignmentId)!.followUps,
     [{ meetingId: meeting.id, task: "Add boundary test" }]);
-  assert.equal((store.saved as Room).schemaVersion, 4);
+  assert.equal((store.saved as Room).schemaVersion, 5);
   await room.close();
 });
 
@@ -191,7 +192,7 @@ test("meeting cancellation, failure, restart and archived participants preserve 
   await recovered.close();
 });
 
-test("v3 state migrates to backed-up v4; running meetings interrupt on restart", async () => {
+test("v3 state migrates to backed-up v5; running meetings interrupt on restart", async () => {
   const dir = await mkdtemp(join(tmpdir(), "agentcorp-meeting-"));
   try {
     const file = join(dir, "state.json");
@@ -201,7 +202,7 @@ test("v3 state migrates to backed-up v4; running meetings interrupt on restart",
     const store = new FileStore(file);
     const adapter = new MockAdapter();
     const room = await RoomController.open(adapter, store, "/dedicated");
-    assert.equal(room.state.schemaVersion, 4);
+    assert.equal(room.state.schemaVersion, 5);
     assert.deepEqual(JSON.parse(await readFile(`${file}.v3.bak`, "utf8")), original);
     const a = await room.create(0);
     const b = await room.create(1);
@@ -215,6 +216,177 @@ test("v3 state migrates to backed-up v4; running meetings interrupt on restart",
     await recovered.close();
     await room.close();
   } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test("v4 state receives a private backup and empty v5 ledger without changing agents", async () => {
+  const directory = await mkdtemp(join(tmpdir(), "progress-migration-"));
+  try {
+    const path = join(directory, "state.json");
+    const adapter = new MockAdapter();
+    const store = new FileStore(path);
+    const room = await RoomController.open(adapter, store, "/dedicated");
+    const agent = await room.create(0);
+    await room.close();
+    const original = JSON.parse(await readFile(path, "utf8")) as Room;
+    original.schemaVersion = 4;
+    delete original.progression;
+    await writeFile(path, JSON.stringify(original));
+    const migrated = await RoomController.open(adapter, store, "/dedicated");
+    assert.equal(migrated.state.schemaVersion, 5);
+    assert.deepEqual(migrated.state.progression, []);
+    assert.equal(migrated.state.agents[0].id, agent.id);
+    assert.deepEqual(JSON.parse(await readFile(`${path}.v4.bak`, "utf8")), original);
+    await migrated.close();
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});
+
+test("only confirmed attributable outcomes earn once, survive restart, and never depend on model or usage", async () => {
+  const adapter = new MockAdapter();
+  const store = new MemoryStore();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  await room.connect();
+  const agent = await room.create(0);
+  const source = agent.assignmentId!;
+  const input = { source: "assignment" as const, sourceId: source, personaId: agent.id,
+    evidence: "A user-reviewed completed feature with passing checks.", specialty: "Engineering" as const, confirmed: true };
+  await assert.rejects(room.confirmOutcome(input), /completed assignment/);
+  await room.send(agent.id, "Implement the feature");
+  await assert.rejects(room.confirmOutcome(input), /completed assignment/);
+  adapter.sessions.get(agent.sessionId)!.emit(event("assistant.message", { content: "Feature implemented and tested." }));
+  adapter.sessions.get(agent.sessionId)!.emit(event("session.idle"));
+  await room.newAssignment(agent.id, "Done", "copilot");
+  await assert.rejects(room.confirmOutcome({ ...input, confirmed: false }), /Explicit confirmation/);
+  await assert.rejects(room.confirmOutcome({ ...input, personaId: "fabricated" }), /completed assignment/);
+  await room.confirmOutcome(input);
+  await assert.rejects(room.confirmOutcome(input), /duplicate|Reward/);
+  assert.equal(progression(room.state.progression!, [agent.id], room.state.assignments!, room.state.meetings!).balance, 8);
+  await room.refreshUsage();
+  assert.equal(room.state.progression!.length, 1);
+  await room.close();
+  const reloaded = await RoomController.open(adapter, store, "/dedicated");
+  assert.equal(reloaded.state.progression!.length, 1);
+  await assert.rejects(reloaded.confirmOutcome(input), /duplicate|Reward/);
+  const before = JSON.stringify(store.saved);
+  const forged = structuredClone(store.saved as Room);
+  (forged.progression![0] as Extract<ProgressEvent, { kind: "reward" }>).xp = 9000;
+  store.saved = forged;
+  await assert.rejects(RoomController.open(adapter, store, "/dedicated"), /Reward/);
+  store.saved = JSON.parse(before) as Room;
+  await reloaded.close();
+});
+
+test("rank thresholds, capped rewards, affordable purchases, and failed writes preserve balance", async () => {
+  class FlakyStore extends MemoryStore {
+    fail = false;
+    override async write(room: Room): Promise<void> {
+      if (this.fail) { this.fail = false; throw new Error("Disk unavailable"); }
+      await super.write(room);
+    }
+  }
+  const store = new FlakyStore();
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  await room.connect();
+  const agent = await room.create(0);
+  const profiles = structuredClone(room.state.modelProfiles);
+  const defaultProfile = room.state.defaultModelProfileId;
+  const policies = structuredClone(room.state.personas![0].repositoryPolicies);
+  const outcome = async (index: number) => {
+    const current = room.state.agents.find(item => item.id === agent.id)!;
+    const sourceId = current.assignmentId!;
+    await room.send(agent.id, `Task ${index}`);
+    adapter.sessions.get(current.sessionId)!.emit(event("assistant.message", { content: `Completed task ${index}.` }));
+    adapter.sessions.get(current.sessionId)!.emit(event("session.idle"));
+    await room.newAssignment(agent.id, "Reviewed completion");
+    await room.confirmOutcome({ source: "assignment", sourceId, personaId: agent.id,
+      evidence: `Confirmed distinct outcome for task ${index}.`, specialty: "Engineering", confirmed: true });
+  };
+  await outcome(1);
+  await assert.rejects(room.purchase("garden", true), /unaffordable/);
+  await assert.rejects(room.promote(agent.id, 1, true), /Promotion|duplicate/);
+  await outcome(2);
+  assert.equal(RANKS[1].xp, 40);
+  await assert.rejects(room.promote(agent.id, 1, false), /Confirm/);
+  await room.promote(agent.id, 1, true);
+  await assert.rejects(room.promote(agent.id, 1, true), /duplicate/);
+  store.fail = true;
+  await assert.rejects(room.purchase("garden", true), /Disk unavailable/);
+  assert.equal(room.state.progression!.filter(item => item.kind === "purchase").length, 0);
+  await Promise.allSettled([room.purchase("garden", true), room.purchase("garden", true)]);
+  assert.equal(room.state.progression!.filter(item => item.kind === "purchase").length, 1);
+  await assert.rejects(room.purchase("rug", true), /unaffordable/);
+  await outcome(3);
+  await assert.rejects(outcome(4), /Daily reward cap/);
+  const score = progression(room.state.progression!, [agent.id], room.state.assignments!, room.state.meetings!);
+  assert.equal(score.balance, 12);
+  assert.equal(score.xp.get(agent.id), 60);
+  assert.equal(score.ranks.get(agent.id), 1);
+  assert.equal(score.specialties.get(agent.id)?.get("Engineering"), 60);
+  assert.deepEqual(room.state.modelProfiles, profiles);
+  assert.equal(room.state.defaultModelProfileId, defaultProfile);
+  assert.deepEqual(room.state.personas![0].repositoryPolicies, policies);
+  await room.close();
+  const restarted = await RoomController.open(adapter, store, "/dedicated");
+  assert.equal(restarted.state.progression!.filter(item => item.kind === "purchase").length, 1);
+  await restarted.close();
+});
+
+test("completed review rewards only a responding participant after explicit approval", async () => {
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated");
+  const a = await room.create(0);
+  const b = await room.create(1);
+  const review = await room.createMeeting({ kind: "review", participantIds: [a.id, b.id],
+    agenda: "Check boundary", sharedText: "Diff with boundary test", maxTurns: 1 });
+  const input = { source: "review" as const, sourceId: review.id, personaId: a.id,
+    evidence: "Reviewer examined the diff and requested coverage.", specialty: "Review" as const, confirmed: true };
+  await assert.rejects(room.confirmOutcome(input), /completed review/);
+  await room.advanceMeeting(review.id);
+  adapter.sessions.get(a.sessionId)!.emit(event("assistant.message", { content: "Add a regression test." }));
+  adapter.sessions.get(a.sessionId)!.emit(event("session.idle"));
+  await room.finishMeeting(review.id, "Add regression coverage", []);
+  await assert.rejects(room.confirmOutcome({ ...input, personaId: b.id }), /completed review/);
+  await room.confirmOutcome(input);
+  assert.equal(room.state.progression![0].kind, "reward");
+  assert.equal(progression(room.state.progression!, [a.id, b.id], room.state.assignments!, room.state.meetings!).balance, 4);
+  await room.close();
+});
+
+test("merged PRs need live verification and a recorded assignment/repository attribution", async () => {
+  const adapter = new MockAdapter();
+  const store = new MemoryStore();
+  let verified = 0;
+  const verify = async (repository: string, number: number) => {
+    verified++;
+    if (number === 7) throw new Error("GitHub says PR is not merged.");
+    return { repository, number, mergeSha: "a".repeat(40), mergedAt: Date.now() };
+  };
+  const room = await RoomController.open(adapter, store, "/dedicated", undefined, undefined, undefined, verify);
+  await room.connect();
+  const a = await room.create(0);
+  const b = await room.create(1);
+  await room.newAssignment(a.id, "Earlier work");
+  const assignment = room.state.assignments![0];
+  const input = { assignmentId: assignment.id, personaId: a.id, number: 5,
+    evidence: "This merged PR belongs to the recorded feature assignment.", specialty: "Engineering" as const, confirmed: true };
+  await assert.rejects(room.confirmMergedPr(input), /recorded verified GitHub repository/);
+  assert.equal(verified, 0);
+  assignment.repository = { path: "/snapshot", name: "Fixture/project", scope: "session",
+    remote: { fullName: "Fixture/project", path: "/snapshot", url: canonicalGitHubUrl("Fixture/project"),
+      ref: "main", commit: "a".repeat(40), privacy: "public", fetchedAt: Date.now() } };
+  await assert.rejects(room.confirmMergedPr({ ...input, personaId: b.id }), /recorded verified/);
+  await assert.rejects(room.confirmMergedPr({ ...input, number: 7 }), /not merged/);
+  await assert.rejects(room.confirmMergedPr({ ...input, confirmed: false }), /Confirm a PR/);
+  await room.confirmMergedPr(input);
+  assert.equal(verified, 2);
+  await assert.rejects(room.confirmMergedPr(input), /duplicate/);
+  await assert.rejects(room.confirmMergedPr({ ...input, number: 6 }), /Reward/);
+  assert.equal(room.state.progression!.length, 1);
+  assert.equal(progression(room.state.progression!, [a.id, b.id], room.state.assignments!, room.state.meetings!).balance, 12);
+  await room.close();
+  const resumed = await RoomController.open(adapter, store, "/dedicated", undefined, undefined, undefined, verify);
+  assert.equal(resumed.state.progression?.length, 1);
+  await resumed.close();
 });
 
 test("meeting source requires every participant's effective grant and checks revocations again", async () => {
@@ -1068,7 +1240,7 @@ test("v2 state is backed up before v3 policy migration and can be restored intac
     for (const persona of v2.personas!) delete persona.repositoryPolicies;
     await writeFile(path, JSON.stringify(v2));
     const migrated = await RoomController.open(new MockAdapter(), store, "/dedicated");
-    assert.equal(migrated.state.schemaVersion, 4);
+    assert.equal(migrated.state.schemaVersion, 5);
     assert.deepEqual(JSON.parse(await readFile(`${path}.v2.bak`, "utf8")), JSON.parse(JSON.stringify(v2)));
     assert.equal(migrated.state.personas![0].memories[0].text, "Important");
     assert.equal(migrated.state.assignments![0].sessionId, agent.sessionId);
@@ -1096,7 +1268,7 @@ test("v2 policy migration preserves sixteen distinct sessions, assignments, memo
   for (const persona of v2.personas!) delete persona.repositoryPolicies;
   store.saved = v2;
   const migrated = await RoomController.open(adapter, store, "/dedicated");
-  assert.equal(migrated.state.schemaVersion, 4);
+  assert.equal(migrated.state.schemaVersion, 5);
   assert.equal(migrated.state.projects?.length, 16);
   assert.deepEqual(migrated.state.agents.map(agent => agent.sessionId),
     v2.agents.map(agent => agent.sessionId));
@@ -1248,7 +1420,7 @@ test("all sixteen legacy identities, desk positions, grants, artifacts and trans
   for (const agent of legacy.agents) { delete agent.personaId; delete agent.assignmentId; }
   store.saved = legacy;
   const migrated = await RoomController.open(adapter, store, "/dedicated");
-  assert.equal(migrated.state.schemaVersion, 4);
+  assert.equal(migrated.state.schemaVersion, 5);
   assert.equal(migrated.state.personas?.length, 16);
   assert.equal(migrated.state.assignments?.length, 16);
   assert.deepEqual(migrated.state.agents.map(agent => ({
@@ -1341,7 +1513,7 @@ test("atomic v1 backup supports rollback; unknown schema or invalid linkage cann
     await writeFile(path, JSON.stringify(legacy));
     const room = await RoomController.open(new MockAdapter(), store, "/dedicated");
     assert.deepEqual(JSON.parse(await readFile(`${path}.v1.bak`, "utf8")), legacy);
-    assert.equal(JSON.parse(await readFile(path, "utf8")).schemaVersion, 4);
+    assert.equal(JSON.parse(await readFile(path, "utf8")).schemaVersion, 5);
     await room.close();
     const damaged = { ...room.state, assignments: [{ id: "bad", personaId: "missing" }] };
     await writeFile(path, JSON.stringify(damaged));
@@ -1351,7 +1523,7 @@ test("atomic v1 backup supports rollback; unknown schema or invalid linkage cann
     await writeFile(path, JSON.stringify({ ...legacy, schemaVersion: 99 }));
     await assert.rejects(RoomController.open(new MockAdapter(), store, "/dedicated"), /Unknown state schema/);
     await writeFile(path, await readFile(`${path}.v1.bak`, "utf8"));
-    assert.equal((await RoomController.open(new MockAdapter(), store, "/dedicated")).state.schemaVersion, 4);
+    assert.equal((await RoomController.open(new MockAdapter(), store, "/dedicated")).state.schemaVersion, 5);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }
