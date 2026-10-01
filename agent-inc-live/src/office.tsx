@@ -290,6 +290,7 @@ function LiveOffice() {
   const sceneRef = useRef<Simulation | null>(null);
   const worldRef = useRef<ReturnType<typeof createWorld> | null>(null);
   const actorsRef = useRef<(Actor | null)[]>([]);
+  const occupiedRef = useRef<boolean[]>(Array(MIN_LIVE_DESKS).fill(false));
   const hoverDeskRef = useRef<number | null>(null);
   const hoverLabelRef = useRef<HTMLDivElement>(null);
   const confirmCheckboxRef = useRef<HTMLInputElement>(null);
@@ -326,7 +327,18 @@ function LiveOffice() {
   const updateRoom = (next: SdkRoom) => {
     if (roomRef.current && next.revision < roomRef.current.revision) return;
     roomRef.current = next;
+    const actors = deskActors(next);
+    actorsRef.current = actors;
+    const scene = sceneRef.current;
+    if (scene) {
+      worldRef.current?.capturePositions();
+      applyRoom(scene, actors, occupiedRef.current);
+      updatePersonas(worldRef.current ?? undefined, next);
+      worldRef.current?.setUpgrades((next.progression ?? [])
+        .filter(event => event.kind === "purchase").map(event => event.upgradeId));
+    }
     setSdkRoom(next);
+    setConnection(next.connected ? connectedStatus : next.error || "SDK connection unavailable");
     for (const agent of next.agents) {
       const requestId = agent.review?.id ?? agent.accessRequest?.id;
       if (!agent.archived && requestId && !seenReviews.current.has(requestId)) {
@@ -505,7 +517,7 @@ function LiveOffice() {
     if (!host.current) return;
     const scene = makeScene();
     sceneRef.current = scene;
-    const occupied = Array(MIN_LIVE_DESKS).fill(false) as boolean[];
+    occupiedRef.current = Array(MIN_LIVE_DESKS).fill(false);
     let world: ReturnType<typeof createWorld> | undefined;
     try {
       world = createWorld(host.current, scene, "live", {
@@ -544,14 +556,7 @@ function LiveOffice() {
         if (typeof update.revision !== "number" || typeof update.workspace !== "string") {
           throw new Error("Invalid SDK office status");
         }
-        const nextActors = deskActors(update);
-        actorsRef.current = nextActors;
-        world?.capturePositions();
-        applyRoom(scene, nextActors, occupied);
-        updatePersonas(world, update);
-        world?.setUpgrades((update.progression ?? []).filter(event => event.kind === "purchase").map(event => event.upgradeId));
         updateRoom(update);
-        setConnection(update.connected ? connectedStatus : update.error || "SDK connection unavailable");
       } catch (error) {
         setConnection(`Office update failed: ${error instanceof Error ? error.message : String(error)}`);
       }
@@ -563,12 +568,7 @@ function LiveOffice() {
       if (!response.ok) throw new Error(`Local server returned ${response.status}`);
       const initial = await response.json() as SdkRoom;
       if (!roomRef.current || initial.revision >= roomRef.current.revision) {
-        actorsRef.current = deskActors(initial);
-        world?.capturePositions();
-        applyRoom(scene, actorsRef.current, occupied);
-        updatePersonas(world, initial);
         updateRoom(initial);
-        setConnection(initial.connected ? connectedStatus : initial.error || "SDK connection unavailable");
       }
     }).catch(error => setConnection(`Cannot reach local SDK office: ${error instanceof Error ? error.message : String(error)}`));
     void fetch("/api/search-capability").then(async response => {

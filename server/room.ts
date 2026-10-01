@@ -28,8 +28,10 @@ export class RoomController {
   private creating = new Set<number>();
   private lifecycle = new Set<string>();
   private stopped = new Set<string>();
+  private stopping = new Set<string>();
   private armedTaskGrants = new Set<string>();
   private clones = new Map<string, AbortController>();
+  private lookups = new Map<string, number>();
   private meetingTurns = new Map<string, { meetingId: string; start: number; handoffText: string; timer: NodeJS.Timeout }>();
   private economyQueue: Promise<void> = Promise.resolve();
 
@@ -59,7 +61,13 @@ export class RoomController {
         : { agents: saved.agent ? [{ ...saved.agent, deskIndex: 0, archived: false, workspace, workspaceKind: "root", createdAt: now, updatedAt: now }] : [], error: saved.error, connected: saved.connected, workspace, revision: saved.revision }
       : { agents: [], error: null, connected: false, workspace, revision: 0 };
     if (Array.isArray(state.agents)) {
-      for (const agent of state.agents) agent.archived ??= false;
+      for (const agent of state.agents) {
+        agent.archived ??= false;
+        if (state.schemaVersion === undefined) {
+          agent.createdAt ??= now;
+          agent.updatedAt ??= agent.createdAt;
+        }
+      }
     }
     if (!Array.isArray(state.agents) || state.agents.filter(agent => !agent.archived).length > MAX_AGENTS ||
       state.agents.some((agent, index) => !agent.id || !agent.sessionId || !agent.workspace ||
@@ -296,7 +304,7 @@ export class RoomController {
       const assignment = this.state.assignments?.find(item => item.id === agent.assignmentId);
       if (assignment) {
         assignment.messages = agent.messages;
-        assignment.repository = agent.repository;
+        if (agent.repository) assignment.repository = agent.repository;
       }
     }
     const snapshot = structuredClone(this.state);
@@ -927,7 +935,7 @@ export class RoomController {
       previous.endedAt = Date.now();
       previous.outcome = outcome.trim();
       previous.messages = agent.messages;
-      previous.repository = agent.repository;
+      if (agent.repository) previous.repository = agent.repository;
       agent.assignmentId = assignmentId;
       agent.sessionId = session.sessionId;
       agent.workspace = workspace;
@@ -1049,7 +1057,7 @@ export class RoomController {
 
   requestAccess(agentId: string, intent: AccessIntent): Promise<string> {
     const agent = this.agent(agentId);
-    if (agent.archived || !this.listeners.size || agent.accessRequest || agent.review ||
+    if (agent.archived || this.stopped.has(agentId) || !this.listeners.size || agent.accessRequest || agent.review ||
       this.lifecycle.has(agentId) || this.meetingTurns.has(agentId)) {
       return Promise.resolve(JSON.stringify({ status: "denied", reason: "No available browser or another request is pending." }));
     }
@@ -1106,15 +1114,17 @@ export class RoomController {
     request.error = undefined;
     request.candidates = undefined;
     request.progress = "Checking GitHub identity (no clone yet)";
+    const lookup = (this.lookups.get(id) ?? 0) + 1;
+    this.lookups.set(id, lookup);
     await this.publish();
     try {
       const candidates = (await this.repositories.lookup(hint)).map(validateRemoteRepository);
-      if (agent.accessRequest !== request || request.status !== "resolving") return;
+      if (agent.accessRequest !== request || request.status !== "resolving" || this.lookups.get(id) !== lookup) return;
       request.candidates = candidates;
       request.status = "review";
       request.progress = candidates.length > 1 ? "Choose the exact owner/repo before approving." : "Ready for your decision; no clone yet.";
     } catch (error) {
-      if (agent.accessRequest !== request || request.status !== "resolving") return;
+      if (agent.accessRequest !== request || request.status !== "resolving" || this.lookups.get(id) !== lookup) return;
       request.status = "error";
       request.error = error instanceof Error ? error.message : String(error);
       request.progress = undefined;
@@ -1151,6 +1161,7 @@ export class RoomController {
         worktree: grant?.worktree?.path }));
     }
     agent.accessRequest = undefined;
+    this.lookups.delete(id);
     agent.updatedAt = Date.now();
     if (agent.phase === "permission") agent.phase = "thinking";
     agent.activity = status === "approved" ? `Repository access: ${grant?.name}` : reason ?? "Repository access denied";
@@ -1353,6 +1364,7 @@ export class RoomController {
     const session = this.sessions.get(agentId);
     if (!session) throw new Error("Agent SDK session is unavailable; cannot confirm cancellation.");
     this.lifecycle.add(agentId);
+    this.stopping.add(agentId);
     try {
       this.clones.get(agentId)?.abort();
       const abort = session.abort();
@@ -1381,6 +1393,7 @@ export class RoomController {
       this.report(error, agent);
       throw error;
     } finally {
+      this.stopping.delete(agentId);
       this.lifecycle.delete(agentId);
     }
   }
@@ -1416,7 +1429,7 @@ export class RoomController {
   private event(agentId: string, event: SessionEvent): void {
     const agent = this.agent(agentId);
     if (agent.archived) return;
-    if (this.stopped.has(agentId) && event.type !== "session.error" && event.type !== "session.idle") return;
+    if (this.stopping.has(agentId) || this.stopped.has(agentId) && event.type !== "session.idle") return;
     switch (event.type) {
       case "assistant.message_delta": {
         const delta = event.data.deltaContent;
@@ -1471,6 +1484,9 @@ export class RoomController {
     const agent = this.state.agents.find(item => item.id === agentId);
     if (!agent || agent.assignmentId !== assignmentId) {
       return Promise.resolve({ kind: "reject", feedback: "This SDK assignment is no longer active." });
+    }
+    if (this.stopping.has(agentId) || this.stopped.has(agentId)) {
+      return Promise.resolve({ kind: "reject", feedback: "This SDK turn was stopped." });
     }
     if (this.meetingTurns.has(agentId)) {
       return Promise.resolve({ kind: "reject", feedback: "Meeting handoffs are limited to shared material; tools require a separate ordinary turn." });

@@ -50,6 +50,14 @@ test("research tool reads only bounded tracked text, refuses secrets, untracked 
     await assert.rejects(async () => tool.handler!({ repository: "Fixture/fixture", action: "read", path: "src/summary.md" },
       {} as never), /revoked while research/);
     assert.equal(checks, 2, "policy checked both before and after an in-flight read");
+    let current = grant;
+    const swapped = repositoryTool(async () => {
+      const result = current;
+      current = { ...grant, name: "Fixture/another-snapshot" };
+      return result;
+    });
+    await assert.rejects(async () => swapped.handler!({ repository: "Fixture/fixture", action: "list", path: "" },
+      {} as never), /identity changed/);
     await assert.rejects(async () => tool.handler!({ repository: "Fixture/other", action: "list", path: "" },
       {} as never), /No effective read access/);
     await assert.rejects(researchRepository(grant, "read", "escape.txt"), /exact tracked/);

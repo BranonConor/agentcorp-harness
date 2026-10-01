@@ -148,8 +148,14 @@ export function repositoryTool(getGrant: (fullName: string) => Promise<Repositor
         typeof args.repository !== "string" || typeof args.action !== "string" || typeof args.path !== "string") throw new Error("Invalid research request.");
       const grant = await getGrant(args.repository);
       if (!grant) throw new Error("No effective read access to this verified GitHub repository. Request access first.");
+      const identity = JSON.stringify([grant.path, grant.name, grant.remote?.url, grant.remote?.ref,
+        grant.remote?.commit, grant.worktree?.path, grant.worktree?.branch]);
       const result = await researchRepository(grant.worktree ? { ...grant, path: grant.worktree.path } : grant, args.action, args.path);
-      if (!await getGrant(args.repository)) throw new Error("Repository access was revoked while research was running.");
+      const current = await getGrant(args.repository);
+      if (!current || JSON.stringify([current.path, current.name, current.remote?.url, current.remote?.ref,
+        current.remote?.commit, current.worktree?.path, current.worktree?.branch]) !== identity) {
+        throw new Error("Repository access was revoked while research was running or its identity changed.");
+      }
       return result;
     }
   };

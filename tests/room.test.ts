@@ -389,6 +389,37 @@ test("merged PRs need live verification and a recorded assignment/repository att
   await resumed.close();
 });
 
+test("expired task grants remain historical attribution without restoring effective access", async () => {
+  const root = await realpath(await mkdtemp(join(tmpdir(), "agentcorp-attribution-")));
+  try {
+    execFileSync("git", ["init", "-q", root]);
+    const adapter = new MockAdapter();
+    const source = new FixtureSource(root);
+    const verify = async (repository: string, number: number) =>
+      ({ repository, number, mergeSha: "a".repeat(40), mergedAt: Date.now() });
+    const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated", join(root, "trees"), source,
+      undefined, verify);
+    const agent = await room.create(0);
+    const assignmentId = agent.assignmentId!;
+    const unsubscribe = room.subscribe(() => {});
+    const request = room.guidedAccess(agent.id);
+    await room.findRepository(agent.id, request.id, "fixture");
+    await room.decideAccess(agent.id, request.id, "task", "Fixture/fixture");
+    assert.equal(room.state.assignments![0].repository?.remote?.fullName, "Fixture/fixture");
+    await room.send(agent.id, "Research the approved repository");
+    adapter.sessions.get(agent.sessionId)!.emit(event("session.idle"));
+    assert.equal(agent.repository, undefined);
+    assert.equal(await adapter.research.get(agent.sessionId)!("Fixture/fixture"), undefined);
+    await room.newAssignment(agent.id, "Research complete");
+    await room.confirmMergedPr({ assignmentId, personaId: agent.id, number: 9,
+      evidence: "The merged change belongs to the recorded repository assignment.",
+      specialty: "Engineering", confirmed: true });
+    assert.equal(room.state.progression?.length, 1);
+    unsubscribe();
+    await room.close();
+  } finally { await rm(root, { recursive: true, force: true }); }
+});
+
 test("meeting source requires every participant's effective grant and checks revocations again", async () => {
   const adapter = new MockAdapter();
   const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated", undefined,
@@ -1002,6 +1033,32 @@ test("STOP aborts only the active SDK turn, rejects pending permission and repor
   await room.close();
 });
 
+test("stop ignores SDK idle during abort and rejects callbacks from the stopped turn", async () => {
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated");
+  const first = await room.create(0);
+  const second = await room.create(1);
+  const meeting = await room.createMeeting({ kind: "review", participantIds: [first.id, second.id],
+    agenda: "Review change", sharedText: "Patch excerpt", maxTurns: 1 });
+  await room.advanceMeeting(meeting.id);
+  const session = adapter.sessions.get(first.sessionId)!;
+  session.emit(event("assistant.message", { content: "Partial review" }));
+  session.abort = async () => {
+    session.emit(event("session.idle"));
+    session.aborts++;
+  };
+  await room.stop(first.id);
+  assert.equal(meeting.status, "interrupted");
+  assert.equal(meeting.turns.length, 0);
+  assert.deepEqual(await adapter.permissions.get(first.sessionId)!(request),
+    { kind: "reject", feedback: "This SDK turn was stopped." });
+  session.emit(event("session.error", { message: "Late error from stopped turn" }));
+  assert.equal(first.phase, "idle");
+  await room.send(first.id, "Start another ordinary turn");
+  assert.equal(first.phase, "thinking");
+  await room.close();
+});
+
 test("verified research policy authorizes only selected read-only SDK tool, never shell or writes", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentcorp-permission-"));
   try {
@@ -1225,6 +1282,33 @@ test("sharing changes cancel unresolved conversational and guided requests befor
   await room.close();
 });
 
+test("a slower repository lookup cannot replace a newer reviewed identity", async () => {
+  const source = new FixtureSource("/unused");
+  const room = await RoomController.open(new MockAdapter(), new MemoryStore(), "/dedicated", "/unused/trees", source);
+  const agent = await room.create(0);
+  const unsubscribe = room.subscribe(() => {});
+  const request = room.guidedAccess(agent.id);
+  let release!: () => void;
+  let started!: () => void;
+  const blocked = new Promise<void>(resolve => { release = resolve; });
+  const begun = new Promise<void>(resolve => { started = resolve; });
+  const lookup = source.lookup.bind(source);
+  source.lookup = async hint => {
+    if (hint === "alpha") { started(); await blocked; }
+    return lookup(hint);
+  };
+  const old = room.findRepository(agent.id, request.id, "alpha");
+  await begun;
+  await room.findRepository(agent.id, request.id, "beta");
+  assert.equal(agent.accessRequest?.candidates?.[0].fullName, "Fixture/beta");
+  release();
+  await old;
+  assert.equal(agent.accessRequest?.repoHint, "beta");
+  assert.equal(agent.accessRequest?.candidates?.[0].fullName, "Fixture/beta");
+  unsubscribe();
+  await room.close();
+});
+
 test("v2 state is backed up before v3 policy migration and can be restored intact", async () => {
   const directory = await mkdtemp(join(tmpdir(), "policy-v2-"));
   try {
@@ -1436,6 +1520,21 @@ test("all sixteen legacy identities, desk positions, grants, artifacts and trans
   await reloaded.close();
   await migrated.close();
   await original.close();
+});
+
+test("legacy agent timestamps become valid assignment provenance during migration", async () => {
+  const store = new MemoryStore();
+  const agentId = "00000000-0000-4000-8000-000000000001";
+  store.saved = {
+    agent: { id: agentId, sessionId: "legacy-session", x: 0, y: 0,
+      phase: "idle", activity: "Ready", messages: [], workspace: "/dedicated" } as LegacyRoom["agent"],
+    workspace: "/dedicated", connected: false, error: null, revision: 1
+  };
+  const room = await RoomController.open(new MockAdapter(), store, "/dedicated");
+  assert.ok(Number.isSafeInteger(room.state.agents[0].createdAt));
+  assert.equal(room.state.assignments![0].startedAt, room.state.agents[0].createdAt);
+  assert.equal(room.state.personas![0].createdAt, room.state.agents[0].createdAt);
+  await room.close();
 });
 
 test("profile, curated memory, independent sequential assignment and permission isolation survive restart", async () => {
