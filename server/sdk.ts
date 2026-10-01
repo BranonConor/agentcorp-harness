@@ -4,18 +4,31 @@ import { join } from "node:path";
 import { mkdir, realpath, writeFile } from "node:fs/promises";
 import type { Adapter, LiveSession } from "./types.js";
 import { repositoryTool, repositoryRequestTool, validateRepository, validateResearchWorktree, type AccessIntent, type RepositoryGrant } from "./repository.js";
+import { WebSearch } from "./web-search.js";
 
-function officeInstructions(workspace: string): string {
-  return `This is a local experiment. Your initial scratch directory is ${workspace}. To create another office agent, the user clicks + at a desk; chat does not create office agents. When asked to research or edit a GitHub repository not already attached, call request_repository_access with an owner/repo or short name hint, purpose and read/edit scope BEFORE saying the repository is unavailable. The user reviews its GitHub identity and approves an automatic clone of the remote default branch into an app-managed cache; local unpushed changes in other checkouts are not included. Never guess a local path or ask the user to run Git commands. Only after explicit approval use research_attached_repository for tracked file research. An edit approval changes your current SDK working directory to an isolated Git worktree, NOT the original checkout; the scratch directory remains available for later recovery. Follow the current SDK working directory after such a change. Every shell/write still requires individual human permission. Do not claim filesystem isolation.`;
+function officeInstructions(workspace: string, search: WebSearch): string {
+  return `This is a local experiment. Your initial scratch directory is ${workspace}. To create another office agent, the user clicks + at a desk; chat does not create office agents. When asked to research or edit a GitHub repository not already attached, call request_repository_access with an owner/repo or short name hint, purpose and read/edit scope BEFORE saying the repository is unavailable. The user reviews its GitHub identity and approves an automatic clone of the remote default branch into an app-managed cache; local unpushed changes in other checkouts are not included. Never guess a local path or ask the user to run Git commands. Only after explicit approval use research_attached_repository for tracked file research. An edit approval changes your current SDK working directory to an isolated Git worktree, NOT the original checkout; the scratch directory remains available for later recovery. Follow the current SDK working directory after such a change. Every shell/write still requires individual human permission. Do not claim filesystem isolation. Web search capability: ${search.capability.reason} ${search.capability.available ? "Use search_web for current public web information; cite source URLs and never claim a search succeeded on error. Never send secrets in queries." : "Do not claim to have searched the web; hosted search is not guaranteed for this model or provider."}`;
 }
 
 export class SdkAdapter implements Adapter {
   private client: CopilotClient | null = null;
   private starting: Promise<CopilotClient> | null = null;
-  constructor(private readonly workspace: string) {}
+  constructor(private readonly workspace: string, readonly search = new WebSearch({
+    provider: process.env.AGENTCORP_SEARCH_PROVIDER, key: process.env.AGENTCORP_BRAVE_API_KEY
+  })) {}
   private tools(): ToolSet {
     const tools = new ToolSet().addBuiltIn(BuiltInTools.Isolated).addBuiltIn(["bash", "view", "rg", "glob", "apply_patch"]);
-    return tools.addCustom("research_attached_repository").addCustom("request_repository_access");
+    tools.addCustom("research_attached_repository").addCustom("request_repository_access");
+    if (this.search.capability.available) tools.addCustom("search_web");
+    return tools;
+  }
+
+  private customTools(repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>,
+    getGrant?: () => RepositoryGrant | undefined) {
+    const searchTool = this.search.tool();
+    return [repositoryTool(getGrant ?? (() => repository)),
+      repositoryRequestTool(requestAccess ?? (async () => { throw new Error("Repository requests are not available."); })),
+      ...(searchTool ? [searchTool] : [])];
   }
 
   private async ready(): Promise<CopilotClient> {
@@ -61,9 +74,9 @@ export class SdkAdapter implements Adapter {
       streaming: true,
       workingDirectory: workspace,
       availableTools: this.tools(),
-      tools: [repositoryTool(getGrant ?? (() => repository)), repositoryRequestTool(requestAccess ?? (async () => { throw new Error("Repository requests are not available."); }))],
+      tools: this.customTools(repository, requestAccess, getGrant),
       onPermissionRequest: permission,
-      systemMessage: { mode: "append", content: officeInstructions(workspace) }
+      systemMessage: { mode: "append", content: officeInstructions(workspace, this.search) }
     });
     return this.wrap(session);
   }
@@ -77,10 +90,10 @@ export class SdkAdapter implements Adapter {
       workingDirectory: repository?.worktree?.path ?? workspace,
       streaming: true,
       availableTools: this.tools(),
-      tools: [repositoryTool(getGrant ?? (() => repository)), repositoryRequestTool(requestAccess ?? (async () => { throw new Error("Repository requests are not available."); }))],
+      tools: this.customTools(repository, requestAccess, getGrant),
       continuePendingWork: false,
       onPermissionRequest: permission,
-      systemMessage: { mode: "append", content: officeInstructions(workspace) }
+      systemMessage: { mode: "append", content: officeInstructions(workspace, this.search) }
     });
     return this.wrap(session);
   }

@@ -31,7 +31,8 @@ const port = Number(value("--port") ?? "4173");
 if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error("Port must be 1–65535.");
 const root = dirname(fileURLToPath(import.meta.url));
 const staticDir = resolve(root, "../dist");
-const room = await RoomController.open(new SdkAdapter(workspace), new FileStore(resolve(value("--state") ?? resolve(root, "../.local/state.json"))),
+const adapter = new SdkAdapter(workspace);
+const room = await RoomController.open(adapter, new FileStore(resolve(value("--state") ?? resolve(root, "../.local/state.json"))),
   workspace, resolve(root, "../.local/worktrees"),
   await GitHubRepositories.open(resolve(root, "../.local/repos"), resolve(root, "..")));
 const token = randomBytes(32).toString("hex");
@@ -78,6 +79,7 @@ const server = createServer(async (request, response) => {
         return;
       }
       if (url.pathname === "/api/state" && request.method === "GET") return json(response, 200, room.state);
+      if (url.pathname === "/api/search-capability" && request.method === "GET") return json(response, 200, adapter.search.capability);
       if (url.pathname === "/api/create" && request.method === "POST") {
         const body = await payload(request);
         if (!Number.isInteger(body.deskIndex)) throw new Error("Choose an empty desk.");

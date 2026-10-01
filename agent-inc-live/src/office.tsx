@@ -220,6 +220,7 @@ function LiveOffice() {
   const [freshSnapshot, setFreshSnapshot] = useState(false);
   const [copiedId, setCopiedId] = useState("");
   const [actionError, setActionError] = useState("");
+  const [searchCapability, setSearchCapability] = useState("Checking web search availability…");
   const [menuAgentId, setMenuAgentId] = useState<string | null>(null);
   const [chatOptionsOpen, setChatOptionsOpen] = useState(false);
   const [editingRepoHint, setEditingRepoHint] = useState(false);
@@ -493,6 +494,14 @@ function LiveOffice() {
         setConnection(initial.connected ? connectedStatus : initial.error || "SDK connection unavailable");
       }
     }).catch(error => setConnection(`Cannot reach local SDK office: ${error instanceof Error ? error.message : String(error)}`));
+    void fetch("/api/search-capability").then(async response => {
+      if (!response.ok) throw new Error(`Local server returned ${response.status}`);
+      const capability: unknown = await response.json();
+      if (!capability || typeof capability !== "object" || !("reason" in capability) ||
+        typeof capability.reason !== "string" || !("available" in capability) ||
+        typeof capability.available !== "boolean") throw new Error("Invalid search capability");
+      setSearchCapability(capability.reason);
+    }).catch(error => setSearchCapability(`Web search status unavailable: ${error instanceof Error ? error.message : String(error)}`));
     let raf = 0;
     let last = performance.now();
     let accumulator = 0;
@@ -1134,6 +1143,7 @@ function LiveOffice() {
                         }}>New assignment…</button>}
                     </div>
                   </div>
+                  <p className="archived-chat-notice" role="status">{searchCapability}</p>
                   <div className="conversation-messages">
                     {selectedAgent.archived && selectedAgent.messages.length === 0 &&
                       <p className="activity-empty conversation-empty">No messages yet.</p>}
