@@ -2066,7 +2066,7 @@ function LiveOffice() {
           </div>}
           {selectedAgent && !selectedAgent.archived && !setupOpen &&
             selectedAgent.repository?.worktree && selectedAgent.repository.configuredProject && currentAssignment &&
-            <section className="trusted-local-card" aria-label="Task tool approval mode">
+            <section className="trusted-local-card panel-section" aria-label="Task tool approval mode">
               <strong>{selectedAgent.trustedLocal ? "Trusted-local autonomy active" : "Manual tool approval (default)"}</strong>
               <p>This agent can run commands as your account; it may read/change files or credentials outside this repo. Not sandboxed.</p>
               <p>{selectedAgent.trustedLocal ? "Routine built-in tools run without individual prompts for this agent and assignment until you turn this off, change assignments or worktrees, or restart the server. Managed requests and other tools follow existing review policy." :
