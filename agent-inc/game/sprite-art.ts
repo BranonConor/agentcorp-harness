@@ -57,13 +57,9 @@ function texture(width: number, height: number, paint: (ctx: CanvasRenderingCont
 }
 
 export const HAPPY_MACHINES_MARK = [
-  { color: "#74e7cc", rects: [[5, 0, 6, 1], [3, 1, 10, 1], [2, 2, 12, 1], [1, 3, 14, 2], [0, 5, 16, 6], [1, 11, 14, 2], [2, 13, 12, 1], [4, 14, 8, 1]] },
-  { color: "#263247", rects: [[5, 1, 6, 1], [3, 2, 10, 1], [2, 3, 12, 2], [1, 5, 14, 6], [2, 11, 12, 2], [3, 13, 10, 1]] },
-  { color: "#ddf7d8", rects: [[5, 3, 6, 1], [3, 4, 10, 8], [4, 12, 8, 1]] },
-  { color: "#f4ffe9", rects: [[5, 4, 6, 1], [4, 5, 2, 4]] },
-  { color: "#314058", rects: [[5, 6, 2, 2], [9, 6, 2, 2], [4, 9, 1, 2], [5, 11, 2, 1], [7, 12, 2, 1], [9, 11, 2, 1], [11, 9, 1, 2]] },
-  { color: "#eaa99c", rects: [[3, 9, 1, 1], [12, 9, 1, 1]] },
-  { color: "#fff2bd", rects: [[12, 1, 1, 1], [13, 2, 1, 1]] },
+  { color: "#263247", rects: [[4, 1, 8, 1], [2, 2, 12, 1], [1, 3, 14, 10], [2, 13, 12, 1], [4, 14, 8, 1]] },
+  { color: "#a7ffe6", rects: [[4, 2, 8, 1], [3, 3, 10, 10], [4, 13, 8, 1]] },
+  { color: "#263247", rects: [[5, 5, 2, 2], [9, 5, 2, 2], [4, 9, 1, 2], [5, 11, 2, 1], [7, 12, 2, 1], [9, 11, 2, 1], [11, 9, 1, 2]] },
 ] as const;
 
 function drawHappyMachinesMark(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {

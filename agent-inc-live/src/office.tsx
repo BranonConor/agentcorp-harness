@@ -1261,8 +1261,8 @@ function LiveOffice() {
       `}</style>
       <header className="topbar">
         <div className="identity">
-          <span className="brand-icon" aria-hidden="true">
-            <svg viewBox="0 0 16 16" shapeRendering="crispEdges" focusable="false">
+          <span className="brand-icon" aria-hidden="true" style={{ background: "none", boxShadow: "none" }}>
+            <svg viewBox="0 0 16 16" shapeRendering="crispEdges" focusable="false" style={{ filter: "none" }}>
               {HAPPY_MACHINES_MARK.flatMap(({ color, rects }, layer) =>
                 rects.map(([x, y, width, height], index) =>
                   <rect key={`${layer}-${index}`} x={x} y={y} width={width} height={height} fill={color} />))}
