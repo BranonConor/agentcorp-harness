@@ -1,0 +1,255 @@
+.live-shell {
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-radius-sm: 7px;
+  --ui-radius-card: 11px;
+  --ui-field: var(--office-panel);
+  --ui-card: var(--office-surface);
+  --ui-ink: var(--office-text);
+  --ui-subtle: var(--office-secondary);
+  --ui-line: var(--office-border);
+  --ui-focus: var(--office-accent);
+}
+
+.live-shell .overview-list {
+  display: grid;
+  gap: var(--ui-space-3);
+  padding: var(--ui-space-4);
+}
+.live-shell .overview-group-label {
+  margin: 8px 2px 0;
+  color: var(--ui-subtle);
+  font: 700 10px/1.2 var(--sans);
+  letter-spacing: .1em;
+  text-transform: uppercase;
+}
+.live-shell .overview-group-label:first-child { margin-top: 0; }
+.live-shell .overview-list .activity-row,
+.live-shell .overview-list .activity-row.upgrade-shop {
+  box-sizing: border-box;
+  min-width: 0;
+  margin: 0;
+  padding: var(--ui-space-4);
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius-card);
+  background: var(--ui-card);
+  box-shadow: 0 2px 8px var(--office-shadow);
+}
+.live-shell .overview-list .activity-row:hover { background: var(--ui-card); }
+.live-shell .overview-list .activity-row-heading strong {
+  font-size: 14px;
+  font-weight: 700;
+  letter-spacing: -.02em;
+}
+.live-shell .overview-list .activity-row p,
+.live-shell .overview-list .activity-row small {
+  color: var(--ui-subtle);
+  font: 11px/1.5 var(--sans);
+  overflow-wrap: anywhere;
+}
+.live-shell .overview-list .activity-row p { margin: 8px 0 0; }
+.live-shell .overview-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--ui-space-2);
+  margin-top: var(--ui-space-3);
+}
+.live-shell .overview-metrics > div {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+  padding: 10px 4px;
+  border-radius: var(--ui-radius-sm);
+  background: var(--office-muted);
+  text-align: center;
+}
+.live-shell .overview-metrics strong { font: 700 20px/1 var(--sans); }
+.live-shell .overview-metrics span { color: var(--ui-subtle); font: 600 10px/1.25 var(--sans); }
+.live-shell .overview-metrics .attention { background: var(--office-warning-bg); color: var(--office-warning); }
+.live-shell .overview-metrics .attention span { color: inherit; }
+.live-shell .overview-list button:not(.overview-disclosure),
+.live-shell .overview-list select,
+.live-shell .overview-list input:not([type="checkbox"]) {
+  box-sizing: border-box;
+  min-height: 34px;
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius-sm);
+  background: var(--ui-field);
+  color: var(--ui-ink);
+  font: 600 11px/1.35 var(--sans);
+}
+.live-shell .overview-list button:not(.overview-disclosure) {
+  padding: 6px 10px;
+  cursor: pointer;
+}
+.live-shell .overview-list button:not(.overview-disclosure):hover:not(:disabled) { background: var(--office-accent-bg); }
+.live-shell .overview-list button:disabled { opacity: .55; cursor: not-allowed; }
+.live-shell .overview-list input:not([type="checkbox"]),
+.live-shell .overview-list select { width: 100%; min-width: 0; padding: 6px 9px; font-weight: 500; }
+.live-shell .overview-list label { display: grid; gap: 5px; min-width: 0; color: var(--ui-ink); font: 650 11px/1.4 var(--sans); }
+.live-shell .overview-list :is(button, input, select, [role="switch"]):focus-visible {
+  outline: 2px solid var(--ui-focus);
+  outline-offset: 2px;
+}
+.live-shell .overview-list .upgrade-shop ul { display: grid; gap: 0; margin: 2px 0 0; }
+.live-shell .overview-list .upgrade-shop li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 2px 10px;
+  padding: 11px 0;
+  border: 0;
+  border-top: 1px solid var(--ui-line);
+  border-radius: 0;
+}
+.live-shell .overview-list .upgrade-shop li > strong { font: 700 12px var(--sans); }
+.live-shell .overview-list .upgrade-shop li > span:not(.overview-installed) {
+  grid-column: 1;
+  color: var(--ui-subtle);
+  font: 11px/1.4 var(--sans);
+}
+.live-shell .overview-list .upgrade-shop li > button,
+.live-shell .overview-list .upgrade-shop li > .overview-installed { grid-column: 2; grid-row: 1 / span 2; }
+.live-shell .overview-installed { color: var(--office-accent); font: 700 11px var(--sans); }
+.live-shell .overview-model { display: grid; gap: 10px; }
+.live-shell .overview-disclosure {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  width: 100%;
+  padding: 7px 0;
+  border: 0;
+  border-top: 1px solid var(--ui-line);
+  background: transparent;
+  color: var(--office-accent);
+  font: 650 11px var(--sans);
+  text-align: left;
+  cursor: pointer;
+}
+.live-shell .overview-disclosure[data-panel-open] span { transform: rotate(180deg); }
+.live-shell .overview-disclosure-panel { display: grid; gap: 12px; padding-top: 2px; }
+.live-shell .overview-list .overview-disclosure-panel[hidden],
+.live-shell .overview-list .overview-advanced-panel[hidden] { display: none; }
+.live-shell .overview-list .overview-model-form {
+  display: grid;
+  gap: 11px;
+  padding: 12px;
+  border: 1px solid var(--ui-line);
+  border-radius: var(--ui-radius-sm);
+  background: var(--office-muted);
+}
+.live-shell .overview-model-form h3 { margin: 0; font-size: 12px; }
+.live-shell .overview-model-form label:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.live-shell .overview-model-form input[type="checkbox"] { accent-color: var(--office-accent); }
+.live-shell .overview-advanced-panel { display: grid; gap: 10px; }
+.live-shell .overview-list .overview-primary { background: var(--office-accent-bg) !important; color: var(--office-accent) !important; }
+.live-shell .overview-model-list { justify-self: start; }
+.live-shell .overview-list .project-list li { gap: 6px 12px; }
+.live-shell .overview-list .workspace-path { overflow-wrap: anywhere; }
+.live-shell .overview-share { display: flex; align-items: center; gap: 7px; font: 600 11px var(--sans); }
+.live-shell .overview-list .overview-share [role="switch"] {
+  position: relative;
+  width: 32px;
+  height: 19px;
+  min-height: 19px;
+  padding: 2px;
+  border: 1px solid var(--ui-line);
+  border-radius: 20px;
+  background: var(--office-muted);
+  cursor: pointer;
+}
+.live-shell .overview-list .overview-share [role="switch"][data-checked] { background: var(--office-accent-bg); border-color: var(--office-accent); }
+.live-shell .overview-share [role="switch"] > span {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--office-secondary);
+  transition: transform .15s ease;
+}
+.live-shell .overview-share [role="switch"][data-checked] > span { background: var(--office-accent); transform: translateX(13px); }
+.live-shell .activity-title-row .profile-header-edit {
+  margin-left: auto;
+  padding: 5px 8px;
+  border: 1px solid var(--office-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--office-muted);
+  color: var(--office-text);
+  font: 650 11px var(--sans);
+  white-space: nowrap;
+  cursor: pointer;
+}
+.live-shell .activity-title-row .profile-header-edit:hover { background: var(--office-accent-bg); }
+.live-shell .agent-setup { display: grid; gap: 12px; padding: 16px; }
+.live-shell .agent-setup-intro h3 { margin: 5px 0 0; font-size: 18px; letter-spacing: -.03em; }
+.live-shell .agent-setup p { margin: 7px 0 0; color: var(--office-secondary); font: 11px/1.5 var(--sans); }
+.live-shell .agent-setup-card {
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--office-border);
+  border-radius: var(--ui-radius-card);
+  background: var(--office-surface);
+}
+.live-shell .agent-setup-card h4 { margin: 0; font-size: 13px; }
+.live-shell .agent-setup-card .persona-form { gap: 10px; }
+.live-shell .agent-setup-card .persona-form label { font: 650 11px/1.4 var(--sans); }
+.live-shell .profile-extras-panel { display: grid; gap: 10px; padding-top: 8px; }
+.live-shell .profile-extras-panel[hidden] { display: none; }
+.live-shell .agent-setup-card .overview-disclosure {
+  border: 0;
+  border-top: 1px solid var(--office-border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--office-accent);
+  padding-inline: 0;
+}
+.live-shell .agent-setup-card .persona-projects { margin-top: 12px; }
+.live-shell .agent-setup-card .persona-projects h4 { display: none; }
+.live-shell .agent-setup-card .persona-projects > p { margin: 4px 0; }
+.live-shell .agent-setup-card > button { margin-top: 10px; }
+.live-shell .agent-setup-card button {
+  min-height: 32px;
+  padding: 5px 9px;
+  border: 1px solid var(--office-border);
+  border-radius: var(--ui-radius-sm);
+  background: var(--office-muted);
+  color: var(--office-text);
+  font: 650 11px var(--sans);
+  cursor: pointer;
+}
+.live-shell .agent-setup-card button:hover:not(:disabled) { background: var(--office-accent-bg); }
+.live-shell .agent-setup-card button:disabled { opacity: .55; cursor: not-allowed; }
+.live-shell .agent-setup-card .setup-finish { background: var(--office-accent-bg); color: var(--office-accent); }
+.live-shell .agent-setup :is(button, input, textarea):focus-visible,
+.live-shell .profile-header-edit:focus-visible { outline: 2px solid var(--ui-focus); outline-offset: 2px; }
+.live-shell .agent-guidance-preview {
+  margin-top: 10px;
+  padding: 10px;
+  border-radius: var(--ui-radius-sm);
+  background: var(--office-muted);
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+.live-shell .agent-guidance-preview strong { font-size: 11px; }
+.live-shell .agent-guidance-preview p { margin: 3px 0 10px; }
+@media (max-width: 540px) {
+  .live-shell .overview-list { padding: 12px; }
+  .live-shell .overview-list .activity-row,
+  .live-shell .overview-list .activity-row.upgrade-shop { padding: 13px; }
+}
+@media (max-width: 360px) {
+  .live-shell .overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .live-shell .overview-list .upgrade-shop li { grid-template-columns: 1fr; }
+  .live-shell .overview-list .upgrade-shop li > button,
+  .live-shell .overview-list .upgrade-shop li > .overview-installed { grid-column: 1; grid-row: auto; justify-self: start; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-shell .overview-share [role="switch"] > span { transition: none; }
+}

@@ -1,8 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
+import { Button } from "@base-ui/react/button";
+import { Collapsible } from "@base-ui/react/collapsible";
+import { Switch } from "@base-ui/react/switch";
 import "../../agent-inc/app/styles.css";
 import "../live.css";
 import "../sdk-chat.css";
+import "../overview.css";
 import { MAX_AGENTS, type Agent as ServerAgent, type Room as ServerRoom } from "../../server/types";
 import {
   COFFEE_SPOTS, DESKS, initialProgress, Simulation,
@@ -31,7 +35,8 @@ const connectedStatus = "Live local Copilot SDK office";
 const themeKey = "agentcorp-harness-theme";
 type AgentPersona = {
   id: string; name: string; artId: number; createdAt: number; updatedAt: number;
-  profile: { workingStyle: string; specialties: string[]; title: string; rank: string };
+  setupCompleted?: boolean;
+  profile: { workingStyle: string; specialties: string[]; title: string; rank: string; instructions?: string };
   memories: { id: string; text: string; provenance: string; approvedAt: number }[];
   repositoryPolicies?: PersonaRepositoryPolicy[];
 };
@@ -275,8 +280,10 @@ function LiveOffice() {
   const [copilotModels, setCopilotModels] = useState<{ id: string; name: string }[] | null>(null);
   const [profileEditingId, setProfileEditingId] = useState<string | null>(null);
   const [profileDraft, setProfileDraft] = useState({
-    name: "", artId: 0, workingStyle: "", specialties: "", title: "", rank: "",
+    name: "", artId: 0, workingStyle: "", instructions: "", specialties: "", title: "", rank: "",
   });
+  const [guidancePreview, setGuidancePreview] = useState<{ next: string; current: string | null } | null>(null);
+  const [guidanceLoading, setGuidanceLoading] = useState(false);
   const [noteDrafts, setNoteDrafts] = useState<Record<string, { text: string; provenance: string }>>({});
   const [profileBusy, setProfileBusy] = useState(false);
   const [themePreference, setThemePreference] = useState<"system" | "light" | "dark">(() => {
@@ -355,6 +362,19 @@ function LiveOffice() {
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
       return false;
+    }
+  };
+  const createAgent = async (deskIndex: number) => {
+    const previousIds = new Set(roomRef.current?.agents.map(agent => agent.id) ?? []);
+    try {
+      setActionError("");
+      const next = await post("create", { deskIndex });
+      updateRoom(next);
+      const created = next.agents.find(agent => !previousIds.has(agent.id));
+      if (!created) throw new Error("Agent created, but the new agent was not found in the office response.");
+      selectActor(created.sessionId);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : String(error));
     }
   };
   const meetingAction = async (path: string, body: Record<string, unknown>): Promise<SdkRoom | null> => {
@@ -502,7 +522,7 @@ function LiveOffice() {
   }, [chatOptionsOpen]);
 
   useLayoutEffect(() => {
-    if (!panelOpen || !selected) return;
+    if (!panelOpen || !selected || !chatScroll.current?.querySelector(".conversation-view")) return;
     followTail.current = true;
     const scroll = chatScroll.current;
     if (scroll) scroll.scrollTop = scroll.scrollHeight;
@@ -510,7 +530,7 @@ function LiveOffice() {
 
   useLayoutEffect(() => {
     const scroll = chatScroll.current;
-    if (scroll && selected && followTail.current) scroll.scrollTop = scroll.scrollHeight;
+    if (scroll?.querySelector(".conversation-view") && selected && followTail.current) scroll.scrollTop = scroll.scrollHeight;
   }, [sdkRoom?.revision, selected]);
 
   useEffect(() => {
@@ -670,6 +690,11 @@ function LiveOffice() {
     signKind === "connecting" ? "Connecting" : "Offline";
   const selectedAgent = sdkRoom?.agents.find(agent => agent.sessionId === selected);
   const selectedPersona = personaFor(sdkRoom, selectedAgent);
+  const setupOpen = !!selectedPersona && (selectedPersona.setupCompleted === false ||
+    profileEditingId === selectedPersona.id);
+  useLayoutEffect(() => {
+    if (setupOpen || !selected) chatScroll.current?.scrollTo(0, 0);
+  }, [selected, setupOpen, tab]);
   const previousAssignments = (sdkRoom?.assignments ?? [])
     .filter(assignment => assignment.personaId === selectedPersona?.id && assignment.id !== selectedAgent?.assignmentId)
     .sort((a, b) => b.startedAt - a.startedAt);
@@ -680,6 +705,14 @@ function LiveOffice() {
         content: greetingForPersona(agentArt(sdkRoom, selectedAgent)) }] : [];
   useEffect(() => {
     setProfileEditingId(null);
+    if (selectedPersona) setProfileDraft({
+      name: selectedPersona.name, artId: selectedPersona.artId,
+      workingStyle: selectedPersona.profile.workingStyle,
+      instructions: selectedPersona.profile.instructions ?? "",
+      specialties: selectedPersona.profile.specialties.join(", "),
+      title: selectedPersona.profile.title, rank: selectedPersona.profile.rank,
+    });
+    setGuidancePreview(null);
   }, [selectedPersona?.id, selected]);
   useLayoutEffect(() => {
     const bubbles = Array.from(chatScroll.current?.querySelectorAll<HTMLElement>(
@@ -791,22 +824,44 @@ function LiveOffice() {
   const startProfileEdit = (persona: AgentPersona) => {
     setProfileDraft({
       name: persona.name, artId: persona.artId, workingStyle: persona.profile.workingStyle,
+      instructions: persona.profile.instructions ?? "",
       specialties: persona.profile.specialties.join(", "), title: persona.profile.title, rank: persona.profile.rank,
     });
     setProfileEditingId(persona.id);
   };
-  const saveProfile = async (persona: AgentPersona) => {
+  const saveProfile = async (persona: AgentPersona): Promise<boolean> => {
     followTail.current = false;
     setProfileBusy(true);
     try {
-      if (await act("persona-profile", {
+      const saved = await act("persona-profile", {
         personaId: persona.id, name: profileDraft.name.trim(), artId: Number(profileDraft.artId),
         workingStyle: profileDraft.workingStyle.trim(), specialties: profileDraft.specialties
           .split(/[,\n]/).map(item => item.trim()).filter(Boolean),
-        title: profileDraft.title.trim(), rank: profileDraft.rank.trim(),
-      })) setProfileEditingId(null);
+        instructions: profileDraft.instructions.trim(), title: profileDraft.title.trim(), rank: profileDraft.rank.trim(),
+      });
+      if (saved) setProfileEditingId(null);
+      return saved;
     } finally {
       setProfileBusy(false);
+    }
+  };
+  const finishSetup = async (persona: AgentPersona) => {
+    if (!profileDraft.workingStyle.trim() && !profileDraft.instructions.trim()) return;
+    if (await saveProfile(persona)) await act("persona-setup-complete", { personaId: persona.id });
+  };
+  const loadGuidance = async (persona: AgentPersona) => {
+    setGuidanceLoading(true);
+    setGuidancePreview(null);
+    try {
+      const response = await fetch(`/api/persona-guidance?personaId=${encodeURIComponent(persona.id)}`);
+      const result: { next?: string; current?: string | null; error?: string } = await response.json();
+      if (!response.ok) throw new Error(result.error || `Guidance preview failed (${response.status})`);
+      if (typeof result.next !== "string") throw new Error("Invalid guidance preview response.");
+      setGuidancePreview({ next: result.next, current: result.current ?? null });
+    } catch (error) {
+      setActionError(`Guidance preview unavailable: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      setGuidanceLoading(false);
     }
   };
   const profileEditor = (persona: AgentPersona) => <form className="persona-form" onSubmit={event => {
@@ -815,19 +870,34 @@ function LiveOffice() {
   }}>
     <label>Name <input required maxLength={80} value={profileDraft.name}
       onChange={event => setProfileDraft({ ...profileDraft, name: event.target.value })} /></label>
-    <label>Portrait number <input required type="number" min="0" max={MAX_AGENTS - 1} step="1" value={profileDraft.artId}
-      onChange={event => setProfileDraft({ ...profileDraft, artId: Number(event.target.value) })} /></label>
-    <label>Title <input maxLength={1000} value={profileDraft.title}
-      onChange={event => setProfileDraft({ ...profileDraft, title: event.target.value })} /></label>
-    <label>Profile rank (self-described; not earned career level) <input maxLength={1000} value={profileDraft.rank}
-      onChange={event => setProfileDraft({ ...profileDraft, rank: event.target.value })} /></label>
     <label>Working style <textarea rows={3} value={profileDraft.workingStyle}
       onChange={event => setProfileDraft({ ...profileDraft, workingStyle: event.target.value })} /></label>
-    <label>Specialties (comma-separated) <input value={profileDraft.specialties}
-      onChange={event => setProfileDraft({ ...profileDraft, specialties: event.target.value })} /></label>
+    <label>Instructions for future assignments <textarea rows={3} maxLength={600} value={profileDraft.instructions}
+      placeholder="How should this agent approach work?"
+      onChange={event => setProfileDraft({ ...profileDraft, instructions: event.target.value })} /></label>
+    <Collapsible.Root className="profile-extras">
+      <Collapsible.Trigger className="overview-disclosure">More profile details <span aria-hidden="true">⌄</span></Collapsible.Trigger>
+      <Collapsible.Panel className="profile-extras-panel">
+        <label>Portrait number <input required type="number" min="0" max={MAX_AGENTS - 1} step="1" value={profileDraft.artId}
+          onChange={event => setProfileDraft({ ...profileDraft, artId: Number(event.target.value) })} /></label>
+        <label>Title <input maxLength={1000} value={profileDraft.title}
+          onChange={event => setProfileDraft({ ...profileDraft, title: event.target.value })} /></label>
+        <label>Profile rank (not earned level) <input maxLength={1000} value={profileDraft.rank}
+          onChange={event => setProfileDraft({ ...profileDraft, rank: event.target.value })} /></label>
+        <label>Specialties (comma-separated) <input value={profileDraft.specialties}
+          onChange={event => setProfileDraft({ ...profileDraft, specialties: event.target.value })} /></label>
+      </Collapsible.Panel>
+    </Collapsible.Root>
     <div className="persona-actions">
-      <button type="button" disabled={profileBusy} onClick={() => setProfileEditingId(null)}>Cancel</button>
+      <button type="button" disabled={profileBusy} onClick={() => {
+        if (persona.setupCompleted === false) backToActivity();
+        else setProfileEditingId(null);
+      }}>{persona.setupCompleted === false ? "Set up later" : "Cancel"}</button>
       <button type="submit" disabled={profileBusy || !profileDraft.name.trim()}>Save profile</button>
+      {persona.setupCompleted === false && <Button type="button" className="setup-finish"
+        disabled={profileBusy || selectedAgent?.archived || !profileDraft.name.trim() ||
+          (!profileDraft.workingStyle.trim() && !profileDraft.instructions.trim())}
+        onClick={() => void finishSetup(persona)}>Save & start chat</Button>}
     </div>
   </form>;
   const addNote = async (persona: AgentPersona) => {
@@ -869,11 +939,11 @@ function LiveOffice() {
       event.preventDefault();
       void addNote(persona);
     }}>
-      <label>New curated note <textarea required rows={2} value={note.text}
+      <label>New curated note <textarea required rows={2} maxLength={500} value={note.text}
         onChange={event => setNoteDrafts(drafts => ({
           ...drafts, [persona.id]: { ...note, text: event.target.value },
         }))} /></label>
-      <label>Provenance (where this came from) <input required value={note.provenance}
+      <label>Provenance (where this came from) <input required maxLength={160} value={note.provenance}
         onChange={event => setNoteDrafts(drafts => ({
           ...drafts, [persona.id]: { ...note, provenance: event.target.value },
         }))} /></label>
@@ -1125,7 +1195,7 @@ function LiveOffice() {
           <button type="button" className="add-agent-button" disabled={!connected || firstEmptyDesk === undefined}
             aria-label={officeFull ? `Office full (${MAX_AGENTS} desks)` : "Add agent"}
             title={officeFull ? `All ${MAX_AGENTS} office desks are occupied` : "Create an independent SDK agent"}
-            onClick={() => firstEmptyDesk !== undefined && void act("create", { deskIndex: firstEmptyDesk })}>
+            onClick={() => firstEmptyDesk !== undefined && void createAgent(firstEmptyDesk)}>
             {officeFull ? <>Office full <span className="desk-capacity">({MAX_AGENTS} desks)</span></> : "+ Add agent"}
           </button>
           <button ref={activityToggle} type="button" className="system-toggle" aria-expanded={panelOpen} aria-controls="system-panel"
@@ -1145,7 +1215,7 @@ function LiveOffice() {
                 <button key={deskIndex} type="button" className="desk-add" data-desk-index={deskIndex}
                   aria-label={`Add independent SDK agent at empty desk ${deskIndex + 1}`}
                   title={`Add agent at desk ${deskIndex + 1}`}
-                  onClick={() => void act("create", { deskIndex })}>+</button>)}
+                  onClick={() => void createAgent(deskIndex)}>+</button>)}
             {activeAgents.map(agent => {
               const actor = actors.find(item => item.key === agent.sessionId);
               const inMeeting = sceneMeeting?.participantIds.includes(agent.id) ?? false;
@@ -1184,15 +1254,17 @@ function LiveOffice() {
           </div>
         </section>
         <aside id="system-panel" className={`sidebar activity-panel ${panelOpen ? "sidebar-open" : ""} ${selectedAgent ? "chat-open" : ""}`}
-          aria-label={selectedAgent ? `${selectedActor?.name ?? "Agent"} conversation` : "Activity"}
+          aria-label={selectedAgent ? `${selectedActor?.name ?? "Agent"} ${setupOpen ? "profile setup" : "conversation"}` : "Manage"}
           aria-hidden={!panelOpen} inert={!panelOpen}>
           <div className="activity-header">
             <div className="activity-title-row">
               {selectedAgent && <button type="button" className="chat-back" onClick={backToActivity}
                 aria-label="Back to agents">←</button>}
-              <h2>{selectedAgent ? selectedActor?.name : "Activity"}</h2>
+              <h2>{selectedAgent ? selectedActor?.name : "Manage"}</h2>
               {selectedAgent && <span className={`activity-tag chat-status status-${selectedActor?.status}`}>
                 {selectedAgent.archived ? "Archived" : selectedAgent.phase}</span>}
+              {selectedPersona && selectedPersona.setupCompleted !== false && selectedAgent && !setupOpen && <Button type="button"
+                className="profile-header-edit" onClick={() => startProfileEdit(selectedPersona)}>Edit profile</Button>}
               {selectedAgent && <div className="chat-options" data-chat-options>
                 <button type="button" className="chat-options-toggle" aria-label={`Options for ${selectedActor?.name ?? "agent"}`}
                   aria-expanded={chatOptionsOpen} aria-controls="chat-options-menu"
@@ -1221,12 +1293,12 @@ function LiveOffice() {
                 </div>}
               </div>}
               <button ref={activityClose} type="button" className="sidebar-close" onClick={closeActivity}
-                aria-label={selectedAgent ? "Close conversation" : "Close activity"}>
+                aria-label={selectedAgent ? "Close conversation" : "Close Manage"}>
                 <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" /></svg>
               </button>
             </div>
           </div>
-          {!selectedAgent && <nav className="activity-tabs" aria-label="Activity views">
+          {!selectedAgent && <nav className="activity-tabs" aria-label="Manage views">
             {([["office", "Overview"], ["agents", "Agents"], ["meetings", "Meetings"]] as const).map(([item, label]) => (
               <button key={item} type="button" aria-pressed={tab === item}
                 onClick={() => setTab(item)}>{label}</button>
@@ -1240,26 +1312,60 @@ function LiveOffice() {
             }}>
             {!selectedAgent && tab === "office" && (
               <section className="activity-view overview-list" aria-label="Office overview">
-                <div className="activity-row activity-row-first">
+                <div className="overview-group-label">Your office</div>
+                <div className="activity-row activity-row-first overview-office">
+                  <div className="activity-row-heading"><strong>The office</strong><span className="activity-tag">{deskCount} desks</span></div>
+                  <div className="overview-metrics">
+                    <div><strong>{activeAgents.length}</strong><span>At desks</span></div>
+                    <div><strong>{deskCount - activeAgents.length}</strong><span>Open</span></div>
+                    <div><strong>{(sdkRoom?.agents.length ?? 0) - activeAgents.length}</strong><span>Archived</span></div>
+                    <div className={blocked ? "attention" : ""}><strong>{blocked}</strong><span>Attention</span></div>
+                  </div>
+                  {!sdkRoom && <p role="status">Connecting to the local office…</p>}
+                  {sdkRoom && !activeAgents.length && <p>No agents at desks yet. Add one from an empty desk or the top bar.</p>}
+                </div>
+                <div className="activity-row upgrade-shop">
+                  <div className="activity-row-heading"><strong>Office upgrades</strong>
+                    <span className="activity-tag">{career.balance} credits</span></div>
+                  <p>Decorative upgrades only. Earn credits from confirmed outcomes.</p>
+                  <ul>{UPGRADES.map(upgrade => <li key={upgrade.id}>
+                    <strong>{upgrade.name}</strong>
+                    <span>{upgrade.description}</span>
+                    {career.purchases.has(upgrade.id) ? <span className="overview-installed">Installed</span> :
+                      <Button type="button" disabled={career.balance < upgrade.price}
+                        onMouseEnter={() => worldRef.current?.setUpgrades([...career.purchases, upgrade.id])}
+                        onMouseLeave={() => worldRef.current?.setUpgrades([...career.purchases])}
+                        onFocus={() => worldRef.current?.setUpgrades([...career.purchases, upgrade.id])}
+                        onBlur={() => worldRef.current?.setUpgrades([...career.purchases])}
+                        onClick={() => {
+                        if (window.confirm(`Preview: ${upgrade.description}. Purchase ${upgrade.name} for ${upgrade.price} credits? Balance after: ${career.balance - upgrade.price}. Decorative only.`)) {
+                          void act("upgrade-purchase", { upgradeId: upgrade.id, confirmed: true });
+                        }
+                      }}>Preview & buy · {upgrade.price}</Button>}
+                  </li>)}</ul>
+                  <small>{rewardEvents.length} confirmed outcomes · {career.purchases.size} installed</small>
+                </div>
+                <div className="overview-group-label">Configuration</div>
+                <div className="activity-row overview-connection">
                   <div className="activity-row-heading"><strong>Connection</strong>
                     <span className={`activity-tag ${connected ? "activity-tag-live" : "activity-tag-warning"}`}>
                       {connected ? "Connected" : "Needs attention"}</span></div>
-                  {!connected && <p>{sdkRoom?.error || connection}</p>}
-                  <div className="activity-chips"><span>{working} active</span><span>{idle} idle</span>
-                    <span className={blocked ? "attention" : ""}>{blocked} need attention</span></div>
+                  {!connected && <p role="status">{sdkRoom?.error || connection}</p>}
+                  {!connected && <Button type="button" disabled={!sdkRoom} onClick={() => void act("retry", {})}>Retry SDK connection</Button>}
                 </div>
-                <div className="activity-row">
+                <Collapsible.Root className="activity-row overview-model">
                   <div className="activity-row-heading"><strong>Model provider</strong>
                     <span className="activity-tag">{sdkRoom?.defaultModelProfileId ?? "copilot"}</span></div>
-                  <p>Copilot account uses <code>copilot login</code>. Bring-your-own-model sessions do not require Copilot sign-in. GitHub repository access is separate: public metadata needs no sign-in; private repositories may require <code>gh auth login</code>.</p>
-                  <p>External providers receive prompts, conversation context and tool results. Local Ollama stays on this machine. Streaming and tool calling depend on model compatibility. Shell, file-write and repository permissions still require review. Never paste an API key here; set the environment variable before starting the server.</p>
-                  <label>Default for new agents <select value={sdkRoom?.defaultModelProfileId ?? "copilot"}
+                  <label>Default for new agents <select disabled={!sdkRoom || !connected} value={sdkRoom?.defaultModelProfileId ?? "copilot"}
                     onChange={event => void act("model-default", { id: event.target.value })}>
                     {(sdkRoom?.modelProfiles ?? [{ id: "copilot", kind: "copilot", model: "auto" }]).map(profile =>
                       <option key={profile.id} value={profile.id}>{profile.id} · {profile.kind} / {profile.model}</option>)}
                   </select></label>
-                  <p>Changing this default does not switch existing sessions. Choose a model when starting an agent's next assignment to preserve its previous transcript and model provenance.</p>
-                  <form onSubmit={event => {
+                  <Collapsible.Trigger className="overview-disclosure">Add a model profile or see provider details <span aria-hidden="true">⌄</span></Collapsible.Trigger>
+                  <Collapsible.Panel className="overview-disclosure-panel">
+                    <p>Profiles are immutable. Changing the default affects new agents only; use a new assignment to change an existing agent's model.</p>
+                    <p>Copilot requires CLI sign-in; external providers receive prompts and tool context. Use an environment variable name, never a key. GitHub authentication and tool permissions remain separate.</p>
+                    <form className="overview-model-form" onSubmit={event => {
                     event.preventDefault();
                     const profile: ModelProfile = {
                       id: modelDraft.id.trim(), kind: modelDraft.kind, model: modelDraft.model.trim(),
@@ -1279,7 +1385,7 @@ function LiveOffice() {
                     };
                     void act("model-profile", profile);
                   }}>
-                    <strong>Add immutable model profile</strong>
+                    <h3>Add immutable model profile</h3>
                     <label>Profile ID <input required pattern="[a-zA-Z][a-zA-Z0-9_-]*" maxLength={64} value={modelDraft.id}
                       onChange={event => setModelDraft(draft => ({ ...draft, id: event.target.value }))} /></label>
                     <label>Provider <select value={modelDraft.kind} onChange={event => setModelDraft(draft => ({
@@ -1300,7 +1406,9 @@ function LiveOffice() {
                       <select value={modelDraft.wireApi} onChange={event => setModelDraft(draft => ({
                         ...draft, wireApi: event.target.value as "completions" | "responses"
                       }))}><option value="completions">Chat completions</option><option value="responses">Responses</option></select></label>}
-                    {modelDraft.kind !== "copilot" && <details><summary>Advanced model settings</summary>
+                    {modelDraft.kind !== "copilot" && <Collapsible.Root className="overview-advanced">
+                      <Collapsible.Trigger className="overview-disclosure">Advanced model settings <span aria-hidden="true">⌄</span></Collapsible.Trigger>
+                      <Collapsible.Panel className="overview-advanced-panel">
                       <label>Wire model / Azure deployment <input value={modelDraft.wireModel}
                         onChange={event => setModelDraft(draft => ({ ...draft, wireModel: event.target.value }))} /></label>
                       {modelDraft.kind === "azure" && <label>Azure API version <input placeholder="2024-10-21" value={modelDraft.azureApiVersion}
@@ -1315,25 +1423,21 @@ function LiveOffice() {
                         onChange={event => setModelDraft(draft => ({ ...draft, supportsVision: event.target.checked }))} /> Model supports vision</label>
                       <label><input type="checkbox" checked={modelDraft.supportsReasoningEffort}
                         onChange={event => setModelDraft(draft => ({ ...draft, supportsReasoningEffort: event.target.checked }))} /> Model supports reasoning effort</label>
-                    </details>}
-                    <button type="submit" className="focus-button">Save profile (no secrets)</button>
+                      </Collapsible.Panel>
+                    </Collapsible.Root>}
+                    <Button type="submit" className="overview-primary">Save profile (no secrets)</Button>
                   </form>
-                  <button type="button" className="focus-button" onClick={() => void fetch("/api/copilot-models").then(async response => {
+                  <Button type="button" className="overview-model-list" onClick={() => void fetch("/api/copilot-models").then(async response => {
                     const result: unknown = await response.json();
                     if (!response.ok) throw new Error((result as { error?: string }).error ?? `Model list returned ${response.status}`);
                     if (!Array.isArray(result)) throw new Error("Invalid model list.");
                     setCopilotModels(result as { id: string; name: string }[]);
                   }).catch(error => setActionError(`Copilot model list unavailable: ${error instanceof Error ? error.message : String(error)}`))}>
-                    List Copilot account models</button>
-                  {copilotModels && <p>{copilotModels.length ? copilotModels.map(model => `${model.name} (${model.id})`).join(", ") :
+                    List Copilot account models</Button>
+                  {copilotModels && <p role="status">{copilotModels.length ? copilotModels.map(model => `${model.name} (${model.id})`).join(", ") :
                     "No Copilot account models returned."}</p>}
-                </div>
-                <div className="activity-row">
-                  <div className="activity-row-heading"><strong>The office</strong><span className="activity-tag">{deskCount} desks</span></div>
-                  <div className="activity-chips"><span>{activeAgents.length} at desks</span>
-                    <span>{deskCount - activeAgents.length} open desks</span>
-                    <span>{(sdkRoom?.agents.length ?? 0) - activeAgents.length} archived</span></div>
-                </div>
+                  </Collapsible.Panel>
+                </Collapsible.Root>
                 <div className="activity-row project-configurations">
                   <div className="activity-row-heading"><strong>Configurations · GitHub projects</strong>
                     <span className="activity-tag">{sdkRoom?.projects?.length ?? 0} verified</span></div>
@@ -1369,10 +1473,11 @@ function LiveOffice() {
                   <ul className="project-list">{sdkRoom?.projects?.map(project => <li key={project.repository.fullName}>
                     <div><strong>{project.repository.fullName}</strong>
                       <small>GitHub · {project.repository.privacy} · {project.repository.defaultBranch}</small></div>
-                    <label><input type="checkbox" checked={project.sharedRead} disabled={!connected}
-                      onChange={event => void act("project-share", {
-                        fullName: project.repository.fullName, sharedRead: event.target.checked,
-                      })} /> Shared read</label>
+                    <div className="overview-share"><Switch.Root checked={project.sharedRead} disabled={!connected}
+                      aria-label={`Shared read for ${project.repository.fullName}`}
+                      onCheckedChange={checked => void act("project-share", {
+                        fullName: project.repository.fullName, sharedRead: checked,
+                      })}><Switch.Thumb /></Switch.Root><span>Shared read</span></div>
                   </li>)}</ul>
                 </div>
                 <div className="activity-row">
@@ -1395,29 +1500,6 @@ function LiveOffice() {
                   <p>Aggregate SDK-reported consumption only; not a monetary cost, XP source or credit source.
                     Coverage reflects current recorded agent sessions, not all historical assignments.</p>
                 </div>
-                <div className="activity-row upgrade-shop">
-                  <div className="activity-row-heading"><strong>Office upgrades</strong>
-                    <span className="activity-tag">{career.balance} credits available</span></div>
-                  <p>Credits come only from confirmed completed outcomes (assignment +8, review +4).
-                    Purchases are permanent decorative changes, never tools or permissions.</p>
-                  <ul>{UPGRADES.map(upgrade => <li key={upgrade.id}>
-                    <strong>{upgrade.name} · {upgrade.price} credits</strong>
-                    <span>{upgrade.description}</span>
-                    {career.purchases.has(upgrade.id) ? <span>Installed in the 3D office</span> :
-                      <button type="button" disabled={career.balance < upgrade.price}
-                        onMouseEnter={() => worldRef.current?.setUpgrades([...career.purchases, upgrade.id])}
-                        onMouseLeave={() => worldRef.current?.setUpgrades([...career.purchases])}
-                        onFocus={() => worldRef.current?.setUpgrades([...career.purchases, upgrade.id])}
-                        onBlur={() => worldRef.current?.setUpgrades([...career.purchases])}
-                        onClick={() => {
-                        if (window.confirm(`Preview: ${upgrade.description}. Purchase ${upgrade.name} for ${upgrade.price} credits? Balance after: ${career.balance - upgrade.price}. Decorative only.`)) {
-                          void act("upgrade-purchase", { upgradeId: upgrade.id, confirmed: true });
-                        }
-                      }}>Preview and buy</button>}
-                  </li>)}</ul>
-                  <small>{rewardEvents.length} confirmed outcomes · {career.purchases.size} installed upgrades.
-                    No points for tokens, calls, turns or failed tests.</small>
-                </div>
                 {!!sdkRoom?.worktrees?.length && <div className="activity-row">
                   <div className="activity-row-heading"><strong>Preserved worktrees</strong>
                     <span className="activity-tag">{sdkRoom.worktrees.length} created</span></div>
@@ -1425,7 +1507,6 @@ function LiveOffice() {
                   {sdkRoom.worktrees.map(tree => <p className="workspace-path" key={tree.path}>
                     {tree.branch} · {tree.path}</p>)}
                 </div>}
-                {!connected && <button type="button" className="focus-button" onClick={() => void act("retry", {})}>Retry SDK connection</button>}
               </section>
             )}
             {!selectedAgent && tab === "meetings" && (
@@ -1679,7 +1760,49 @@ function LiveOffice() {
                 </>}
               </section>
             )}
-            {selectedAgent && (
+            {selectedAgent && setupOpen && selectedPersona && (
+              <section className="activity-view agent-setup" aria-label={`${selectedPersona.name} profile setup`}>
+                <div className="agent-setup-intro">
+                  <span className="overview-group-label">{selectedPersona.setupCompleted === false ? "New agent" : "Profile"}</span>
+                  <h3>{selectedPersona.setupCompleted === false ? "Make this agent yours" : `Edit ${selectedPersona.name}`}</h3>
+                  <p>{selectedPersona.setupCompleted === false ?
+                    "Set a working style or instructions before chatting. You can leave and resume setup later; the agent and its files stay here." :
+                    "Profile changes are saved for future assignments. Current session context remains as it was."}</p>
+                  {selectedAgent.archived && selectedPersona.setupCompleted === false && <p role="status">
+                    This agent is archived. Restore it to an open desk before completing setup.
+                    <Button type="button" disabled={officeFull} onClick={() => void restoreAgent(selectedAgent)}>
+                      Restore to office
+                    </Button>
+                  </p>}
+                </div>
+                <div className="agent-setup-card">
+                  <h4>Identity & working style</h4>
+                  {profileEditor(selectedPersona)}
+                </div>
+                <div className="agent-setup-card">
+                  <h4>Repository read access</h4>
+                  <p>Choose only from verified projects. An office-shared project is already readable unless excluded;
+                    granting to this persona is a separate, persistent decision. Edit worktrees still require approval.</p>
+                  {personaProjects(selectedPersona)}
+                  <Button type="button" onClick={() => { unfocusActor(); setTab("office"); }}>
+                    Verify another project in Overview
+                  </Button>
+                </div>
+                <div className="agent-setup-card">
+                  <h4>Assignment guidance</h4>
+                  <p>Preview the saved guidance for the next assignment against this agent's current snapshot.
+                    Save profile edits first.</p>
+                  <Button type="button" disabled={guidanceLoading} onClick={() => void loadGuidance(selectedPersona)}>
+                    {guidanceLoading ? "Loading preview…" : "Preview saved guidance"}
+                  </Button>
+                  {guidancePreview && <div className="agent-guidance-preview" role="status">
+                    <strong>Next assignment</strong><p>{guidancePreview.next}</p>
+                    <strong>Current assignment</strong><p>{guidancePreview.current ?? "No snapshot available."}</p>
+                  </div>}
+                </div>
+              </section>
+            )}
+            {selectedAgent && !setupOpen && (
               <section className="activity-view conversation-view" aria-label="SDK conversation">
                   <div className="persona-details">
                     <div className="persona-heading">
@@ -1694,7 +1817,6 @@ function LiveOffice() {
                         {selectedPersona.profile.workingStyle && <p><strong>Working style:</strong> {selectedPersona.profile.workingStyle}</p>}
                         {!!selectedPersona.profile.specialties.length &&
                           <p><strong>Specialties:</strong> {selectedPersona.profile.specialties.join(", ")}</p>}
-                        <button type="button" onClick={() => startProfileEdit(selectedPersona)}>Edit profile</button>
                       </>}
                       {personaNotes(selectedPersona)}
                       {personaCareer(selectedPersona)}
@@ -1847,7 +1969,7 @@ function LiveOffice() {
           </div>}
           {selectedAgent?.archived && <p className="archived-chat-notice">Archived · open Agents to restore this agent before sending a message.</p>}
           {selectedAgent?.phase === "error" && !selectedAgent.archived && <button type="button" className="focus-button" onClick={() => void act("retry", {})}>Retry agent connection</button>}
-          {selectedAgent && !selectedAgent.archived && <form className="conversation-composer" onSubmit={event => {
+          {selectedAgent && !setupOpen && !selectedAgent.archived && <form className="conversation-composer" onSubmit={event => {
             event.preventDefault();
             if (!draft.trim()) return;
             const prompt = draft;
