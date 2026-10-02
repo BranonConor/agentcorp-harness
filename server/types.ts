@@ -49,6 +49,7 @@ export type Agent = {
   workspaceKind: "root" | "scratch";
   createdAt: number;
   updatedAt: number;
+  idleSince?: number;
   sessionId: string;
   phase: Phase;
   activity: string;

@@ -885,6 +885,7 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
     failed: [track(stationNoticeArt("failed"))],
   };
   const liveNoticeFrames: Record<LiveNoticeActivity, THREE.CanvasTexture> | null = isLive ? {
+    idle: track(liveNoticeArt("idle")),
     thinking: track(liveNoticeArt("thinking")),
     terminal: track(liveNoticeArt("terminal")),
     checks: track(liveNoticeArt("checks")),
@@ -1332,13 +1333,18 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
             (isLive && r.status === "failed"))) ??
           simulation.requests.find((r) => r.stationId === i && r.resolvedAt !== undefined &&
             simulation.time - r.resolvedAt < 2.5);
-        notice.visible = !!request && i < simulation.progress.capacity;
-        if (!request) return;
+        const deskIdle = isLive && simulation.agents[i]?.deskIdle &&
+          simulation.agents[i]?.state === "idle";
+        notice.visible = (!!request || !!deskIdle) && i < simulation.progress.capacity;
+        if (!request && !deskIdle) return;
         if (liveNoticeFrames) {
-          const activity = interaction?.noticeActivityForStation?.(i);
+          const activity = deskIdle ? "idle" : interaction?.noticeActivityForStation?.(i);
           if (!activity) throw new Error(`Missing live notice activity for station ${i}`);
           (notice.material as THREE.MeshBasicMaterial).map = liveNoticeFrames[activity];
+          notice.scale.setScalar(deskIdle ? 0.65 : 1);
+          (notice.material as THREE.MeshBasicMaterial).opacity = deskIdle ? 0.7 : 1;
         } else {
+          if (!request) throw new Error(`Missing request for station ${i}`);
           const step = request.status === "working" ? Math.min(16, Math.floor(request.progress * 16)) : 0;
           (notice.material as THREE.MeshBasicMaterial).map = noticeFrames[request.status][step];
         }
@@ -1350,8 +1356,10 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
         model.group.visible = model.shadow.visible = !!agent;
         if (!agent) return;
         const position = interpolatePosition(previousPositions[index], agent, alpha);
-        const seated = isLive && index >= DESKS.length && agent.state === "idle" &&
-          isLoungeSeat(agent.target);
+        const atDesk = isLive && agent.target.x === stationPositions[index]?.x &&
+          agent.target.z === stationPositions[index]?.z;
+        const seated = isLive && agent.state === "idle" &&
+          (atDesk || index >= DESKS.length && isLoungeSeat(agent.target));
         model.idleBlend = THREE.MathUtils.damp(model.idleBlend, agent.state === "idle" ? 1 : 0, 5, frameDelta);
         model.group.position.set(position.x,
           (seated ? 0.14 : 0) + (reducedMotion ? 0 : Math.sin(animationTime * 1.6 + index) *
@@ -1373,7 +1381,7 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
           }
         }
         if (agent.state === "idle") {
-          model.facing = index < DESKS.length ? index < 2 ? "right" : "left" :
+          model.facing = atDesk ? "away" : index < DESKS.length ? index < 2 ? "right" : "left" :
             (index - DESKS.length) % 2 === 0 ? "right" : "left";
         } else if (agent.state === "working") {
           model.facing = "away";

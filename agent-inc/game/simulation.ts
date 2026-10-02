@@ -20,6 +20,7 @@ export type Request = {
 export type Agent = {
   id: number;
   state: AgentState;
+  deskIdle?: boolean;
   x: number;
   z: number;
   target: Point;

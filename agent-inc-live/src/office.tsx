@@ -13,6 +13,7 @@ import {
 } from "../../agent-inc/game/simulation";
 import type { Agent, Request } from "../../agent-inc/game/simulation";
 import { sampleDaylight } from "../../agent-inc/game/lighting";
+import { deskPresence, nextDeskBreak } from "../../agent-inc/game/desk-behavior";
 import {
   EXTRA_DESKS, LIVE_COFFEE_Z, MAX_LIVE_DESKS, MIN_LIVE_DESKS,
   assignLoungeSpots, routeAroundDividers,
@@ -56,6 +57,7 @@ type Meeting = {
 };
 type SdkRoom = ServerRoom & { agents: SdkAgent[]; personas?: AgentPersona[]; assignments?: Assignment[];
   projects?: ProjectPolicy[]; meetings?: Meeting[] };
+type DeskActor = Actor & { idleSince?: number };
 function personaFor(room: SdkRoom | null, agent: SdkAgent | undefined): AgentPersona | undefined {
   return room?.personas?.find(persona => persona.id === agent?.personaId);
 }
@@ -98,14 +100,19 @@ function officeRoom(room: SdkRoom | null): OfficeRoom {
   };
 }
 
-function deskActors(room: SdkRoom): (Actor | null)[] {
+function deskActors(room: SdkRoom): (DeskActor | null)[] {
   const names = new Map(room.agents.map(agent => [agent.sessionId, agentName(room, agent)]));
   const bySession = new Map(roomActors(officeRoom(room)).map(actor => [actor.key, {
     ...actor, name: names.get(actor.key) ?? actor.name
   }]));
   const active = room.agents.filter(isActive);
-  const slots: (Actor | null)[] = Array.from({ length: Math.max(0, ...active.map(agent => agent.deskIndex + 1)) }, () => null);
-  for (const agent of active) slots[agent.deskIndex] = bySession.get(agent.sessionId) ?? null;
+  const slots: (DeskActor | null)[] = Array.from({ length: Math.max(0, ...active.map(agent => agent.deskIndex + 1)) }, () => null);
+  for (const agent of active) {
+    const actor = bySession.get(agent.sessionId);
+    slots[agent.deskIndex] = actor ? {
+      ...actor, idleSince: agent.phase === "idle" ? agent.idleSince ?? agent.updatedAt : undefined,
+    } : null;
+  }
   return slots;
 }
 
@@ -137,14 +144,14 @@ function makeScene() {
   return scene;
 }
 
-function applyRoom(scene: Simulation, actors: (Actor | null)[], occupied: boolean[]) {
+function applyRoom(scene: Simulation, actors: (DeskActor | null)[], occupied: boolean[], now = Date.now()) {
   const shown = actors.slice(0, MAX_LIVE_DESKS);
   while (scene.agents.length < shown.length) scene.agents.push(makeAgent(scene.agents.length));
   scene.agents.length = Math.max(MIN_LIVE_DESKS, shown.length);
   scene.progress.capacity = shown.length;
   scene.requests = [];
-  const loungeSpots = assignLoungeSpots(shown.slice(MIN_LIVE_DESKS).map((actor) =>
-    actor?.status === "idle" || actor?.status === "offline"));
+  const presence = shown.map(actor => actor ? deskPresence(actor.status, actor.idleSince, now) : null);
+  const loungeSpots = assignLoungeSpots(presence.slice(MIN_LIVE_DESKS).map(value => value === "break"));
   shown.forEach((actor, id) => {
     const agent = scene.agents[id];
     if (!actor) {
@@ -154,10 +161,11 @@ function applyRoom(scene: Simulation, actors: (Actor | null)[], occupied: boolea
       agent.route = [];
       agent.taskId = undefined;
       agent.state = "idle";
+      agent.deskIdle = false;
       return;
     }
-    const busy = actor.status !== "idle" && actor.status !== "offline";
-    const destination = busy ? LIVE_DESKS[id] :
+    const busy = presence[id] === "working";
+    const destination = presence[id] !== "break" ? LIVE_DESKS[id] :
       id < MIN_LIVE_DESKS ? LIVE_COFFEE_SPOTS[id] : loungeSpots[id - MIN_LIVE_DESKS];
     if (!destination) throw new Error(`Missing idle destination for worker ${id}`);
     if (!occupied[id]) {
@@ -165,6 +173,7 @@ function applyRoom(scene: Simulation, actors: (Actor | null)[], occupied: boolea
       agent.z = destination.z;
     }
     occupied[id] = true;
+    agent.deskIdle = presence[id] === "waiting";
     if (agent.target.x !== destination.x || agent.target.z !== destination.z) {
       agent.route = routeAroundDividers(agent, destination);
     }
@@ -190,6 +199,7 @@ function applyRoom(scene: Simulation, actors: (Actor | null)[], occupied: boolea
     agent.route = [];
     agent.taskId = undefined;
     agent.state = "idle";
+    agent.deskIdle = false;
   }
   occupied.length = scene.agents.length;
 }
@@ -299,7 +309,8 @@ function LiveOffice() {
   const activityClose = useRef<HTMLButtonElement>(null);
   const sceneRef = useRef<Simulation | null>(null);
   const worldRef = useRef<ReturnType<typeof createWorld> | null>(null);
-  const actorsRef = useRef<(Actor | null)[]>([]);
+  const actorsRef = useRef<(DeskActor | null)[]>([]);
+  const nextBreakRef = useRef(Infinity);
   const occupiedRef = useRef<boolean[]>(Array(MIN_LIVE_DESKS).fill(false));
   const hoverDeskRef = useRef<number | null>(null);
   const hoverLabelRef = useRef<HTMLDivElement>(null);
@@ -343,6 +354,7 @@ function LiveOffice() {
     if (scene) {
       worldRef.current?.capturePositions();
       applyRoom(scene, actors, occupiedRef.current);
+      nextBreakRef.current = nextDeskBreak(actors.filter((actor): actor is DeskActor => !!actor), Date.now());
       updatePersonas(worldRef.current ?? undefined, next);
       worldRef.current?.setUpgrades((next.progression ?? [])
         .filter(event => event.kind === "purchase").map(event => event.upgradeId));
@@ -612,6 +624,12 @@ function LiveOffice() {
       world?.capturePositions();
     };
     const frame = (now: number) => {
+      if (Date.now() >= nextBreakRef.current && roomRef.current) {
+        const actors = deskActors(roomRef.current);
+        world?.capturePositions();
+        applyRoom(scene, actors, occupiedRef.current);
+        nextBreakRef.current = nextDeskBreak(actors.filter((actor): actor is DeskActor => !!actor), Date.now());
+      }
       const elapsed = Math.min((now - last) / 1000, 0.2);
       last = now;
       if (!document.hidden) {

@@ -977,6 +977,34 @@ test("real tool lifecycle events drive only the owning sprite", async () => {
   await room.close();
 });
 
+test("idle start survives streamed events, roster edits and restart", async (t) => {
+  t.mock.timers.enable({ apis: ["Date"], now: 1_000_000 });
+  const adapter = new MockAdapter();
+  const store = new MemoryStore();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  const agent = await createReady(room, 0);
+  const initial = agent.idleSince;
+  t.mock.timers.setTime(1_001_000);
+  await room.send(agent.id, "Inspect a file");
+  adapter.sessions.get(agent.sessionId)!.emit(event("tool.execution_start", { toolName: "view" }));
+  adapter.sessions.get(agent.sessionId)!.emit(event("tool.execution_complete", {}));
+  t.mock.timers.setTime(1_002_000);
+  adapter.sessions.get(agent.sessionId)!.emit(event("session.idle"));
+  assert.equal(agent.idleSince, 1_002_000);
+  assert.notEqual(agent.idleSince, initial);
+  t.mock.timers.setTime(1_030_000);
+  adapter.sessions.get(agent.sessionId)!.emit(event("session.idle"));
+  assert.equal(agent.idleSince, 1_002_000);
+  await room.editPersona(agent.personaId!, {
+    ...room.state.personas![0].profile, name: "Desk Clock", artId: agent.persona!,
+  });
+  assert.equal(agent.idleSince, 1_002_000);
+  await room.close();
+  const reloaded = await RoomController.open(adapter, store, "/dedicated");
+  assert.equal(reloaded.state.agents[0].idleSince, 1_002_000);
+  await reloaded.close();
+});
+
 test("unverified local paths cannot grant research, while persona projects survive archive and restart", async () => {
   const root = await mkdtemp(join(tmpdir(), "agentcorp-grant-"));
   try {

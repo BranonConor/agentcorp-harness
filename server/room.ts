@@ -82,6 +82,7 @@ export class RoomController {
           agent.deskIndex < 0 || agent.deskIndex >= MAX_AGENTS) ||
         (agent.lastDeskIndex !== undefined && (!Number.isInteger(agent.lastDeskIndex) ||
           agent.lastDeskIndex < 0 || agent.lastDeskIndex >= MAX_AGENTS)) ||
+        (agent.idleSince !== undefined && (!Number.isFinite(agent.idleSince) || agent.idleSince < 0)) ||
         state.agents.findIndex(other => other.id === agent.id || other.sessionId === agent.sessionId ||
           !agent.archived && !other.archived && other.deskIndex === agent.deskIndex) !== index)) {
       throw new Error("Saved agent roster is invalid; state was not changed.");
@@ -97,6 +98,7 @@ export class RoomController {
     const names = new Set(room.state.agents.map(agent => agent.name).filter((name): name is string => !!name));
     const assigned = new Set<string>();
     for (const agent of [...room.state.agents].sort((a, b) => Number(a.archived) - Number(b.archived) || (a.deskIndex ?? a.lastDeskIndex ?? 0) - (b.deskIndex ?? b.lastDeskIndex ?? 0))) {
+      if (agent.phase === "idle") agent.idleSince ??= agent.updatedAt;
       if (agent.persona === undefined) agent.persona = Array.from({ length: MAX_AGENTS }, (_, i) => i).find(i => !used.has(i)) ?? (agent.lastDeskIndex ?? 0);
       if (!Number.isInteger(agent.persona) || agent.persona < 0 || agent.persona >= MAX_AGENTS ||
         (!agent.archived && used.has(agent.persona))) throw new Error("Saved sprite personas collide or are invalid; state was not changed.");
@@ -584,7 +586,7 @@ export class RoomController {
         names.add(name);
         name = uniqueAgentName(session.sessionId, names);
       }
-      const agent: Agent = { id, deskIndex, archived: false, workspace, workspaceKind: "scratch", createdAt: now, updatedAt: now, sessionId: session.sessionId, persona, name,
+      const agent: Agent = { id, deskIndex, archived: false, workspace, workspaceKind: "scratch", createdAt: now, updatedAt: now, idleSince: now, sessionId: session.sessionId, persona, name,
         personaId: id, assignmentId: id, phase: "idle", activity: "Ready to chat", messages: [] };
       this.state.agents.push(agent);
       this.state.personas!.push({ id, name, artId: persona, createdAt: now, updatedAt: now, setupCompleted: false,
@@ -1079,6 +1081,7 @@ export class RoomController {
       agent.phase = "idle";
       agent.activity = "New assignment · no repository access";
       agent.updatedAt = Date.now();
+      agent.idleSince = agent.updatedAt;
       this.armedTaskGrants.delete(agentId);
       this.state.assignments!.push({ id: assignmentId, personaId: agent.personaId!, sessionId: session.sessionId,
         workspace, modelProfileId: profile.id, modelProfile: structuredClone(profile), personaGuidance: guidance,
@@ -1145,6 +1148,7 @@ export class RoomController {
       agent.phase = "idle";
       agent.activity = "Ready to chat";
       agent.updatedAt = Date.now();
+      agent.idleSince = agent.updatedAt;
       if (this.state.usage) this.state.usage.stale = true;
       this.attach(agentId, session);
       await this.publish();
@@ -1553,6 +1557,7 @@ export class RoomController {
       agent.activity = `${message} · ready to chat`;
       agent.messages.push({ id: randomUUID(), role: "system", content: `${message}.` });
       agent.updatedAt = Date.now();
+      agent.idleSince = agent.updatedAt;
       await this.publish();
     } catch (error) {
       this.endMeetingTurn(agentId, "Could not stop handoff: " + this.redact(error));
@@ -1631,6 +1636,7 @@ export class RoomController {
         break;
       case "session.idle":
         if (agent.repository?.scope === "task" && !this.armedTaskGrants.has(agentId)) agent.repository = undefined;
+        if (agent.phase !== "idle") agent.idleSince = Date.now();
         agent.phase = "idle";
         agent.activity = this.stopped.has(agentId) ? "Turn stopped by user · ready to chat" : "Ready to chat";
         if (this.meetingTurns.has(agentId)) this.endMeetingTurn(agentId);

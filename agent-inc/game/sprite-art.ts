@@ -417,10 +417,11 @@ export function stationNoticeArt(status: "queued" | "assigned" | "working" | "co
 }
 
 export type LiveNoticeActivity =
-  "thinking" | "terminal" | "checks" | "research" | "editing" | "delegating" | "working" | "blocked";
+  "idle" | "thinking" | "terminal" | "checks" | "research" | "editing" | "delegating" | "working" | "blocked";
 
 export function liveNoticeArt(activity: LiveNoticeActivity): THREE.CanvasTexture {
   const accents: Record<LiveNoticeActivity, string> = {
+    idle: "#a6c9be",
     thinking: "#deb77f", terminal: "#8bbde0", checks: "#79bc9d", research: "#a6c993",
     editing: "#e4a182", delegating: "#b6a0d4", working: "#79c8ba", blocked: "#d9858b",
   };
@@ -435,6 +436,11 @@ export function liveNoticeArt(activity: LiveNoticeActivity): THREE.CanvasTexture
     ctx.strokeStyle = outline;
     ctx.fillStyle = outline;
     switch (activity) {
+      case "idle":
+        pixel(ctx, outline, 15, 21, 18, 3);
+        pixel(ctx, outline, 18, 25, 12, 2);
+        pixel(ctx, outline, 21, 29, 6, 2);
+        break;
       case "thinking":
         ctx.beginPath();
         ctx.moveTo(15, 18);
