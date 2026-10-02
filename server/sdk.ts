@@ -87,7 +87,7 @@ export class SdkAdapter implements Adapter {
     await writeFile(join(folder, ".deskbound-workspace"), "AgentCorp dedicated agent working directory\n", { flag: "wx" });
     return folder;
   }
-  async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>, getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile: ModelProfile = COPILOT_PROFILE, isMeetingTurn?: () => boolean): Promise<LiveSession> {
+  async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>,   getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile: ModelProfile = COPILOT_PROFILE, isMeetingTurn?: () => boolean, personaGuidance = ""): Promise<LiveSession> {
     const model = sessionModel(profile);
     const client = await this.ready();
     if (repository) await validateRepository(repository.path);
@@ -99,12 +99,12 @@ export class SdkAdapter implements Adapter {
       availableTools: this.tools(),
       tools: this.customTools(repository, requestAccess, getGrant, isMeetingTurn),
       onPermissionRequest: permission,
-      systemMessage: { mode: "append", content: officeInstructions(workspace, this.search) }
+      systemMessage: { mode: "append", content: `${officeInstructions(workspace, this.search)}\n\n${personaGuidance}` }
     });
     return this.wrap(session);
   }
 
-  async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>, getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile: ModelProfile = COPILOT_PROFILE, isMeetingTurn?: () => boolean): Promise<LiveSession> {
+  async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>,   getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile: ModelProfile = COPILOT_PROFILE, isMeetingTurn?: () => boolean, personaGuidance = ""): Promise<LiveSession> {
     const model = sessionModel(profile);
     if (await realpath(workspace) !== workspace) throw new Error("Agent working directory is no longer the selected directory; refusing to resume.");
     if (repository && (await validateRepository(repository.path)).path !== repository.path) throw new Error("Repository grant no longer matches its original directory.");
@@ -118,7 +118,7 @@ export class SdkAdapter implements Adapter {
       tools: this.customTools(repository, requestAccess, getGrant, isMeetingTurn),
       continuePendingWork: false,
       onPermissionRequest: permission,
-      systemMessage: { mode: "append", content: officeInstructions(workspace, this.search) }
+      systemMessage: { mode: "append", content: `${officeInstructions(workspace, this.search)}\n\n${personaGuidance}` }
     });
     return this.wrap(session);
   }

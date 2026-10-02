@@ -205,11 +205,23 @@ const server = createServer(async (request, response) => {
         if (typeof body.personaId !== "string" || typeof body.name !== "string" ||
           typeof body.artId !== "number" || typeof body.workingStyle !== "string" ||
           !Array.isArray(body.specialties) || !body.specialties.every(item => typeof item === "string") ||
-          typeof body.title !== "string" || typeof body.rank !== "string") throw new Error("Invalid persona profile.");
+          typeof body.title !== "string" || typeof body.rank !== "string" ||
+          typeof body.instructions !== "string") throw new Error("Invalid persona profile.");
         await room.editPersona(body.personaId, {
-          name: body.name, artId: body.artId, workingStyle: body.workingStyle,
+          name: body.name, artId: body.artId, instructions: body.instructions, workingStyle: body.workingStyle,
           specialties: body.specialties as string[], title: body.title, rank: body.rank
         });
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/persona-guidance" && request.method === "GET") {
+        const personaId = url.searchParams.get("personaId");
+        if (!personaId) throw new Error("Choose a persona to preview.");
+        return json(response, 200, room.guidancePreview(personaId));
+      }
+      if (url.pathname === "/api/persona-setup-complete" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.personaId !== "string") throw new Error("Choose a persona to complete setup.");
+        await room.completePersonaSetup(body.personaId);
         return json(response, 200, room.state);
       }
       if (url.pathname === "/api/persona-memory" && request.method === "POST") {

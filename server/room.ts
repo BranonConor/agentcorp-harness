@@ -10,6 +10,7 @@ import { COPILOT_PROFILE, safeProviderError, sessionModel, validateProfile, type
 import { progression, RANKS, SPECIALTIES, UPGRADES, assignmentEvidence, reviewEvidence,
   type ProgressEvent, type Specialty, type UpgradeId } from "./progression.js";
 import { verifyMergedPullRequest, type MergedPullRequest } from "./merged-pr.js";
+import { MAX_GUIDANCE_LENGTH, MAX_MEMORIES, personaGuidance } from "./persona-guidance.js";
 
 const EXPIRE_MS = 90_000;
 const MEETING_TIMEOUT_MS = 120_000;
@@ -51,7 +52,7 @@ export class RoomController {
     const saved = await store.read();
     if (saved && saved.workspace !== workspace) throw new Error(`Saved sessions belong to ${saved.workspace}. Choose that workspace or move .local/state.json aside deliberately.`);
     if (saved && !("agents" in saved) && !("agent" in saved)) throw new Error("Unrecognized saved room format; state was not changed.");
-    if (saved && "schemaVersion" in saved && saved.schemaVersion !== undefined && saved.schemaVersion !== 2 && saved.schemaVersion !== 3 && saved.schemaVersion !== 4 && saved.schemaVersion !== 5) {
+    if (saved && "schemaVersion" in saved && saved.schemaVersion !== undefined && saved.schemaVersion !== 2 && saved.schemaVersion !== 3 && saved.schemaVersion !== 4 && saved.schemaVersion !== 5 && saved.schemaVersion !== 6) {
       throw new Error("Unknown state schema; state was not changed.");
     }
     const now = Date.now();
@@ -100,7 +101,7 @@ export class RoomController {
       if (!Number.isInteger(agent.persona) || agent.persona < 0 || agent.persona >= MAX_AGENTS ||
         (!agent.archived && used.has(agent.persona))) throw new Error("Saved sprite personas collide or are invalid; state was not changed.");
       if (!agent.archived) used.add(agent.persona);
-      if ((state.schemaVersion === 2 || state.schemaVersion === 3 || state.schemaVersion === 4 || state.schemaVersion === 5) && agent.name && assigned.has(agent.name)) {
+      if (state.schemaVersion !== undefined && agent.name && assigned.has(agent.name)) {
         throw new Error("Saved agent names collide; state was not changed.");
       }
       const name = agent.name && !assigned.has(agent.name) ? agent.name : uniqueAgentName(agent.sessionId, names);
@@ -118,7 +119,7 @@ export class RoomController {
       if (agent.repository?.scope === "task") agent.repository = undefined;
       if (agent.repository && !room.state.knownRepositories.includes(agent.repository.path)) room.state.knownRepositories.push(agent.repository.path);
     }
-    if (state.schemaVersion === 2 || state.schemaVersion === 3 || state.schemaVersion === 4 || state.schemaVersion === 5) {
+    if (state.schemaVersion !== undefined) {
       if (!Array.isArray(state.personas) || !Array.isArray(state.assignments)) {
         throw new Error("Saved persona roster is invalid; state was not changed.");
       }
@@ -128,7 +129,12 @@ export class RoomController {
         if (!persona?.id || ids.has(persona.id) || !persona.name?.trim() ||
           names.has(persona.name.trim().toLocaleLowerCase()) ||
           !Number.isInteger(persona.artId) || persona.artId < 0 || persona.artId >= MAX_AGENTS ||
-          !persona.profile || !Array.isArray(persona.profile.specialties) || !Array.isArray(persona.memories)) {
+          !persona.profile || !Array.isArray(persona.profile.specialties) || !Array.isArray(persona.memories) ||
+          [persona.profile.workingStyle, persona.profile.title, persona.profile.rank].some(value => typeof value !== "string" || value.length > 1000) ||
+          persona.profile.specialties.length > 20 || persona.profile.specialties.some(value => typeof value !== "string" || !value.trim() || value.length > 80) ||
+          persona.memories.some(note => !note?.id || typeof note.text !== "string" || !note.text.trim() || note.text.length > 2000 ||
+            typeof note.provenance !== "string" || !note.provenance.trim() || note.provenance.length > 500 ||
+            !Number.isFinite(note.approvedAt))) {
           throw new Error("Saved persona roster is invalid; state was not changed.");
         }
         ids.add(persona.id);
@@ -139,7 +145,9 @@ export class RoomController {
       for (const assignment of state.assignments) {
         if (!assignment?.id || assignmentIds.has(assignment.id) || !ids.has(assignment.personaId) ||
           !assignment.sessionId || sdkIds.has(assignment.sessionId) || !Array.isArray(assignment.messages) ||
-          !["active", "completed", "interrupted"].includes(assignment.status)) {
+          !["active", "completed", "interrupted"].includes(assignment.status) ||
+          (state.schemaVersion === 6 && (typeof assignment.personaGuidance !== "string" ||
+            assignment.personaGuidance.length > MAX_GUIDANCE_LENGTH))) {
           throw new Error("Saved assignment history is invalid; state was not changed.");
         }
         assignmentIds.add(assignment.id);
@@ -161,7 +169,8 @@ export class RoomController {
       state.schemaVersion = 2;
       state.personas = state.agents.map(agent => ({
         id: agent.id, name: agent.name!, artId: agent.persona!, createdAt: agent.createdAt,
-        updatedAt: agent.updatedAt, profile: { workingStyle: "", specialties: [], title: "", rank: "" }, memories: [], repositoryPolicies: []
+        updatedAt: agent.updatedAt, setupCompleted: true,
+        profile: { instructions: "", workingStyle: "", specialties: [], title: "", rank: "" }, memories: [], repositoryPolicies: []
       }));
       state.assignments = state.agents.map(agent => ({
         id: agent.id, personaId: agent.id, sessionId: agent.sessionId, workspace: agent.workspace,
@@ -195,6 +204,19 @@ export class RoomController {
     if (state.schemaVersion === 4) {
       state.progression = [];
       state.schemaVersion = 5;
+    }
+    if (state.schemaVersion === 5) {
+      for (const persona of state.personas!) {
+        persona.profile.instructions = "";
+        persona.setupCompleted = true;
+      }
+      // Existing SDK sessions never received profile guidance. Preserve that behavior on resume.
+      for (const assignment of state.assignments!) assignment.personaGuidance = "";
+      state.schemaVersion = 6;
+    }
+    if (state.personas!.some(persona => typeof persona.profile.instructions !== "string" ||
+      persona.profile.instructions.length > 600 || typeof persona.setupCompleted !== "boolean")) {
+      throw new Error("Saved persona instructions are invalid; state was not changed.");
     }
     if (!Array.isArray(state.meetings) || state.meetings.some((meeting, index) =>
       !meeting?.id || state.meetings!.findIndex(other => other.id === meeting.id) !== index ||
@@ -492,7 +514,7 @@ export class RoomController {
         request => this.permission(agent.id, request, assignmentId), grant,
         intent => this.requestAccessForAssignment(agent.id, assignmentId, intent),
         fullName => this.researchGrant(agent.id, assignmentId, fullName), profile,
-        () => this.meetingTurns.has(agent.id));
+        () => this.meetingTurns.has(agent.id), this.assignmentGuidance(agent));
       if (session.sessionId !== agent.sessionId) {
         await session.disconnect();
         throw new Error("SDK resumed a different session identity; repository access was not changed.");
@@ -506,7 +528,7 @@ export class RoomController {
         request => this.permission(agent.id, request, assignmentId), agent.sessionId, grant,
         intent => this.requestAccessForAssignment(agent.id, assignmentId, intent),
         fullName => this.researchGrant(agent.id, assignmentId, fullName), profile,
-        () => this.meetingTurns.has(agent.id));
+        () => this.meetingTurns.has(agent.id), this.assignmentGuidance(agent));
       if (session.sessionId !== agent.sessionId) {
         await session.disconnect();
         throw new Error("SDK returned a different identity for the empty-session recovery.");
@@ -535,7 +557,9 @@ export class RoomController {
       const workspace = await this.adapter.prepareWorkspace(this.state.workspace, id);
       const session = await this.adapter.create(workspace, request => this.permission(id, request, id), undefined, undefined,
         intent => this.requestAccessForAssignment(id, id, intent),
-        fullName => this.researchGrant(id, id, fullName), profile, () => this.meetingTurns.has(id));
+        fullName => this.researchGrant(id, id, fullName), profile, () => this.meetingTurns.has(id),
+        personaGuidance({
+          profile: { instructions: "", workingStyle: "", specialties: [], title: "", rank: "" }, memories: [] }));
       if (this.state.assignments!.some(assignment => assignment.sessionId === session.sessionId)) {
         throw new Error("SDK returned a session identity already assigned in recorded history.");
       }
@@ -557,10 +581,11 @@ export class RoomController {
       const agent: Agent = { id, deskIndex, archived: false, workspace, workspaceKind: "scratch", createdAt: now, updatedAt: now, sessionId: session.sessionId, persona, name,
         personaId: id, assignmentId: id, phase: "idle", activity: "Ready to chat", messages: [] };
       this.state.agents.push(agent);
-      this.state.personas!.push({ id, name, artId: persona, createdAt: now, updatedAt: now,
-        profile: { workingStyle: "", specialties: [], title: "", rank: "" }, memories: [], repositoryPolicies: [] });
+      this.state.personas!.push({ id, name, artId: persona, createdAt: now, updatedAt: now, setupCompleted: false,
+        profile: { instructions: "", workingStyle: "", specialties: [], title: "", rank: "" }, memories: [], repositoryPolicies: [] });
       this.state.assignments!.push({ id, personaId: id, sessionId: session.sessionId, workspace,
         modelProfileId: profile.id, modelProfile: structuredClone(profile),
+        personaGuidance: personaGuidance(this.persona(id)),
         startedAt: now, status: "active", messages: agent.messages });
       if (this.state.usage) this.state.usage.stale = true;
       this.attach(id, session);
@@ -590,6 +615,21 @@ export class RoomController {
     const persona = this.state.personas!.find(item => item.id === personaId);
     if (!persona) throw new Error("Unknown persona.");
     return persona;
+  }
+
+  private assignmentGuidance(agent: Agent): string {
+    const assignment = this.state.assignments!.find(item => item.id === agent.assignmentId);
+    if (!assignment || typeof assignment.personaGuidance !== "string") {
+      throw new Error("Assignment persona guidance is missing; refusing to resume.");
+    }
+    return assignment.personaGuidance;
+  }
+
+  guidancePreview(personaId: string): { next: string; current: string | null } {
+    const persona = this.persona(personaId);
+    const agent = this.state.agents.find(item => item.personaId === personaId);
+    return { next: personaGuidance(persona),
+      current: agent ? this.assignmentGuidance(agent) : null };
   }
 
   private project(fullName: string) {
@@ -644,7 +684,8 @@ export class RoomController {
   }
 
   private meetingAgent(agent: Agent, repository?: string): void {
-    if (agent.archived || agent.phase !== "idle" || agent.review || agent.accessRequest ||
+    if (!this.persona(agent.personaId!).setupCompleted ||
+      agent.archived || agent.phase !== "idle" || agent.review || agent.accessRequest ||
       this.lifecycle.has(agent.id) || !this.sessions.has(agent.id) || this.meetingTurns.has(agent.id)) {
       throw new Error(`${agent.name ?? "Agent"} is not available for this handoff.`);
     }
@@ -857,11 +898,12 @@ export class RoomController {
   }
 
   async editPersona(personaId: string, input: {
-    name: string; artId: number; workingStyle: string; specialties: string[]; title: string; rank: string
+    name: string; artId: number; instructions: string; workingStyle: string; specialties: string[]; title: string; rank: string
   }): Promise<void> {
     const persona = this.persona(personaId);
     const name = input.name.trim();
     if (!name || name.length > 80 || !Number.isInteger(input.artId) || input.artId < 0 || input.artId >= MAX_AGENTS ||
+      typeof input.instructions !== "string" || input.instructions.length > 600 ||
       [input.workingStyle, input.title, input.rank].some(value => typeof value !== "string" || value.length > 1000) ||
       !Array.isArray(input.specialties) || input.specialties.length > 20 ||
       input.specialties.some(value => typeof value !== "string" || !value.trim() || value.length > 80)) {
@@ -873,21 +915,70 @@ export class RoomController {
     if (agent && this.lifecycle.has(agent.id)) throw new Error("Persona is changing assignments.");
     if (agent && !agent.archived && this.state.agents.some(other => other.id !== agent.id &&
       !other.archived && other.persona === input.artId)) throw new Error("This art is already in use at an active desk.");
+    const nextProfile = { instructions: input.instructions.trim(), workingStyle: input.workingStyle.trim(),
+      specialties: input.specialties.map(s => s.trim()), title: input.title.trim(), rank: input.rank.trim() };
+    if (personaGuidance({ profile: nextProfile, memories: persona.memories }).length > MAX_GUIDANCE_LENGTH) {
+      throw new Error("Persona guidance exceeds the assignment limit.");
+    }
     persona.name = name;
     persona.artId = input.artId;
-    persona.profile = { workingStyle: input.workingStyle.trim(), specialties: input.specialties.map(s => s.trim()),
-      title: input.title.trim(), rank: input.rank.trim() };
+    persona.profile = nextProfile;
     persona.updatedAt = Date.now();
     if (agent) { agent.name = name; agent.persona = input.artId; agent.updatedAt = persona.updatedAt; }
     await this.publish();
   }
 
+  async completePersonaSetup(personaId: string): Promise<void> {
+    const persona = this.persona(personaId);
+    if (persona.setupCompleted) throw new Error("Persona setup is already complete.");
+    if (!persona.profile.instructions.trim() && !persona.profile.workingStyle.trim()) {
+      throw new Error("Add behavior instructions or a working style before completing setup.");
+    }
+    const agent = this.state.agents.find(item => item.personaId === personaId);
+    if (!agent || agent.messages.length || agent.archived) {
+      throw new Error("Initial persona setup requires an active, unused assignment.");
+    }
+    this.availableForLifecycle(agent);
+    const assignment = this.state.assignments!.find(item => item.id === agent.assignmentId)!;
+    const previous = assignment.personaGuidance!;
+    const guidance = personaGuidance(persona);
+    if (guidance.length > MAX_GUIDANCE_LENGTH) throw new Error("Persona guidance exceeds the assignment limit.");
+    this.lifecycle.add(agent.id);
+    try {
+      const session = this.sessions.get(agent.id);
+      if (session) {
+        await session.disconnect();
+        this.unsubscribers.get(agent.id)?.();
+        this.sessions.delete(agent.id);
+        this.unsubscribers.delete(agent.id);
+      }
+      assignment.personaGuidance = guidance;
+      try {
+        if (session) this.attach(agent.id, await this.resumeAgent(agent));
+      } catch (error) {
+        assignment.personaGuidance = previous;
+        throw error;
+      }
+      persona.setupCompleted = true;
+      persona.updatedAt = Date.now();
+      await this.publish();
+    } finally {
+      this.lifecycle.delete(agent.id);
+    }
+  }
+
   async addMemory(personaId: string, text: string, provenance: string): Promise<void> {
     const persona = this.persona(personaId);
-    if (!text.trim() || text.length > 2000 || !provenance.trim() || provenance.length > 500) {
-      throw new Error("Memory requires a note and its provenance.");
+    if (typeof text !== "string" || !text.trim() || text.length > 500 ||
+      typeof provenance !== "string" || !provenance.trim() || provenance.length > 160 ||
+      persona.memories.length >= MAX_MEMORIES) {
+      throw new Error("Memory requires a note (max 500 characters), provenance (max 160), and space among 12 approved notes.");
     }
-    persona.memories.push({ id: randomUUID(), text: text.trim(), provenance: provenance.trim(), approvedAt: Date.now() });
+    const note = { id: randomUUID(), text: text.trim(), provenance: provenance.trim(), approvedAt: Date.now() };
+    if (personaGuidance({ profile: persona.profile, memories: [...persona.memories, note] }).length > MAX_GUIDANCE_LENGTH) {
+      throw new Error("Persona guidance exceeds the assignment limit.");
+    }
+    persona.memories.push(note);
     persona.updatedAt = Date.now();
     await this.publish();
   }
@@ -908,7 +999,12 @@ export class RoomController {
     if (!this.sessions.has(agentId)) throw new Error("Connect this persona's SDK session before switching assignments.");
     if (outcome.length > 1000) throw new Error("Outcome is too long.");
     const previous = this.state.assignments!.find(item => item.id === agent.assignmentId)!;
+    if (!this.persona(agent.personaId!).setupCompleted) {
+      throw new Error("Complete this persona's setup before starting another assignment.");
+    }
     const profile = this.profile(modelProfileId ?? previous.modelProfileId!);
+    const guidance = personaGuidance(this.persona(agent.personaId!));
+    if (guidance.length > MAX_GUIDANCE_LENGTH) throw new Error("Persona guidance exceeds the assignment limit.");
     sessionModel(profile);
     this.lifecycle.add(agentId);
     const assignmentId = randomUUID();
@@ -918,7 +1014,7 @@ export class RoomController {
         request => this.permission(agentId, request, assignmentId),
         undefined, undefined, intent => this.requestAccessForAssignment(agentId, assignmentId, intent),
         fullName => this.researchGrant(agentId, assignmentId, fullName), profile,
-        () => this.meetingTurns.has(agentId));
+        () => this.meetingTurns.has(agentId), guidance);
       if (this.state.assignments!.some(item => item.sessionId === session.sessionId)) {
         throw new Error("SDK returned an existing session identity; assignment was not changed.");
       }
@@ -947,7 +1043,7 @@ export class RoomController {
       agent.updatedAt = Date.now();
       this.armedTaskGrants.delete(agentId);
       this.state.assignments!.push({ id: assignmentId, personaId: agent.personaId!, sessionId: session.sessionId,
-        workspace, modelProfileId: profile.id, modelProfile: structuredClone(profile),
+        workspace, modelProfileId: profile.id, modelProfile: structuredClone(profile), personaGuidance: guidance,
         startedAt: agent.updatedAt, status: "active", messages: agent.messages });
       this.interruptMeetings(agentId);
       this.attach(agentId, session);
@@ -1400,6 +1496,7 @@ export class RoomController {
 
   async send(agentId: string, text: string, meetingId?: string): Promise<void> {
     const agent = this.agent(agentId);
+    if (!this.persona(agent.personaId!).setupCompleted) throw new Error("Complete this persona's setup before chatting.");
     if (agent.archived || this.lifecycle.has(agentId)) throw new Error("This agent is not active in the office.");
     const meetingTurn = this.meetingTurns.get(agentId);
     if (meetingTurn && meetingTurn.meetingId !== meetingId) throw new Error("This agent has an approved meeting turn in progress.");

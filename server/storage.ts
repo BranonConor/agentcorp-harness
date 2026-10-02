@@ -24,13 +24,14 @@ export class FileStore implements Store {
     const snapshot = JSON.stringify(room);
     const next = this.queue.then(async () => {
       await mkdir(dirname(this.file), { recursive: true });
-      if (room.schemaVersion === 2 || room.schemaVersion === 3 || room.schemaVersion === 4 || room.schemaVersion === 5) {
+      if (room.schemaVersion === 2 || room.schemaVersion === 3 || room.schemaVersion === 4 || room.schemaVersion === 5 || room.schemaVersion === 6) {
         try {
           const previous = JSON.parse(await readFile(this.file, "utf8")) as { schemaVersion?: number };
           if (previous.schemaVersion === undefined ||
             previous.schemaVersion === 2 && room.schemaVersion >= 3 ||
             previous.schemaVersion === 3 && room.schemaVersion >= 4 ||
-            previous.schemaVersion === 4 && room.schemaVersion === 5) {
+            previous.schemaVersion === 4 && room.schemaVersion >= 5 ||
+            previous.schemaVersion === 5 && room.schemaVersion === 6) {
             const backupPath = `${this.file}.v${previous.schemaVersion ?? 1}.bak`;
             await copyFile(this.file, backupPath, constants.COPYFILE_EXCL).catch(async error => {
               if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;

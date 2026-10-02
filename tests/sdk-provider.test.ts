@@ -48,7 +48,8 @@ test("unsigned SDK session streams an OpenAI-compatible local model response", {
     await client.start();
     assert.equal((await client.getAuthStatus()).isAuthenticated, false);
     const session = await client.createSession({
-      ...sessionModel(profile), workingDirectory: workspace, availableTools: [], streaming: true
+      ...sessionModel(profile), workingDirectory: workspace, availableTools: [], streaming: true,
+      systemMessage: { mode: "append", content: "Persona preference: concise answers" }
     });
     try {
       const completed = new Promise<string>((resolve, reject) => {
@@ -63,8 +64,29 @@ test("unsigned SDK session streams an OpenAI-compatible local model response", {
       assert.equal(await completed, "Local model ready");
       assert.equal(requests.length, 1);
       assert.equal(JSON.parse(requests[0]).model, "qwen2.5:7b");
+      assert.match(requests[0], /Persona preference: concise answers/);
     } finally {
       await session.disconnect();
+    }
+    const resumed = await client.resumeSession(session.sessionId, {
+      ...sessionModel(profile), workingDirectory: workspace, availableTools: [], streaming: true,
+      continuePendingWork: false,
+      systemMessage: { mode: "append", content: "Persona preference: revised on resume" }
+    });
+    try {
+      assert.equal(resumed.sessionId, session.sessionId);
+      const completed = new Promise<void>((resolve, reject) => {
+        const off = resumed.on(event => {
+          if (event.type === "session.error") { off(); reject(new Error(event.data.message)); }
+          if (event.type === "session.idle") { off(); resolve(); }
+        });
+      });
+      await resumed.send({ prompt: "Say hello again" });
+      await completed;
+      assert.equal(requests.length, 2);
+      assert.match(requests[1], /Persona preference: revised on resume/);
+    } finally {
+      await resumed.disconnect();
     }
   } finally {
     await client.stop();
