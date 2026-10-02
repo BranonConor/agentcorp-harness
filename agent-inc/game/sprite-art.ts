@@ -69,13 +69,25 @@ const markStrokes = [
 ] as const;
 
 export const HAPPY_MACHINES_MARK = [
-  { color: "#fff7e9", rects: [[2, 1, 12, 1], [1, 2, 14, 12], [2, 14, 12, 1]] },
-  { color: "#e34b54", rects: markStrokes.map(([x, y, width, height]) => [x + 1, y + 1, width, height] as const) },
-  { color: "#171b25", rects: markStrokes },
+  { color: "#5a4c78", rects: markStrokes.map(([x, y, width, height]) => [x + 1, y + 1, width, height] as const) },
+  { color: "#28322e", rects: markStrokes },
 ] as const;
 
+export const HAPPY_MACHINES_DARK_MARK = [
+  { ...HAPPY_MACHINES_MARK[0], color: "#ead5f3" },
+  { ...HAPPY_MACHINES_MARK[1], color: "#f1e8d6" },
+] as const;
+
+export function happyMachinesFavicon(dark: boolean): string {
+  const mark = dark ? HAPPY_MACHINES_DARK_MARK : HAPPY_MACHINES_MARK;
+  const paths = mark.map(({ color, rects }) =>
+    `<path fill="${color}" d="${rects.map(([x, y, width, height]) =>
+      `M${x} ${y}h${width}v${height}H${x}z`).join("")}"/>`).join("");
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">${paths}</svg>`;
+}
+
 function drawHappyMachinesMark(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {
-  for (const { color, rects } of HAPPY_MACHINES_MARK) {
+  for (const { color, rects } of HAPPY_MACHINES_DARK_MARK) {
     for (const [left, top, width, height] of rects) {
       pixel(ctx, color, x + left * scale, y + top * scale, width * scale, height * scale);
     }

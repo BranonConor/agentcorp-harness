@@ -18,7 +18,10 @@ import {
   EXTRA_DESKS, LIVE_COFFEE_Z, MAX_LIVE_DESKS, MIN_LIVE_DESKS,
   assignLoungeSpots, routeAroundDividers,
 } from "../../agent-inc/game/live-layout";
-import { HAPPY_MACHINES_MARK, HAPPY_MACHINES_WORDMARK, PIXEL_LETTERS, agentPortrait } from "../../agent-inc/game/sprite-art";
+import {
+  HAPPY_MACHINES_DARK_MARK, HAPPY_MACHINES_MARK, HAPPY_MACHINES_WORDMARK, PIXEL_LETTERS,
+  agentPortrait, happyMachinesFavicon,
+} from "../../agent-inc/game/sprite-art";
 import { createWorld } from "../../agent-inc/game/world";
 import { effectiveProjectAccess, groupedProjectAccess, noticeActivityForActor, roomActors } from "./room";
 import type { Actor, PersonaRepositoryPolicy, ProjectPolicy, Room as OfficeRoom, Status } from "./room";
@@ -326,8 +329,14 @@ function LiveOffice() {
   const roomRef = useRef<SdkRoom | null>(null);
   const room = officeRoom(sdkRoom);
   const darkTheme = themePreference === "system" ? systemDark : themePreference === "dark";
+  const mark = darkTheme ? HAPPY_MACHINES_DARK_MARK : HAPPY_MACHINES_MARK;
 
-  useLayoutEffect(() => { document.documentElement.dataset.officeTheme = darkTheme ? "dark" : "light"; }, [darkTheme]);
+  useLayoutEffect(() => {
+    document.documentElement.dataset.officeTheme = darkTheme ? "dark" : "light";
+    const favicon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (!favicon) throw new Error("HappyMachines favicon link is missing.");
+    favicon.href = `data:image/svg+xml,${encodeURIComponent(happyMachinesFavicon(darkTheme))}`;
+  }, [darkTheme]);
   useEffect(() => {
     const preference = matchMedia("(prefers-color-scheme: dark)");
     const update = () => setSystemDark(preference.matches);
@@ -1262,7 +1271,7 @@ function LiveOffice() {
         <div className="identity">
           <span className="brand-icon" aria-hidden="true">
             <svg viewBox="0 0 16 16" shapeRendering="crispEdges" focusable="false">
-              {HAPPY_MACHINES_MARK.flatMap(({ color, rects }, layer) =>
+              {mark.flatMap(({ color, rects }, layer) =>
                 rects.map(([x, y, width, height], index) =>
                   <rect key={`${layer}-${index}`} x={x} y={y} width={width} height={height} fill={color} />))}
             </svg>
