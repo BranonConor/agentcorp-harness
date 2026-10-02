@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { effectiveProjectAccess, type ProjectPolicy } from "../agent-inc-live/src/room.js";
+import { effectiveProjectAccess, groupedProjectAccess, type ProjectPolicy } from "../agent-inc-live/src/room.js";
 
 const projects: ProjectPolicy[] = [
   { repository: { fullName: "Owner/Shared", url: "https://github.com/Owner/Shared.git",
@@ -42,4 +42,16 @@ test("write eligibility implies read but never follows assignment or exclusion",
   const shared = [{ ...projects[0], sharedWrite: true }];
   assert.deepEqual(effectiveProjectAccess(shared)[0].write, true);
   assert.equal(effectiveProjectAccess(shared, [{ fullName: "Owner/Shared", read: false, excluded: true }])[0].write, false);
+});
+
+test("project groups follow global sharing without inventing edit permissions", () => {
+  const access = effectiveProjectAccess(projects, [
+    { fullName: "Owner/Shared", read: false, excluded: true },
+    { fullName: "Owner/Scoped", read: true, excluded: false },
+  ]);
+  const groups = groupedProjectAccess(access);
+  assert.deepEqual(groups.agent.map(item => [item.project.repository.fullName, item.read]),
+    [["Owner/Scoped", true]]);
+  assert.deepEqual(groups.global.map(item => [item.project.repository.fullName, item.read]),
+    [["Owner/Shared", false]]);
 });

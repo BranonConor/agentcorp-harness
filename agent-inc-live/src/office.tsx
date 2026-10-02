@@ -19,7 +19,7 @@ import {
 } from "../../agent-inc/game/live-layout";
 import { HAPPY_MACHINES_MARK, HAPPY_MACHINES_WORDMARK, PIXEL_LETTERS, agentPortrait } from "../../agent-inc/game/sprite-art";
 import { createWorld } from "../../agent-inc/game/world";
-import { effectiveProjectAccess, noticeActivityForActor, roomActors } from "./room";
+import { effectiveProjectAccess, groupedProjectAccess, noticeActivityForActor, roomActors } from "./room";
 import type { Actor, PersonaRepositoryPolicy, ProjectPolicy, Room as OfficeRoom, Status } from "./room";
 import { SafeMarkdown } from "./markdown";
 import { greetingForPersona } from "./greeting";
@@ -249,6 +249,9 @@ function LiveOffice() {
   const [projectCandidates, setProjectCandidates] = useState<RemoteRepository[]>([]);
   const [projectCandidate, setProjectCandidate] = useState("");
   const [projectLookingUp, setProjectLookingUp] = useState(false);
+  const [projectChooserOpen, setProjectChooserOpen] = useState(false);
+  const [projectAccessChoice, setProjectAccessChoice] = useState<"read" | "write">("read");
+  const [projectSaving, setProjectSaving] = useState(false);
   const [selectedRepository, setSelectedRepository] = useState("");
   const [freshSnapshot, setFreshSnapshot] = useState(false);
   const [copiedId, setCopiedId] = useState("");
@@ -280,7 +283,7 @@ function LiveOffice() {
   const [copilotModels, setCopilotModels] = useState<{ id: string; name: string }[] | null>(null);
   const [profileEditingId, setProfileEditingId] = useState<string | null>(null);
   const [profileDraft, setProfileDraft] = useState({
-    name: "", artId: 0, workingStyle: "", instructions: "", specialties: "", title: "", rank: "",
+    name: "", artId: 0, workingStyle: "", instructions: "", specialties: "", title: "",
   });
   const [guidancePreview, setGuidancePreview] = useState<{ next: string; current: string | null } | null>(null);
   const [guidanceLoading, setGuidanceLoading] = useState(false);
@@ -710,7 +713,7 @@ function LiveOffice() {
       workingStyle: selectedPersona.profile.workingStyle,
       instructions: selectedPersona.profile.instructions ?? "",
       specialties: selectedPersona.profile.specialties.join(", "),
-      title: selectedPersona.profile.title, rank: selectedPersona.profile.rank,
+      title: selectedPersona.profile.title,
     });
     setGuidancePreview(null);
   }, [selectedPersona?.id, selected]);
@@ -828,7 +831,7 @@ function LiveOffice() {
     setProfileDraft({
       name: persona.name, artId: persona.artId, workingStyle: persona.profile.workingStyle,
       instructions: persona.profile.instructions ?? "",
-      specialties: persona.profile.specialties.join(", "), title: persona.profile.title, rank: persona.profile.rank,
+      specialties: persona.profile.specialties.join(", "), title: persona.profile.title,
     });
     setProfileEditingId(persona.id);
   };
@@ -840,7 +843,7 @@ function LiveOffice() {
         personaId: persona.id, name: profileDraft.name.trim(), artId: Number(profileDraft.artId),
         workingStyle: profileDraft.workingStyle.trim(), specialties: profileDraft.specialties
           .split(/[,\n]/).map(item => item.trim()).filter(Boolean),
-        instructions: profileDraft.instructions.trim(), title: profileDraft.title.trim(), rank: profileDraft.rank.trim(),
+        instructions: profileDraft.instructions.trim(), title: profileDraft.title.trim(), rank: persona.profile.rank,
       });
       if (saved) setProfileEditingId(null);
       return saved;
@@ -885,8 +888,6 @@ function LiveOffice() {
           onChange={event => setProfileDraft({ ...profileDraft, artId: Number(event.target.value) })} /></label>
         <label>Title <input maxLength={1000} value={profileDraft.title}
           onChange={event => setProfileDraft({ ...profileDraft, title: event.target.value })} /></label>
-        <label>Profile rank (not earned level) <input maxLength={1000} value={profileDraft.rank}
-          onChange={event => setProfileDraft({ ...profileDraft, rank: event.target.value })} /></label>
         <label>Specialties (comma-separated) <input value={profileDraft.specialties}
           onChange={event => setProfileDraft({ ...profileDraft, specialties: event.target.value })} /></label>
       </Collapsible.Panel>
@@ -1012,40 +1013,94 @@ function LiveOffice() {
       </div>}
     </section>;
   };
+  const projectChooser = (persona?: AgentPersona) => <div className="project-chooser">
+    <button type="button" className="project-chooser-toggle" aria-expanded={projectChooserOpen}
+      onClick={() => setProjectChooserOpen(open => !open)}>Select GitHub Repos</button>
+    {projectChooserOpen && <div className="project-chooser-content">
+      <p>Find a repository on GitHub, then select its verified identity. Paths and unverified names cannot grant access.</p>
+      <form className="project-lookup" onSubmit={event => { event.preventDefault(); void lookupProject(); }}>
+        <label>Repository name or owner/repo <input value={projectHint} placeholder="owner/repo"
+          maxLength={150} onChange={event => {
+            setProjectHint(event.target.value); setProjectCandidates([]); setProjectCandidate("");
+          }} /></label>
+        <button type="submit" disabled={!connected || !projectHint.trim() || projectLookingUp}>
+          {projectLookingUp ? "Looking up…" : "Find on GitHub"}</button>
+      </form>
+      {projectCandidates.length > 0 && <div className="project-confirm">
+        <label>Verified repository <select value={projectCandidate}
+          onChange={event => setProjectCandidate(event.target.value)}>
+          {projectCandidates.length > 1 && <option value="">Select owner/repo…</option>}
+          {projectCandidates.map(candidate => <option key={candidate.fullName} value={candidate.fullName}>
+            {candidate.fullName} · {candidate.privacy} · {candidate.defaultBranch}</option>)}
+        </select></label>
+        {persona && <label>Agent access <select value={projectAccessChoice}
+          onChange={event => setProjectAccessChoice(event.target.value as "read" | "write")}>
+          <option value="read">Read for this agent</option>
+          <option value="write">Eligible for task worktree (tools require approval)</option>
+        </select></label>}
+        <button type="button" disabled={!connected || !projectCandidate || projectSaving}
+          onClick={() => void (async () => {
+            const repository = projectCandidates.find(item => item.fullName === projectCandidate);
+            if (!repository) { setActionError("Select a verified repository."); return; }
+            setProjectSaving(true);
+            try {
+              const exists = sdkRoom?.projects?.some(item =>
+                item.repository.fullName.toLowerCase() === repository.fullName.toLowerCase());
+              if (!exists && !await act("project-policy", { repository, sharedRead: !persona })) return;
+              if (persona && !await act("persona-project", {
+                personaId: persona.id, fullName: repository.fullName, choice: projectAccessChoice,
+              })) return;
+              setProjectCandidates([]); setProjectCandidate(""); setProjectHint(""); setProjectChooserOpen(false);
+            } finally { setProjectSaving(false); }
+          })()}>{projectSaving ? "Saving…" : persona ? "Assign to agent" : "Share read with all agents"}</button>
+      </div>}
+      <p className="project-edit-notice">Edit via task worktree; each tool still requires approval. A worktree is not an OS sandbox.</p>
+    </div>}
+  </div>;
   const personaProjects = (persona: AgentPersona) => <div className="persona-projects">
-    <h4>GitHub project eligibility</h4>
-    <p>Write eligibility permits an explicit task worktree assignment, not automatic tool approval. Office-wide sharing applies unless excluded here.</p>
-    {!sdkRoom?.projects?.length && <p>No verified GitHub projects configured.</p>}
-    <ul>{effectiveProjectAccess(sdkRoom?.projects ?? [], persona.repositoryPolicies,
-      sdkRoom?.agents.find(agent => agent.personaId === persona.id)?.repository).map(({ project, read, write, source }) => {
+    <h4>Assign projects</h4>
+    <p>Choose verified repositories for this agent to read or become eligible for task worktrees. Global access applies unless excluded.</p>
+    {projectChooser(persona)}
+    {!sdkRoom?.projects?.length && <p>No verified repositories yet.</p>}
+    {(["agent", "global"] as const).map(group => {
+      const items = groupedProjectAccess(effectiveProjectAccess(sdkRoom?.projects ?? [], persona.repositoryPolicies,
+        sdkRoom?.agents.find(agent => agent.personaId === persona.id)?.repository))[group];
+      if (!items.length) return null;
+      return <section className="project-group" key={group}>
+        <h5>{group === "agent" ? "Agent" : "Global"}</h5>
+        <ul>{items.map(({ project, read, write, source }) => {
       const fullName = project.repository.fullName;
       const policy = persona.repositoryPolicies?.find(item => item.fullName.toLowerCase() === fullName.toLowerCase());
       const change = (choice: "read" | "write" | "remove" | "exclude" | "inherit") =>
         void act("persona-project", { personaId: persona.id, fullName, choice });
       return <li key={fullName}>
         <div><strong>{fullName}</strong><span>{write ? "Eligible for task worktree · tools require approval" : read ?
-          source === "persona" ? "Read · direct" : source === "assignment" ? "Read · current assignment" : "Read · office-wide" :
-          source === "excluded" ? "No read · excluded" : "No read access"}</span></div>
+          source === "persona" ? "Read · agent" : source === "assignment" ? "Read · current task" : "Read · global" :
+          source === "excluded" ? "Not readable · excluded" : "Not readable"}</span></div>
         <div className="project-actions">
           {!policy?.read ? <button type="button" disabled={!connected}
-            onClick={() => change("read")}>Grant to persona</button> :
+            onClick={() => change("read")}>Give read</button> :
             <button type="button" disabled={!connected}
-              onClick={() => change("remove")}>Remove direct grant</button>}
+              onClick={() => change("remove")}>Remove agent access</button>}
           <button type="button" disabled={!connected}
             onClick={() => change(policy?.write ? "read" : "write")}>
-            {policy?.write ? "Remove direct worktree eligibility" : "Allow task worktrees"}</button>
+            {policy?.write ? "Keep read only" : "Allow task worktrees"}</button>
           {write && selectedAgent?.personaId === persona.id && <button type="button"
             disabled={!connected || selectedAgent.archived || selectedAgent.phase !== "idle" ||
               !!selectedAgent.accessRequest || !!selectedAgent.review}
             onClick={() => void act("project-worktree", { agentId: selectedAgent.id, fullName })}>
-            Assign edit worktree to this task</button>}
-          {!policy?.excluded ? <button type="button" disabled={!connected}
-            onClick={() => change("exclude")}>Exclude</button> :
+            Review Edit worktree for this task</button>}
+          {!policy?.excluded && project.sharedRead ? <button type="button" disabled={!connected}
+            onClick={() => change("exclude")}>Exclude agent</button> : policy?.excluded ?
             <button type="button" disabled={!connected}
-              onClick={() => change("inherit")}>Reinclude</button>}
+              onClick={() => change("inherit")}>Restore global read</button> : null}
         </div>
       </li>;
-    })}</ul>
+        })}</ul>
+      </section>;
+    })}
+    <p className="project-edit-notice">Write eligibility permits a separately approved task worktree, not automatic editing.
+      Tools still require approval; worktrees are not OS sandboxes.</p>
   </div>;
   const newAssignment = async () => {
     if (!assignmentAgent || !canStartAssignment(assignmentAgent) || assignmentSubmitting) return;
@@ -1139,18 +1194,20 @@ function LiveOffice() {
         .outcome-dialog label { display: grid; gap: 5px; }
         .outcome-dialog textarea, .outcome-dialog select { width: 100%; padding: 7px; box-sizing: border-box;
           background: var(--office-muted); color: var(--office-text); border: 1px solid var(--office-border); }
-        .meeting-panel { display: grid; gap: 14px; }
-        .meeting-panel h3 { margin: 0; font-size: 13px; }
+        .meeting-panel { display: grid; gap: 22px; padding: 20px 22px 32px; }
+        .meeting-panel h3 { margin: 0; font-size: 15px; }
+        .meeting-intro h3 { margin: 6px 0 8px; font-size: 19px; }
         .meeting-panel p, .meeting-panel small { color: var(--office-secondary); font-size: 11px; line-height: 1.5; }
         .meeting-panel p { margin: 0; }
-        .meeting-panel form, .meeting-detail { display: grid; gap: 11px; padding: 13px;
-          border: 1px solid var(--office-border); border-radius: 8px; background: var(--office-panel); }
+        .meeting-panel form, .meeting-detail { display: grid; gap: 13px; padding: 18px 0 0;
+          border: 0; border-top: 1px solid var(--office-border); background: transparent; }
         .meeting-panel label { display: grid; gap: 5px; font-size: 11px; font-weight: 600; }
         .meeting-panel input:not([type="checkbox"]), .meeting-panel textarea, .meeting-panel select {
           width: 100%; min-width: 0; box-sizing: border-box; padding: 7px; border: 1px solid var(--office-border);
           border-radius: 5px; color: var(--office-text); background: var(--office-muted); font: 12px var(--sans); }
         .meeting-panel textarea { resize: vertical; }
-        .meeting-panel fieldset { display: grid; gap: 7px; margin: 0; padding: 9px; border: 1px solid var(--office-border); }
+        .meeting-panel fieldset { display: grid; gap: 8px; margin: 0; padding: 12px 0;
+          border: 0; border-top: 1px solid var(--office-border); border-bottom: 1px solid var(--office-border); }
         .meeting-panel legend { font-size: 11px; font-weight: 650; }
         .meeting-panel fieldset label { display: flex; align-items: center; gap: 7px; font-weight: 400; }
         .meeting-panel fieldset input { flex: none; }
@@ -1160,14 +1217,22 @@ function LiveOffice() {
         .meeting-panel button:disabled { opacity: .55; cursor: not-allowed; }
         .meeting-panel .meeting-list { display: grid; gap: 5px; }
         .meeting-panel .meeting-list button { text-align: left; overflow-wrap: anywhere; }
-        .meeting-panel .meeting-list button[aria-current="true"] { border-color: var(--office-accent); }
+        .meeting-panel .meeting-list button[aria-current="true"] { border-color: var(--office-accent); background: var(--office-accent-bg); }
         .meeting-panel .meeting-actions { display: flex; flex-wrap: wrap; gap: 6px; }
-        .meeting-panel .meeting-turn { padding: 8px; border-left: 2px solid var(--office-accent);
-          background: var(--office-muted); overflow-wrap: anywhere; }
+        .meeting-panel .meeting-turn { padding: 11px 0 11px 13px; border-left: 2px solid var(--office-accent);
+          background: transparent; overflow-wrap: anywhere; }
         .meeting-panel .meeting-turn strong { font-size: 11px; }
         .meeting-panel .meeting-turn .message-markdown { font-size: 12px; }
         .meeting-panel .meeting-turn .message-markdown p { color: var(--office-text); }
-        .meeting-panel .meeting-status { font-weight: 650; text-transform: capitalize; }
+        .meeting-panel .meeting-status { width: fit-content; padding: 6px 9px; border-radius: 5px;
+          background: var(--office-accent-bg); color: var(--office-accent); font-weight: 650; text-transform: capitalize; }
+        .meeting-panel .meeting-status-interrupted { background: var(--office-warning-bg); color: var(--office-warning); }
+        .meeting-panel .meeting-status-cancelled { background: var(--office-muted); color: var(--office-secondary); }
+        .meeting-panel .meeting-primary { justify-self: start; background: var(--office-accent-bg); color: var(--office-accent); }
+        .meeting-options-panel { display: grid; gap: 11px; padding: 10px 0; }
+        .meeting-options-panel[hidden] { display: none; }
+        .meeting-panel :is(button, input, textarea, select, summary):focus-visible {
+          outline: 2px solid var(--office-accent); outline-offset: 2px; }
         .live-shell .keyboard-agent-target[data-meeting-participant="true"]::after {
           content: ""; position: absolute; right: -3px; top: -3px; width: 9px; height: 9px;
           border: 2px solid #fff; border-radius: 50%; background: #8254b7; box-shadow: 0 0 0 1px #483068; }
@@ -1450,45 +1515,20 @@ function LiveOffice() {
                   </Collapsible.Panel>
                 </Collapsible.Root>
                 <div className="activity-row project-configurations">
-                  <div className="activity-row-heading"><strong>Configurations · GitHub projects</strong>
+                  <div className="activity-row-heading"><strong>Global project access</strong>
                     <span className="activity-tag">{sdkRoom?.projects?.length ?? 0} verified</span></div>
-                  <p>Verified GitHub identities only. Shared write is eligibility for explicit per-task worktree assignment,
-                    never automatic permission for shell, view, patch or other built-in tools. A worktree is not an OS sandbox.</p>
-                  <form className="project-lookup" onSubmit={event => { event.preventDefault(); void lookupProject(); }}>
-                    <label>Find a GitHub project <input value={projectHint} placeholder="owner/repo"
-                      maxLength={150} onChange={event => {
-                        setProjectHint(event.target.value);
-                        setProjectCandidates([]);
-                        setProjectCandidate("");
-                      }} /></label>
-                    <button type="submit" disabled={!connected || !projectHint.trim() || projectLookingUp}>
-                      {projectLookingUp ? "Looking up…" : "Verify on GitHub"}</button>
-                  </form>
-                  {projectCandidates.length > 0 && <div className="project-confirm">
-                    <label>Verified repository <select value={projectCandidate}
-                      onChange={event => setProjectCandidate(event.target.value)}>
-                      {projectCandidates.length > 1 && <option value="">Select owner/repo…</option>}
-                      {projectCandidates.map(candidate => <option key={candidate.fullName} value={candidate.fullName}>
-                        {candidate.fullName} · {candidate.privacy} · {candidate.defaultBranch}</option>)}
-                    </select></label>
-                    <button type="button" disabled={!connected || !projectCandidate ||
-                      !!sdkRoom?.projects?.some(project => project.repository.fullName.toLowerCase() === projectCandidate.toLowerCase())}
-                      onClick={() => void act("project-policy", {
-                        repository: projectCandidates.find(item => item.fullName === projectCandidate),
-                        sharedRead: false,
-                      }).then(ok => {
-                        if (ok) { setProjectCandidates([]); setProjectCandidate(""); setProjectHint(""); }
-                      })}>Add to office catalog</button>
-                  </div>}
-                  {!sdkRoom?.projects?.length && <p>No GitHub projects in the office catalog yet.</p>}
+                  <p>Share verified GitHub repositories for every agent to read, or enable explicit task worktree requests.
+                    Individual exclusions stay in the agent profile. Built-in tools still require approval.</p>
+                  {projectChooser()}
+                  {!sdkRoom?.projects?.length && <p>No verified repositories yet.</p>}
                   <ul className="project-list">{sdkRoom?.projects?.map(project => <li key={project.repository.fullName}>
                     <div><strong>{project.repository.fullName}</strong>
                       <small>GitHub · {project.repository.privacy} · {project.repository.defaultBranch}</small></div>
                     <div className="overview-share"><Switch.Root checked={project.sharedRead} disabled={!connected}
-                      aria-label={`Shared read for ${project.repository.fullName}`}
+                      aria-label={`Global read for ${project.repository.fullName}`}
                       onCheckedChange={checked => void act("project-share", {
                         fullName: project.repository.fullName, sharedRead: checked,
-                      })}><Switch.Thumb /></Switch.Root><span>Shared read</span></div>
+                      })}><Switch.Thumb /></Switch.Root><span>Global read</span></div>
                     <div className="overview-share"><Switch.Root checked={project.sharedWrite === true} disabled={!connected}
                       aria-label={`Task worktree eligibility for ${project.repository.fullName}`}
                       onCheckedChange={checked => void act("project-write", {
@@ -1527,13 +1567,14 @@ function LiveOffice() {
             )}
             {!selectedAgent && tab === "meetings" && (
               <section className="activity-view meeting-panel" aria-label="Manual meetings and reviews">
-                <div>
-                  <h3>Manual meeting / review</h3>
-                  <p>Only text you explicitly enter is shared between agents; responses and transcripts are never
-                    automatically relayed. Each turn needs your approval. Prompts go to existing SDK sessions with
-                    each agent’s own permissions; no approvals or repository access are inherited.</p>
+                <div className="meeting-intro">
+                  <span className="overview-group-label">Collaborate</span>
+                  <h3>Meetings & reviews</h3>
+                  <p>Choose 2–4 available agents. You decide what to share and approve each turn.
+                    Chats and repository permissions are never shared automatically.</p>
                 </div>
                 <form onSubmit={event => { event.preventDefault(); void createMeeting(); }}>
+                  <h3>New handoff</h3>
                   <label>Format
                     <select value={meetingKind} disabled={meetingBusy}
                       onChange={event => setMeetingKind(event.target.value as Meeting["kind"])}>
@@ -1542,7 +1583,7 @@ function LiveOffice() {
                   </label>
                   <fieldset>
                     <legend>Participants · select 2–4 active, idle agents</legend>
-                    {activeAgents.length === 0 && <small>No agents at desks yet.</small>}
+                    {activeAgents.length === 0 && <small>No agents at desks yet. Add an agent in the Agents tab to begin.</small>}
                     {activeAgents.map(agent => {
                       const checked = meetingParticipants.includes(agent.id);
                       return <label key={agent.id}>
@@ -1564,17 +1605,23 @@ function LiveOffice() {
                       onChange={event => setMeetingSharedText(event.target.value)}
                       placeholder="Paste only the facts or snippets these agents should see." />
                   </label>
-                  <label>Repository identifier (optional; does not grant access)
-                    <input type="text" maxLength={240} value={meetingRepository}
-                      onChange={event => setMeetingRepository(event.target.value)} placeholder="owner/repo" />
-                  </label>
-                  <label>Maximum approved turns
-                    <select value={meetingMaxTurns} onChange={event => setMeetingMaxTurns(Number(event.target.value))}>
-                      {Array.from({ length: 8 }, (_, index) => index + 1).map(value =>
-                        <option value={value} key={value}>{value}</option>)}
-                    </select>
-                  </label>
-                  <button type="submit" disabled={!canCreateMeeting}>{meetingBusy ? "Saving…" : "Create handoff"}</button>
+                  <Collapsible.Root className="meeting-options">
+                    <Collapsible.Trigger className="overview-disclosure">More options <span aria-hidden="true">⌄</span></Collapsible.Trigger>
+                    <Collapsible.Panel className="meeting-options-panel">
+                      <label>Repository context (optional; does not grant access)
+                        <input type="text" maxLength={240} value={meetingRepository}
+                          onChange={event => setMeetingRepository(event.target.value)} placeholder="owner/repo" />
+                      </label>
+                      <label>Maximum approved turns
+                        <select value={meetingMaxTurns} onChange={event => setMeetingMaxTurns(Number(event.target.value))}>
+                          {Array.from({ length: 8 }, (_, index) => index + 1).map(value =>
+                            <option value={value} key={value}>{value}</option>)}
+                        </select>
+                      </label>
+                    </Collapsible.Panel>
+                  </Collapsible.Root>
+                  <button type="submit" className="meeting-primary" disabled={!canCreateMeeting}>
+                    {meetingBusy ? "Saving…" : "Create handoff"}</button>
                 </form>
                 {meetings.length > 0 && <>
                   <h3>Handoffs</h3>
@@ -1589,7 +1636,7 @@ function LiveOffice() {
                 </>}
                 {currentMeeting && <div className="meeting-detail" key={currentMeeting.id}>
                   <h3>{currentMeeting.kind === "review" ? "Review" : "Meeting"} · {currentMeeting.agenda}</h3>
-                  <p className="meeting-status" role="status">{currentMeeting.status}
+                  <p className={`meeting-status meeting-status-${currentMeeting.status}`} role="status">{currentMeeting.status}
                     {meetingTurnPending && " · turn in progress"}
                     {" · "}{currentMeeting.turns.length}/{currentMeeting.maxTurns} turns completed
                   </p>
@@ -1619,7 +1666,7 @@ function LiveOffice() {
                         Select only the relevant excerpt yourself before approving the next turn.</small>
                     </>}
                     <div className="meeting-actions">
-                      <button type="button" disabled={!canAdvanceMeeting}
+                      <button type="button" className="meeting-primary" disabled={!canAdvanceMeeting}
                         onClick={() => void advanceMeeting()}>
                         Approve one next turn
                       </button>
@@ -1662,7 +1709,12 @@ function LiveOffice() {
             )}
             {!selectedAgent && tab === "agents" && (
               <section className="activity-view conversations-list" aria-label="Agents and conversations">
-                {!(sdkRoom?.agents.length) && <p className="activity-empty">No active agents. Click + above an empty desk to create one.</p>}
+                {!(sdkRoom?.agents.length) && <div className="activity-empty agents-empty">
+                  <strong>Your office is ready for its first agent.</strong>
+                  <p>Create an agent to start a conversation or assign work.</p>
+                  <Button type="button" disabled={!connected || firstEmptyDesk === undefined}
+                    onClick={() => firstEmptyDesk !== undefined && void createAgent(firstEmptyDesk)}>+ Add agent</Button>
+                </div>}
                 {[...(sdkRoom?.agents ?? [])].sort((a, b) =>
                   Number(a.archived) - Number(b.archived) || b.updatedAt - a.updatedAt ||
                   (a.deskIndex ?? a.lastDeskIndex ?? 0) - (b.deskIndex ?? b.lastDeskIndex ?? 0)).map(agent => {
@@ -1779,8 +1831,8 @@ function LiveOffice() {
             {selectedAgent && setupOpen && selectedPersona && (
               <section className="activity-view agent-setup" aria-label={`${selectedPersona.name} profile setup`}>
                 <div className="agent-setup-intro">
-                  <span className="overview-group-label">{selectedPersona.setupCompleted === false ? "New agent" : "Profile"}</span>
-                  <h3>{selectedPersona.setupCompleted === false ? "Make this agent yours" : `Edit ${selectedPersona.name}`}</h3>
+                  <span className="overview-group-label">{selectedPersona.setupCompleted === false ? "New hire" : "Profile"}</span>
+                  <h3>{selectedPersona.setupCompleted === false ? "Configure this agent" : `Edit ${selectedPersona.name}`}</h3>
                   <p>{selectedPersona.setupCompleted === false ?
                     "Set a working style or instructions before chatting. You can leave and resume setup later; the agent and its files stay here." :
                     "Profile changes are saved for future assignments. Current session context remains as it was."}</p>
@@ -1796,26 +1848,22 @@ function LiveOffice() {
                   {profileEditor(selectedPersona)}
                 </div>
                 <div className="agent-setup-card">
-                  <h4>Repository read access</h4>
-                  <p>Choose only from verified projects. An office-shared project is already readable unless excluded;
-                    granting to this persona is a separate, persistent decision. Edit worktrees still require approval.</p>
+                  <h4>Assign projects</h4>
                   {personaProjects(selectedPersona)}
-                  <Button type="button" onClick={() => { unfocusActor(); setTab("office"); }}>
-                    Verify another project in Overview
-                  </Button>
                 </div>
-                <div className="agent-setup-card">
-                  <h4>Assignment guidance</h4>
-                  <p>Preview the saved guidance for the next assignment against this agent's current snapshot.
-                    Save profile edits first.</p>
-                  <Button type="button" disabled={guidanceLoading} onClick={() => void loadGuidance(selectedPersona)}>
-                    {guidanceLoading ? "Loading preview…" : "Preview saved guidance"}
-                  </Button>
-                  {guidancePreview && <div className="agent-guidance-preview" role="status">
-                    <strong>Next assignment</strong><p>{guidancePreview.next}</p>
-                    <strong>Current assignment</strong><p>{guidancePreview.current ?? "No snapshot available."}</p>
-                  </div>}
-                </div>
+                <Collapsible.Root className="agent-setup-card">
+                  <Collapsible.Trigger className="overview-disclosure">Preview profile instructions <span aria-hidden="true">⌄</span></Collapsible.Trigger>
+                  <Collapsible.Panel className="setup-preview-panel">
+                    <p>Saved profile instructions apply to this agent's next job or chat. The current chat keeps its existing context.
+                      Save your edits before previewing.</p>
+                    <Button type="button" disabled={guidanceLoading} onClick={() => void loadGuidance(selectedPersona)}>
+                      {guidanceLoading ? "Loading preview…" : "Compare instructions"}</Button>
+                    {guidancePreview && <div className="agent-guidance-preview" role="status">
+                      <strong>Next job or chat</strong><p>{guidancePreview.next}</p>
+                      <strong>Current chat</strong><p>{guidancePreview.current ?? "No snapshot available."}</p>
+                    </div>}
+                  </Collapsible.Panel>
+                </Collapsible.Root>
               </section>
             )}
             {selectedAgent && !setupOpen && (
@@ -1889,6 +1937,13 @@ function LiveOffice() {
                         </div>
                         {copiedId === message.id && <span className="sr-only" role="status">Message copied</span>}
                       </div>)}
+                    {!selectedAgent.accessRequest && !selectedAgent.review &&
+                      ["thinking", "working"].includes(selectedAgent.phase) &&
+                      !displayedMessages.some(message => message.pending && message.role === "assistant") &&
+                      <div className="conversation-thinking" role="status" aria-live="polite">
+                        <span className="thinking-mark" aria-hidden="true"><i /><i /><i /></span>
+                        <span>{agentName(sdkRoom, selectedAgent)} is thinking</span>
+                      </div>}
                     {selectedAgent.accessRequest && <div className="conversation-message assistant access-message">
                       <span>{selectedActor?.name}</span>
                       <div className="message-bubble">

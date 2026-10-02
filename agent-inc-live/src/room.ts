@@ -26,6 +26,15 @@ export function effectiveProjectAccess(
   });
 }
 
+export function groupedProjectAccess(access: readonly EffectiveProjectAccess[]): {
+  agent: EffectiveProjectAccess[]; global: EffectiveProjectAccess[];
+} {
+  return {
+    agent: access.filter(item => !item.project.sharedRead),
+    global: access.filter(item => item.project.sharedRead),
+  };
+}
+
 export type Status = "idle" | "thinking" | "tool" | "blocked" | "offline";
 export type RecentTool = {
   kind: "Terminal" | "Checks" | "Research" | "Editing" | "Delegating" | "Working";

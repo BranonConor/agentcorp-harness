@@ -1,13 +1,24 @@
-.live-shell .sidebar.activity-panel.chat-open { width: min(490px, calc(100vw - 20px)); height: min(770px, calc(100dvh - 20px)); }
+.live-shell .sidebar.activity-panel.chat-open { width: min(490px, calc(100vw - 20px)); }
 .live-shell .activity-scroll.activity-list-scroll { padding: 0; }
 .live-shell .activity-list-scroll .activity-empty { padding: 20px 18px; }
-.live-shell .overview-list .activity-row { padding: 13px 18px; }
-.live-shell .overview-list .activity-row:hover { background: var(--office-muted); }
-.live-shell .overview-list .focus-button { align-self: flex-start; margin: 14px 18px; }
+.live-shell .overview-list .activity-row { padding: 16px 0 20px; }
+.live-shell .overview-list .activity-row:hover { background: transparent; }
+.live-shell .overview-list .focus-button { align-self: flex-start; margin: 14px 0; }
 .live-shell .conversation-scroll { display: flex; flex-direction: column; padding-bottom: 0; }
 .conversation-view { display: flex; flex-direction: column; flex: 1 0 auto; min-height: 100%; }
 .conversation-messages { flex: 1 0 auto; min-height: 180px; padding: 2px 0 48px; }
 .conversation-empty { padding: 0; }
+.conversation-thinking { display: inline-flex; align-items: center; gap: 9px; align-self: start;
+  min-height: 34px; margin: 2px 24px 20px 0; padding: 0 12px;
+  border: 1px solid var(--office-border); border-radius: 7px;
+  color: var(--office-secondary); background: var(--office-assistant-bubble);
+  font: 600 11px var(--sans); }
+.thinking-mark { display: flex; align-items: center; gap: 3px; height: 14px; }
+.thinking-mark i { display: block; width: 4px; height: 4px; border-radius: 1px;
+  background: var(--office-accent); animation: thinking-pulse 1.2s ease-in-out infinite; }
+.thinking-mark i:nth-child(2) { animation-delay: .18s; }
+.thinking-mark i:nth-child(3) { animation-delay: .36s; }
+@keyframes thinking-pulse { 50% { opacity: .28; transform: translateY(-2px); } }
 .conversation-message { margin: 0 0 13px; }
 .conversation-message > span { font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--office-secondary); }
 .conversation-message .message-bubble {
@@ -110,6 +121,13 @@
 .live-shell .activity-panel .activity-tabs button { flex: 1; min-height: 30px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
 .live-shell .activity-panel .activity-tabs button[aria-pressed="true"] { border-color: var(--office-border); background: var(--office-accent-bg); color: var(--office-accent); }
 .live-shell .activity-panel .activity-tabs button:hover { background: var(--office-accent-bg); }
+.agents-empty { display: grid; justify-items: start; gap: 8px; }
+.agents-empty strong { color: var(--office-text); font-size: 14px; }
+.agents-empty p { margin: 0; }
+.agents-empty button { min-height: 34px; margin-top: 6px; padding: 6px 12px;
+  border: 1px solid var(--office-border); border-radius: 7px;
+  color: var(--office-accent); background: var(--office-accent-bg); cursor: pointer; }
+.agents-empty button:disabled { opacity: .5; cursor: not-allowed; }
 .live-shell .activity-panel .focus-button { box-sizing: border-box; min-height: 30px; padding: 5px 9px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
 .live-shell .activity-panel .focus-button:hover:not(:disabled) { background: var(--office-accent-bg); }
 .live-shell .top-stats .add-agent-button, .live-shell .top-stats .system-toggle {
@@ -197,6 +215,9 @@
 .send-home-dialog h2 { margin: 0 0 13px; font-size: 19px; line-height: 1.3; }
 .send-home-dialog p { color: var(--office-secondary); font-size: 12px; line-height: 1.55; }
 .send-home-dialog code { display: block; margin-top: 6px; padding: 9px; border: 1px solid var(--office-border); border-radius: 6px; background: var(--office-muted); color: var(--office-text); font: 10px/1.4 var(--mono); overflow-wrap: anywhere; user-select: text; }
+@media (prefers-reduced-motion: reduce) {
+  .thinking-mark i { animation: none; }
+}
 .send-home-acknowledge { display: flex; align-items: start; gap: 9px; margin: 15px 0; font-size: 12px; line-height: 1.4; }
 .send-home-acknowledge input { flex: none; width: 17px; height: 17px; accent-color: var(--office-accent); }
 .send-home-dialog .send-home-error { padding: 9px; border: 1px solid var(--office-warning); border-radius: 7px; background: var(--office-warning-bg); color: var(--office-warning); }

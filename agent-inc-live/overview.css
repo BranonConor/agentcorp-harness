@@ -15,11 +15,11 @@
 
 .live-shell .overview-list {
   display: grid;
-  gap: var(--ui-space-3);
-  padding: var(--ui-space-4);
+  gap: var(--ui-space-2);
+  padding: 20px 22px 32px;
 }
 .live-shell .overview-group-label {
-  margin: 8px 2px 0;
+  margin: 17px 0 0;
   color: var(--ui-subtle);
   font: 700 10px/1.2 var(--sans);
   letter-spacing: .1em;
@@ -31,13 +31,14 @@
   box-sizing: border-box;
   min-width: 0;
   margin: 0;
-  padding: var(--ui-space-4);
-  border: 1px solid var(--ui-line);
-  border-radius: var(--ui-radius-card);
-  background: var(--ui-card);
-  box-shadow: 0 2px 8px var(--office-shadow);
+  padding: 16px 0 20px;
+  border: 0;
+  border-bottom: 1px solid var(--ui-line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
 }
-.live-shell .overview-list .activity-row:hover { background: var(--ui-card); }
+.live-shell .overview-list .activity-row:hover { background: transparent; }
 .live-shell .overview-list .activity-row-heading strong {
   font-size: 14px;
   font-weight: 700;
@@ -53,18 +54,19 @@
 .live-shell .overview-metrics {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
-  gap: var(--ui-space-2);
+  gap: 0;
   margin-top: var(--ui-space-3);
 }
 .live-shell .overview-metrics > div {
   display: grid;
   gap: 3px;
   min-width: 0;
-  padding: 10px 4px;
-  border-radius: var(--ui-radius-sm);
-  background: var(--office-muted);
+  padding: 12px 4px;
+  border-right: 1px solid var(--ui-line);
+  background: transparent;
   text-align: center;
 }
+.live-shell .overview-metrics > div:last-child { border-right: 0; }
 .live-shell .overview-metrics strong { font: 700 20px/1 var(--sans); }
 .live-shell .overview-metrics span { color: var(--ui-subtle); font: 600 10px/1.25 var(--sans); }
 .live-shell .overview-metrics .attention { background: var(--office-warning-bg); color: var(--office-warning); }
@@ -136,10 +138,10 @@
 .live-shell .overview-list .overview-model-form {
   display: grid;
   gap: 11px;
-  padding: 12px;
-  border: 1px solid var(--ui-line);
-  border-radius: var(--ui-radius-sm);
-  background: var(--office-muted);
+  padding: 12px 0;
+  border: 0;
+  border-top: 1px solid var(--ui-line);
+  background: transparent;
 }
 .live-shell .overview-model-form h3 { margin: 0; font-size: 12px; }
 .live-shell .overview-model-form label:has(input[type="checkbox"]) {
@@ -187,15 +189,15 @@
   cursor: pointer;
 }
 .live-shell .activity-title-row .profile-header-edit:hover { background: var(--office-accent-bg); }
-.live-shell .agent-setup { display: grid; gap: 12px; padding: 16px; }
+.live-shell .agent-setup { display: grid; gap: 8px; padding: 20px 22px 32px; }
 .live-shell .agent-setup-intro h3 { margin: 5px 0 0; font-size: 18px; letter-spacing: -.03em; }
 .live-shell .agent-setup p { margin: 7px 0 0; color: var(--office-secondary); font: 11px/1.5 var(--sans); }
 .live-shell .agent-setup-card {
   min-width: 0;
-  padding: 14px;
-  border: 1px solid var(--office-border);
-  border-radius: var(--ui-radius-card);
-  background: var(--office-surface);
+  padding: 18px 0;
+  border: 0;
+  border-top: 1px solid var(--office-border);
+  background: transparent;
 }
 .live-shell .agent-setup-card h4 { margin: 0; font-size: 13px; }
 .live-shell .agent-setup-card .persona-form { gap: 10px; }
@@ -213,6 +215,33 @@
 .live-shell .agent-setup-card .persona-projects { margin-top: 12px; }
 .live-shell .agent-setup-card .persona-projects h4 { display: none; }
 .live-shell .agent-setup-card .persona-projects > p { margin: 4px 0; }
+.live-shell .setup-preview-panel[hidden] { display: none; }
+.live-shell .setup-preview-panel { padding-top: 10px; }
+.live-shell .profile-extras .overview-disclosure,
+.live-shell .agent-setup-card > .overview-disclosure { width: 100%; }
+.live-shell .project-chooser { margin: 12px 0; }
+.live-shell .project-chooser-content { padding: 12px 0; }
+.live-shell .project-chooser-toggle { min-height: 34px; }
+.live-shell .project-edit-notice { color: var(--office-secondary); font-size: 11px; line-height: 1.5; }
+.live-shell .project-group { margin-top: 17px; }
+.live-shell .project-group h5 { margin: 0; color: var(--office-secondary); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
+.live-shell .persona-projects .project-actions button,
+.live-shell .persona-projects .project-chooser button,
+.live-shell .overview-list .project-chooser button {
+  min-height: 34px; padding: 6px 10px; border: 1px solid var(--office-border);
+  border-radius: var(--ui-radius-sm); background: var(--office-muted);
+  color: var(--office-text); font: 650 11px var(--sans); cursor: pointer;
+}
+.live-shell .persona-projects .project-actions button:hover:not(:disabled) { background: var(--office-accent-bg); }
+.live-shell .persona-projects .project-actions button:disabled { opacity: .5; cursor: not-allowed; }
+.live-shell .project-chooser label { display: grid; gap: 5px; flex: 1 1 180px; font: 650 11px var(--sans); }
+.live-shell .project-chooser input, .live-shell .project-chooser select {
+  box-sizing: border-box; width: 100%; min-width: 0; padding: 7px;
+  border: 1px solid var(--office-border); border-radius: var(--ui-radius-sm);
+  background: var(--office-panel); color: var(--office-text);
+}
+.live-shell .project-chooser :is(button, input, select):focus-visible,
+.live-shell .profile-extras :is(button, input):focus-visible { outline: 2px solid var(--ui-focus); outline-offset: 2px; }
 .live-shell .agent-setup-card > button { margin-top: 10px; }
 .live-shell .agent-setup-card button {
   min-height: 32px;
@@ -240,12 +269,13 @@
 .live-shell .agent-guidance-preview strong { font-size: 11px; }
 .live-shell .agent-guidance-preview p { margin: 3px 0 10px; }
 @media (max-width: 540px) {
-  .live-shell .overview-list { padding: 12px; }
+  .live-shell .overview-list, .live-shell .agent-setup { padding: 16px; }
   .live-shell .overview-list .activity-row,
-  .live-shell .overview-list .activity-row.upgrade-shop { padding: 13px; }
+  .live-shell .overview-list .activity-row.upgrade-shop { padding: 14px 0; }
 }
 @media (max-width: 360px) {
   .live-shell .overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .live-shell .overview-metrics > div:nth-child(2) { border-right: 0; }
   .live-shell .overview-list .upgrade-shop li { grid-template-columns: 1fr; }
   .live-shell .overview-list .upgrade-shop li > button,
   .live-shell .overview-list .upgrade-shop li > .overview-installed { grid-column: 1; grid-row: auto; justify-self: start; }
