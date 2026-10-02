@@ -244,6 +244,8 @@
 }
 
 .live-shell .sidebar.activity-panel {
+  --panel-inline: 22px;
+  --panel-section-block: 18px;
   z-index: 5;
   top: max(var(--office-inset), env(safe-area-inset-top));
   right: max(var(--office-inset), env(safe-area-inset-right));
@@ -317,6 +319,18 @@
 .activity-tabs button:hover { color: var(--office-text); background: var(--office-muted); }
 .activity-tabs button[aria-pressed="true"] { border-bottom-color: var(--office-accent); color: var(--office-accent); }
 .activity-scroll { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px; scrollbar-width: thin; }
+.live-shell .activity-view { min-width: 0; }
+.live-shell .activity-view > .panel-section,
+.live-shell .persona-details > .panel-section {
+  box-sizing: border-box;
+  min-width: 0;
+  margin: 0;
+  padding: var(--panel-section-block) var(--panel-inline);
+  border: 0;
+  border-bottom: 1px solid var(--office-border);
+  border-radius: 0;
+  background: transparent;
+}
 .activity-usage { padding-bottom: 9px; }
 .activity-usage-heading { display: flex; align-items: baseline; justify-content: space-between; flex-wrap: wrap; gap: 5px 12px; }
 .activity-usage-heading h3 { margin: 0; font-size: 15px; font-weight: 650; letter-spacing: -.02em; }
@@ -473,6 +487,8 @@
   .identity-controls { gap: 8px; margin-left: 2px; padding-left: 9px; }
   .live-shell .sidebar.activity-panel {
     width: min(436px, calc(100vw - 16px));
+    --panel-inline: 16px;
+    --panel-section-block: 16px;
   }
 }
 @media (max-width: 540px) {

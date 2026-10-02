@@ -941,7 +941,7 @@ function LiveOffice() {
   };
   const personaNotes = (persona: AgentPersona) => {
     const note = noteDrafts[persona.id] ?? { text: "", provenance: "" };
-    return <div className="persona-notes">
+    return <div className="persona-notes panel-section">
     <h4>Curated notes</h4>
     {!persona.memories.length && <p>No approved notes yet.</p>}
     <ul>{persona.memories.map(memory => <li key={memory.id}>
@@ -987,7 +987,7 @@ function LiveOffice() {
       item.personaId === persona.id && !!item.repository?.remote &&
       !career.rewards.has(`assignment:${item.id}:`) && !career.rewards.has(`pr-assignment:${item.id}`));
     const evidence = rewardEvents.filter(event => event.personaId === persona.id);
-    return <section className="career-panel" aria-label={`${persona.name} career`}>
+    return <section className="career-panel panel-section" aria-label={`${persona.name} career`}>
       <h4>Career · {RANKS[level].name}</h4>
       <p>{earned} XP · {level + 1 < RANKS.length ?
         `${RANKS[level + 1].xp - earned} XP to ${RANKS[level + 1].name}` : "Highest level eligible"}</p>
@@ -1078,7 +1078,7 @@ function LiveOffice() {
       <p className="project-edit-notice">Edit via task worktree; manual tools prompt by default. A worktree is not an OS sandbox.</p>
     </div>}
   </div>;
-  const personaProjects = (persona: AgentPersona) => <div className="persona-projects">
+  const personaProjects = (persona: AgentPersona) => <div className="persona-projects panel-section">
     <h4>Assign projects</h4>
     <p>Choose verified repositories for this agent to read or become eligible for task worktrees. Global access applies unless excluded.</p>
     {projectChooser(persona)}
@@ -1216,13 +1216,12 @@ function LiveOffice() {
         .outcome-dialog label { display: grid; gap: 5px; }
         .outcome-dialog textarea, .outcome-dialog select { width: 100%; padding: 7px; box-sizing: border-box;
           background: var(--office-muted); color: var(--office-text); border: 1px solid var(--office-border); }
-        .meeting-panel { display: grid; gap: 22px; padding: 20px 22px 32px; }
+        .meeting-panel { display: grid; gap: 0; padding: 0 0 32px; }
         .meeting-panel h3 { margin: 0; font-size: 15px; }
         .meeting-intro h3 { margin: 6px 0 8px; font-size: 19px; }
         .meeting-panel p, .meeting-panel small { color: var(--office-secondary); font-size: 11px; line-height: 1.5; }
         .meeting-panel p { margin: 0; }
-        .meeting-panel form, .meeting-detail { display: grid; gap: 13px; padding: 18px 0 0;
-          border: 0; border-top: 1px solid var(--office-border); background: transparent; }
+        .meeting-panel form, .meeting-detail { display: grid; gap: 13px; }
         .meeting-panel label { display: grid; gap: 5px; font-size: 11px; font-weight: 600; }
         .meeting-panel input:not([type="checkbox"]), .meeting-panel textarea, .meeting-panel select {
           width: 100%; min-width: 0; box-sizing: border-box; padding: 7px; border: 1px solid var(--office-border);
@@ -1589,13 +1588,13 @@ function LiveOffice() {
             )}
             {!selectedAgent && tab === "meetings" && (
               <section className="activity-view meeting-panel" aria-label="Manual meetings and reviews">
-                <div className="meeting-intro">
+                <div className="meeting-intro panel-section">
                   <span className="overview-group-label">Collaborate</span>
                   <h3>Meetings & reviews</h3>
                   <p>Choose 2–4 available agents. You decide what to share and approve each turn.
                     Chats and repository permissions are never shared automatically.</p>
                 </div>
-                <form onSubmit={event => { event.preventDefault(); void createMeeting(); }}>
+                <form className="panel-section" onSubmit={event => { event.preventDefault(); void createMeeting(); }}>
                   <h3>New handoff</h3>
                   <label>Format
                     <select value={meetingKind} disabled={meetingBusy}
@@ -1645,7 +1644,7 @@ function LiveOffice() {
                   <button type="submit" className="meeting-primary" disabled={!canCreateMeeting}>
                     {meetingBusy ? "Saving…" : "Create handoff"}</button>
                 </form>
-                {meetings.length > 0 && <>
+                {meetings.length > 0 && <div className="panel-section meeting-records">
                   <h3>Handoffs</h3>
                   <div className="meeting-list" aria-label="Recorded handoffs">
                     {meetings.map(meeting => <button type="button" key={meeting.id}
@@ -1655,8 +1654,8 @@ function LiveOffice() {
                       {" · "}{meeting.status} · {meeting.turns.length}/{meeting.maxTurns} turns
                     </button>)}
                   </div>
-                </>}
-                {currentMeeting && <div className="meeting-detail" key={currentMeeting.id}>
+                </div>}
+                {currentMeeting && <div className="meeting-detail panel-section" key={currentMeeting.id}>
                   <h3>{currentMeeting.kind === "review" ? "Review" : "Meeting"} · {currentMeeting.agenda}</h3>
                   <p className={`meeting-status meeting-status-${currentMeeting.status}`} role="status">{currentMeeting.status}
                     {meetingTurnPending && " · turn in progress"}
@@ -1817,17 +1816,18 @@ function LiveOffice() {
                         <span>{persona.name} · {((sdkRoom?.assignments ?? [])
                           .filter(assignment => assignment.personaId === persona.id)).length} preserved assignments</span></summary>
                       <div className="persona-details">
-                        <p>{[persona.profile.title, persona.profile.rank, `Portrait #${persona.artId}`]
+                        <div className="panel-section"><p>{[persona.profile.title, persona.profile.rank, `Portrait #${persona.artId}`]
                           .filter(Boolean).join(" · ")}</p>
                         {persona.profile.workingStyle && <p><strong>Working style:</strong> {persona.profile.workingStyle}</p>}
                         {!!persona.profile.specialties.length &&
                           <p><strong>Specialties:</strong> {persona.profile.specialties.join(", ")}</p>}
                         {profileEditingId === persona.id ? profileEditor(persona) :
                           <button type="button" onClick={() => startProfileEdit(persona)}>Edit profile</button>}
+                        </div>
                         {personaNotes(persona)}
                         {personaCareer(persona)}
                         {personaProjects(persona)}
-                        <div className="assignment-history"><h4>Preserved assignments</h4>
+                        <div className="assignment-history panel-section"><h4>Preserved assignments</h4>
                           <ul>{(sdkRoom?.assignments ?? []).filter(assignment => assignment.personaId === persona.id)
                             .sort((a, b) => b.startedAt - a.startedAt).map(assignment =>
                               <li key={assignment.id}><strong>{assignment.outcome || "Assignment"}</strong>
@@ -1852,7 +1852,7 @@ function LiveOffice() {
             )}
             {selectedAgent && setupOpen && selectedPersona && (
               <section className="activity-view agent-setup" aria-label={`${selectedPersona.name} profile setup`}>
-                <div className="agent-setup-intro">
+                <div className="agent-setup-intro panel-section">
                   <span className="overview-group-label">{selectedPersona.setupCompleted === false ? "New hire" : "Profile"}</span>
                   <h3>{selectedPersona.setupCompleted === false ? "Configure this agent" : `Edit ${selectedPersona.name}`}</h3>
                   <p>{selectedPersona.setupCompleted === false ?
@@ -1865,15 +1865,15 @@ function LiveOffice() {
                     </Button>
                   </p>}
                 </div>
-                <div className="agent-setup-card">
+                <div className="agent-setup-card panel-section">
                   <h4>Identity & working style</h4>
                   {profileEditor(selectedPersona)}
                 </div>
-                <div className="agent-setup-card">
+                <div className="agent-setup-card panel-section">
                   <h4>Assign projects</h4>
                   {personaProjects(selectedPersona)}
                 </div>
-                <Collapsible.Root className="agent-setup-card">
+                <Collapsible.Root className="agent-setup-card panel-section">
                   <Collapsible.Trigger className="overview-disclosure">Preview profile instructions <span aria-hidden="true">⌄</span></Collapsible.Trigger>
                   <Collapsible.Panel className="setup-preview-panel">
                     <p>Saved profile instructions apply to this agent's next job or chat. The current chat keeps its existing context.
@@ -1891,7 +1891,7 @@ function LiveOffice() {
             {selectedAgent && !setupOpen && (
               <section className="activity-view conversation-view" aria-label="SDK conversation">
                   <div className="persona-details">
-                    <div className="persona-heading">
+                    <div className="profile-summary panel-section"><div className="persona-heading">
                       <img src={agentPortrait(agentArt(sdkRoom, selectedAgent))} alt="" width="42" height="42" />
                       <div><h3>{agentName(sdkRoom, selectedAgent)}</h3>
                         {selectedPersona && <span>{[selectedPersona.profile.title, selectedPersona.profile.rank,
@@ -1904,11 +1904,14 @@ function LiveOffice() {
                         {!!selectedPersona.profile.specialties.length &&
                           <p><strong>Specialties:</strong> {selectedPersona.profile.specialties.join(", ")}</p>}
                       </>}
+                    </> : <p>Profile is not available for this agent yet.</p>}
+                    </div>
+                    {selectedPersona && <>
                       {personaNotes(selectedPersona)}
                       {personaCareer(selectedPersona)}
                       {personaProjects(selectedPersona)}
-                    </> : <p>Profile is not available for this agent yet.</p>}
-                    <div className="assignment-history">
+                    </>}
+                    <div className="assignment-history panel-section">
                       <h4>Assignment history</h4>
                       {currentAssignment && <p>Current: started {new Date(currentAssignment.startedAt).toLocaleString()}
                         {" · model "}{currentAssignment.modelProfile?.model ?? "auto"}

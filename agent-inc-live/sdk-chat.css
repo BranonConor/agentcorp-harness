@@ -1,12 +1,11 @@
 .live-shell .sidebar.activity-panel.chat-open { width: min(490px, calc(100vw - 20px)); }
 .live-shell .activity-scroll.activity-list-scroll { padding: 0; }
-.live-shell .activity-list-scroll .activity-empty { padding: 20px 18px; }
-.live-shell .overview-list .activity-row { padding: 16px 0 20px; }
+.live-shell .activity-list-scroll .activity-empty { padding: 20px var(--panel-inline); }
 .live-shell .overview-list .activity-row:hover { background: transparent; }
 .live-shell .overview-list .focus-button { align-self: flex-start; margin: 14px 0; }
-.live-shell .conversation-scroll { display: flex; flex-direction: column; padding-bottom: 0; }
+.live-shell .conversation-scroll { display: flex; flex-direction: column; padding: 0; }
 .conversation-view { display: flex; flex-direction: column; flex: 1 0 auto; min-height: 100%; }
-.conversation-messages { flex: 1 0 auto; min-height: 180px; padding: 2px 0 48px; }
+.conversation-messages { flex: 1 0 auto; min-height: 180px; padding: 18px var(--panel-inline) 48px; }
 .conversation-empty { padding: 0; }
 .conversation-thinking { display: inline-flex; align-items: center; gap: 9px; align-self: start;
   min-height: 34px; margin: 2px 24px 20px 0; padding: 0 12px;
@@ -70,7 +69,7 @@
 .chat-back, .chat-options-toggle, .agent-menu-toggle, .live-shell .sidebar-close { position: relative; }
 .chat-back::after, .chat-options-toggle::after, .agent-menu-toggle::after,
 .live-shell .sidebar-close::after, .copy-message::after { content: ""; position: absolute; inset: -4px; }
-.conversation-row { position: relative; box-sizing: border-box; display: flex; align-items: flex-start; width: 100%; padding: 0 18px; border-bottom: 1px solid var(--office-border); color: var(--office-text); }
+.conversation-row { position: relative; box-sizing: border-box; display: flex; align-items: flex-start; width: 100%; padding: 0 var(--panel-inline); border-bottom: 1px solid var(--office-border); color: var(--office-text); }
 .conversation-row:hover { background: var(--office-muted); }
 .conversation-row.agent-archived { opacity: .78; }
 .agent-row-main { display: flex; flex: 1; align-items: flex-start; gap: 10px; min-width: 0; padding: 13px 0; border: 0; background: transparent; color: inherit; text-align: left; cursor: pointer; }
@@ -97,7 +96,7 @@
 .agent-menu-workspace span { display: block; color: var(--office-secondary); font-size: 10px; }
 .agent-menu-workspace code { display: block; margin-top: 4px; color: var(--office-text); font: 10px/1.4 var(--mono); overflow-wrap: anywhere; user-select: text; }
 .agent-menu-workspace small { padding: 5px 0 0; }
-.archived-chat-notice { margin: 0 16px 14px; padding: 10px; border: 1px solid var(--office-border); border-radius: 7px; color: var(--office-secondary); font-size: 11px; }
+.archived-chat-notice { margin: 0 var(--panel-inline) 14px; padding: 10px; border: 1px solid var(--office-border); border-radius: 7px; color: var(--office-secondary); font-size: 11px; }
 .live-shell .activity-title-row { gap: 8px; }
 .live-shell .activity-panel .chat-back, .live-shell .activity-panel .sidebar-close,
 .live-shell .activity-panel .chat-options-toggle { width: 27px; height: 27px; box-sizing: border-box; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); cursor: pointer; }
@@ -230,11 +229,12 @@
 .send-home-buttons button { min-height: 30px; padding: 5px 9px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
 .send-home-buttons .send-home-confirm { border-color: var(--office-warning); background: var(--office-warning-bg); color: var(--office-warning); }
 .send-home-buttons button:disabled { opacity: .5; cursor: not-allowed; }
-.persona-details { border-bottom: 1px solid var(--office-border); padding: 16px 18px 20px; font: 12px/1.5 var(--sans); color: var(--office-text); }
+.persona-details { font: 12px/1.5 var(--sans); color: var(--office-text); }
 .persona-details h3, .persona-details h4 { margin: 0; font-size: 13px; }
 .persona-details h4 { margin: 16px 0 6px; }
 .persona-details p { margin: 8px 0; color: var(--office-secondary); overflow-wrap: anywhere; }
 .persona-heading { display: flex; align-items: center; gap: 10px; margin-bottom: 10px; }
+.profile-summary .persona-heading:last-child { margin-bottom: 0; }
 .persona-heading img { flex: none; width: 42px; height: 42px; }
 .persona-heading div { min-width: 0; overflow-wrap: anywhere; }
 .persona-heading span, .persona-notes small, .assignment-history li span { display: block; color: var(--office-secondary); }
@@ -248,7 +248,7 @@
 .persona-form input, .persona-form textarea, .assignment-outcome input { box-sizing: border-box; width: 100%; min-width: 0; padding: 7px; border: 1px solid var(--office-border); border-radius: 6px; background: var(--office-panel); color: var(--office-text); font: 12px/1.4 var(--sans); }
 .persona-form textarea { resize: vertical; }
 .persona-form button { justify-self: start; }
-.persona-actions { display: flex; gap: 8px; }
+.persona-actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .persona-notes ul, .assignment-history ul { list-style: none; margin: 8px 0; padding: 0; }
 .persona-notes li, .assignment-history li { display: grid; gap: 4px; padding: 9px 0; border-top: 1px solid var(--office-border); overflow-wrap: anywhere; }
 .persona-notes li button { justify-self: start; }
@@ -263,17 +263,12 @@
 .retention-choices input { flex: none; accent-color: var(--office-accent); }
 .assignment-outcome { margin: 14px 0; font-size: 12px; }
 .assignment-outcome code { display: inline; padding: 0 3px; margin: 0; }
-.former-personas-title { margin: 20px 18px 8px; color: var(--office-secondary); font-size: 12px; }
-.former-persona { border-top: 1px solid var(--office-border); }
-.former-persona summary { display: flex; align-items: center; gap: 10px; padding: 12px 18px; color: var(--office-text); font: 650 12px var(--sans); cursor: pointer; }
+.former-personas-title { margin: 0; padding: 20px var(--panel-inline) 8px; color: var(--office-secondary); font-size: 12px; }
+.former-persona { border-bottom: 1px solid var(--office-border); }
+.former-persona summary { display: flex; align-items: center; gap: 10px; padding: 12px var(--panel-inline); color: var(--office-text); font: 650 12px var(--sans); cursor: pointer; }
 .former-persona summary:hover { background: var(--office-muted); }
 .former-persona summary:focus-visible { outline: 2px solid var(--office-accent); outline-offset: -2px; }
 .former-persona summary img { flex: none; }
 .former-persona summary::after { content: "▾"; margin-left: auto; }
 .former-persona[open] summary::after { transform: rotate(180deg); }
-.former-persona .persona-details { padding-top: 0; }
-@media (max-width: 700px) {
-  .conversation-row { padding: 0 16px; }
-  .live-shell .overview-list .activity-row { padding: 13px 16px; }
-  .live-shell .overview-list .focus-button { margin: 14px 16px; }
-}
+.former-persona .persona-details { border-top: 1px solid var(--office-border); }

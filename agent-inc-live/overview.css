@@ -15,23 +15,25 @@
 
 .live-shell .overview-list {
   display: grid;
-  gap: var(--ui-space-2);
-  padding: 20px 22px 32px;
+  gap: 0;
+  padding: 0 0 32px;
 }
 .live-shell .overview-group-label {
-  margin: 17px 0 0;
+  margin: 0;
+  padding: 20px var(--panel-inline) 0;
   color: var(--ui-subtle);
   font: 700 10px/1.2 var(--sans);
   letter-spacing: .1em;
   text-transform: uppercase;
 }
-.live-shell .overview-group-label:first-child { margin-top: 0; }
+.live-shell .overview-group-label:first-child { padding-top: 20px; }
+.live-shell .panel-section > .overview-group-label { display: block; padding: 0; }
 .live-shell .overview-list .activity-row,
 .live-shell .overview-list .activity-row.upgrade-shop {
   box-sizing: border-box;
   min-width: 0;
   margin: 0;
-  padding: 16px 0 20px;
+  padding: var(--panel-section-block) var(--panel-inline);
   border: 0;
   border-bottom: 1px solid var(--ui-line);
   border-radius: 0;
@@ -189,15 +191,11 @@
   cursor: pointer;
 }
 .live-shell .activity-title-row .profile-header-edit:hover { background: var(--office-accent-bg); }
-.live-shell .agent-setup { display: grid; gap: 8px; padding: 20px 22px 32px; }
+.live-shell .agent-setup { display: grid; gap: 0; padding: 0 0 32px; }
 .live-shell .agent-setup-intro h3 { margin: 5px 0 0; font-size: 18px; letter-spacing: -.03em; }
 .live-shell .agent-setup p { margin: 7px 0 0; color: var(--office-secondary); font: 11px/1.5 var(--sans); }
 .live-shell .agent-setup-card {
   min-width: 0;
-  padding: 18px 0;
-  border: 0;
-  border-top: 1px solid var(--office-border);
-  background: transparent;
 }
 .live-shell .agent-setup-card h4 { margin: 0; font-size: 13px; }
 .live-shell .agent-setup-card .persona-form { gap: 10px; }
@@ -269,9 +267,7 @@
 .live-shell .agent-guidance-preview strong { font-size: 11px; }
 .live-shell .agent-guidance-preview p { margin: 3px 0 10px; }
 @media (max-width: 540px) {
-  .live-shell .overview-list, .live-shell .agent-setup { padding: 16px; }
-  .live-shell .overview-list .activity-row,
-  .live-shell .overview-list .activity-row.upgrade-shop { padding: 14px 0; }
+  .live-shell .overview-list, .live-shell .agent-setup { padding-bottom: 24px; }
 }
 @media (max-width: 360px) {
   .live-shell .overview-metrics { grid-template-columns: repeat(2, minmax(0, 1fr)); }
