@@ -714,6 +714,9 @@ function LiveOffice() {
     });
     setGuidancePreview(null);
   }, [selectedPersona?.id, selected]);
+  useEffect(() => {
+    setGuidancePreview(null);
+  }, [selectedPersona?.updatedAt, selectedAgent?.assignmentId]);
   useLayoutEffect(() => {
     const bubbles = Array.from(chatScroll.current?.querySelectorAll<HTMLElement>(
       ".conversation-message:not(.access-message) .message-bubble") ?? []);
