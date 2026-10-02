@@ -125,6 +125,13 @@ const server = createServer(async (request, response) => {
         room.decide(body.agentId, body.id, body.allow);
         return json(response, 200, room.state);
       }
+      if (url.pathname === "/api/trusted-local" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string" || typeof body.assignmentId !== "string" ||
+          typeof body.enabled !== "boolean") throw new Error("Choose an agent, its assignment and an explicit mode.");
+        await room.setTrustedLocal(body.agentId, body.assignmentId, body.enabled);
+        return json(response, 200, room.state);
+      }
       if (url.pathname === "/api/retry" && request.method === "POST") {
         await payload(request);
         await room.connect();

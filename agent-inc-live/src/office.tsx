@@ -1055,7 +1055,7 @@ function LiveOffice() {
         {persona && <label>Agent access <select value={projectAccessChoice}
           onChange={event => setProjectAccessChoice(event.target.value as "read" | "write")}>
           <option value="read">Read for this agent</option>
-          <option value="write">Eligible for task worktree (tools require approval)</option>
+          <option value="write">Eligible for task worktree (manual tools prompt by default)</option>
         </select></label>}
         <button type="button" disabled={!connected || !projectCandidate || projectSaving}
           onClick={() => void (async () => {
@@ -1075,7 +1075,7 @@ function LiveOffice() {
             } finally { setProjectSaving(false); }
           })()}>{projectSaving ? "Saving…" : persona ? "Assign to agent" : "Share read with all agents"}</button>
       </div>}
-      <p className="project-edit-notice">Edit via task worktree; each tool still requires approval. A worktree is not an OS sandbox.</p>
+      <p className="project-edit-notice">Edit via task worktree; manual tools prompt by default. A worktree is not an OS sandbox.</p>
     </div>}
   </div>;
   const personaProjects = (persona: AgentPersona) => <div className="persona-projects">
@@ -1095,7 +1095,7 @@ function LiveOffice() {
       const change = (choice: "read" | "write" | "remove" | "exclude" | "inherit") =>
         void act("persona-project", { personaId: persona.id, fullName, choice });
       return <li key={fullName}>
-        <div><strong>{fullName}</strong><span>{write ? "Eligible for task worktree · tools require approval" : read ?
+        <div><strong>{fullName}</strong><span>{write ? "Eligible for task worktree · manual by default" : read ?
           source === "persona" ? "Read · agent" : source === "assignment" ? "Read · current task" : "Read · global" :
           source === "excluded" ? "Not readable · excluded" : "Not readable"}</span></div>
         <div className="project-actions">
@@ -1122,7 +1122,7 @@ function LiveOffice() {
       </section>;
     })}
     <p className="project-edit-notice">Write eligibility permits a separately approved task worktree, not automatic editing.
-      Tools still require approval; worktrees are not OS sandboxes.</p>
+      Manual mode prompts for tools; worktrees are not OS sandboxes.</p>
   </div>;
   const newAssignment = async () => {
     if (!assignmentAgent || !canStartAssignment(assignmentAgent) || assignmentSubmitting) return;
@@ -1540,7 +1540,7 @@ function LiveOffice() {
                   <div className="activity-row-heading"><strong>Global project access</strong>
                     <span className="activity-tag">{sdkRoom?.projects?.length ?? 0} verified</span></div>
                   <p>Share verified GitHub repositories for every agent to read, or enable explicit task worktree requests.
-                    Individual exclusions stay in the agent profile. Built-in tools still require approval.</p>
+                    Individual exclusions stay in the agent profile. Built-in tools prompt by default.</p>
                   {projectChooser()}
                   {!sdkRoom?.projects?.length && <p>No verified repositories yet.</p>}
                   <ul className="project-list">{sdkRoom?.projects?.map(project => <li key={project.repository.fullName}>
@@ -1555,7 +1555,7 @@ function LiveOffice() {
                       aria-label={`Task worktree eligibility for ${project.repository.fullName}`}
                       onCheckedChange={checked => void act("project-write", {
                         fullName: project.repository.fullName, sharedWrite: checked,
-                      })}><Switch.Thumb /></Switch.Root><span>Eligible for task worktrees (tools still prompt)</span></div>
+                      })}><Switch.Thumb /></Switch.Root><span>Eligible for task worktrees (manual tools prompt by default)</span></div>
                   </li>)}</ul>
                 </div>
                 <div className="activity-row">
@@ -1563,7 +1563,7 @@ function LiveOffice() {
                   <p className="workspace-path">{sdkRoom?.workspace || "Loading…"}</p>
                   <p>{sdkRoom?.agents.some(agent => agent.workspaceKind === "root") ?
                     "The existing agent retains this root; new agents use separate disposable subfolders here." :
-                    "Each agent uses a separate disposable subfolder here."} Agents request repository access in their own chat. Worktrees do not provide OS isolation; review every shell or write permission.</p>
+                    "Each agent uses a separate disposable subfolder here."} Agents request repository access in their own chat. Worktrees do not provide OS isolation; review each shell or write permission in manual mode.</p>
                 </div>
                 <div className="activity-row">
                   <div className="activity-row-heading"><strong>SDK usage · all recorded agents</strong>
@@ -2041,7 +2041,7 @@ function LiveOffice() {
                             <span>Task and session grants apply only to this agent. Persona read survives assignments;
                               office read is shared with all personas except those excluded in their inspector.
                               A request expires after 90 seconds; grants do not.
-                              Reads are guarded; shell/writes still need separate approval. Worktrees are not sandboxes.</span>
+                              Reads are guarded; shell/writes need separate approval by default. Worktrees are not sandboxes.</span>
                           </details>}
                         </section>
                       </div>
@@ -2061,6 +2061,20 @@ function LiveOffice() {
             </div>
             <small>Expires in 90 seconds. Worktrees are not OS sandboxes; inspect paths and commands before allowing once.</small>
           </div>}
+          {selectedAgent && !selectedAgent.archived && !setupOpen &&
+            selectedAgent.repository?.worktree && selectedAgent.repository.configuredProject && currentAssignment &&
+            <section className="trusted-local-card" aria-label="Task tool approval mode">
+              <strong>{selectedAgent.trustedLocal ? "Trusted-local autonomy active" : "Manual tool approval (default)"}</strong>
+              <p>This agent can run commands as your account; it may read/change files or credentials outside this repo. Not sandboxed.</p>
+              <p>{selectedAgent.trustedLocal ? "Routine built-in tools run without individual prompts for this agent and assignment until you turn this off, change assignments or worktrees, or restart the server. Managed requests and other tools follow existing review policy." :
+                "Manual mode asks before built-in tools. Worktree eligibility does not confine commands."}</p>
+              <button type="button" disabled={!connected || !selectedAgent.trustedLocal &&
+                (selectedAgent.phase !== "idle" || !!selectedAgent.review || !!selectedAgent.accessRequest)}
+                onClick={() => void act("trusted-local", { agentId: selectedAgent.id,
+                  assignmentId: currentAssignment.id, enabled: !selectedAgent.trustedLocal })}>
+                {selectedAgent.trustedLocal ? "Turn off autonomous local work" : "Allow autonomous local work for this task"}
+              </button>
+            </section>}
           {selectedAgent?.archived && <p className="archived-chat-notice">Archived · open Agents to restore this agent before sending a message.</p>}
           {selectedAgent?.phase === "error" && !selectedAgent.archived && <button type="button" className="focus-button" onClick={() => void act("retry", {})}>Retry agent connection</button>}
           {selectedAgent && !setupOpen && !selectedAgent.archived && <form className="conversation-composer" onSubmit={event => {

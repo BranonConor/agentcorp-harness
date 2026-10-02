@@ -50,7 +50,8 @@ class MockSession implements LiveSession {
 class MockAdapter implements Adapter {
   nextSession = 1;
   sessions = new Map<string, MockSession>();
-  permissions = new Map<string, (request: PermissionRequest) => Promise<PermissionRequestResult>>();
+  permissions = new Map<string, (request: PermissionRequest,
+    invocation?: { sessionId: string; managedSettingsEnabled?: boolean }) => Promise<PermissionRequestResult>>();
   workspaces = new Map<string, string>();
   prepared: string[] = [];
   resumed: string[] = [];
@@ -74,14 +75,15 @@ class MockAdapter implements Adapter {
     this.prepared.push(agentId);
     return `${root}/agents/${agentId}`;
   }
-  async create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant,
+  async create(workspace: string, permission: (request: PermissionRequest,
+    invocation?: { sessionId: string; managedSettingsEnabled?: boolean }) => Promise<PermissionRequestResult>, sessionId?: string, repository?: RepositoryGrant,
     _requestAccess?: unknown, getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile: ModelProfile = COPILOT_PROFILE,
     _isMeetingTurn?: () => boolean, personaGuidance = ""): Promise<LiveSession> {
     const id = sessionId ?? `sdk-session-${this.nextSession++}`;
     const session = new MockSession(id);
     this.sessions.set(id, session);
     this.workspaces.set(id, workspace);
-    this.permissions.set(id, permission);
+    this.permissions.set(id, (request, invocation) => permission(request, invocation ?? { sessionId: id }));
     this.grants.set(id, repository);
     if (getGrant) this.research.set(id, getGrant);
     this.profiles.set(id, profile);
@@ -89,14 +91,15 @@ class MockAdapter implements Adapter {
     this.recreated = sessionId;
     return session;
   }
-  async resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>, repository?: RepositoryGrant,
+  async resume(id: string, workspace: string, permission: (request: PermissionRequest,
+    invocation?: { sessionId: string; managedSettingsEnabled?: boolean }) => Promise<PermissionRequestResult>, repository?: RepositoryGrant,
     _requestAccess?: unknown, getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile: ModelProfile = COPILOT_PROFILE,
     _isMeetingTurn?: () => boolean, personaGuidance = ""): Promise<LiveSession> {
     this.resumed.push(id);
     if (this.failResume.has(id)) throw new Error("CLI temporarily unavailable");
     if (this.missing.has(id)) throw new Error(`Failed to load session events: Session not found: ${id}`);
     if (this.workspaces.get(id) !== workspace) throw new Error("Wrong agent workspace");
-    this.permissions.set(id, permission);
+    this.permissions.set(id, (request, invocation) => permission(request, invocation ?? { sessionId: id }));
     this.grants.set(id, repository);
     if (getGrant) this.research.set(id, getGrant);
     this.profiles.set(id, profile);
@@ -117,7 +120,7 @@ async function createReady(room: RoomController, deskIndex: number): Promise<Age
   return agent;
 }
 const event = (type: string, data: Record<string, unknown> = {}): SessionEvent => ({ type, data } as SessionEvent);
-const request = { kind: "shell", toolCallId: "call-1", fullCommandText: "rm -rf important" } as PermissionRequest;
+const request = { kind: "shell", toolCallId: "call-1", fullCommandText: "rm -rf important" } as Extract<PermissionRequest, { kind: "shell" }>;
 
 test("explicit meeting handoffs are bounded, private, and link decisions to assignments", async () => {
   const store = new MemoryStore();
@@ -1522,7 +1525,7 @@ test("configured write eligibility opens only an explicit per-task worktree and 
     const store = new MemoryStore();
     const adapter = new MockAdapter();
     const source = new FixtureSource(repo);
-    const room = await RoomController.open(adapter, store, "/dedicated", join(fixture, "trees"), source);
+    let room = await RoomController.open(adapter, store, "/dedicated", join(fixture, "trees"), source);
     const first = await createReady(room, 0);
     const second = await createReady(room, 1);
     const unsubscribe = room.subscribe(() => {});
@@ -1543,7 +1546,98 @@ test("configured write eligibility opens only an explicit per-task worktree and 
     assert.equal(adapter.sessions.get(first.sessionId)?.directory, grant?.worktree?.path);
     assert.equal(second.repository, undefined);
     await assert.rejects(room.prepareProjectWorktree(second.id, "Fixture/fixture"), /write eligibility/);
+    await assert.rejects(room.setTrustedLocal(second.id, second.assignmentId!, true), /eligible worktree/);
+    await assert.rejects(room.setTrustedLocal(first.id, second.assignmentId!, true), /current assignment/);
+    await room.send(first.id, "Edit this task");
+    const noConsent = adapter.permissions.get(first.sessionId)!({ ...request, toolCallId: "no-consent" });
+    assert.equal(first.review?.kind, "shell", "the default remains manual even during an edit task");
+    room.decide(first.id, first.review!.id, false);
+    assert.deepEqual(await noConsent, { kind: "reject", feedback: "User denied this action." });
+    adapter.sessions.get(first.sessionId)!.emit(event("session.idle"));
+    await room.setTrustedLocal(first.id, first.assignmentId!, true);
+    assert.equal(first.trustedLocal, true);
+    assert.equal((store.saved as Room).agents.find(item => item.id === first.id)?.trustedLocal, undefined,
+      "consent is not persisted across process restarts");
+    await room.send(first.id, "Continue the selected edit task");
+    const permission = adapter.permissions.get(first.sessionId)!;
+    const start = (toolCallId: string, toolName: string) =>
+      adapter.sessions.get(first.sessionId)!.emit(event("tool.execution_start", { toolCallId, toolName }));
+    start("routine-1", "bash");
+    assert.deepEqual(await permission({ ...request, toolCallId: "routine-1" }), { kind: "approve-once" });
+    assert.match(first.messages.at(-1)!.content, /Trusted-local autoapproval: bash/);
+    assert.equal(room.state.agents.find(item => item.id === first.id)?.review, undefined);
+    assert.equal(second.trustedLocal, undefined);
+    const crossAgent = adapter.permissions.get(second.sessionId)!({ ...request, toolCallId: "routine-1" });
+    assert.ok(second.review, "another agent cannot inherit consent");
+    room.decide(second.id, second.review!.id, false);
+    assert.deepEqual(await crossAgent, { kind: "reject", feedback: "User denied this action." });
+    const manuallyDenied = async (toolCallId: string, toolName: string, input: PermissionRequest,
+      invocation?: { sessionId: string; managedSettingsEnabled?: boolean }) => {
+      start(toolCallId, toolName);
+      const pendingReview = permission({ ...input, toolCallId }, invocation);
+      assert.ok(first.review, `${toolCallId} must prompt`);
+      room.decide(first.id, first.review!.id, false);
+      assert.deepEqual(await pendingReview, { kind: "reject", feedback: "User denied this action." });
+    };
+    await manuallyDenied("managed", "bash", { ...request, managedApprovalRequired: true });
+    const afterManagedDenial = permission({ ...request, toolCallId: "managed" });
+    assert.ok(first.review, "a managed denial cannot turn into a later autoapproval of the same call");
+    room.decide(first.id, first.review!.id, false);
+    assert.deepEqual(await afterManagedDenial, { kind: "reject", feedback: "User denied this action." });
+    await manuallyDenied("managed-invocation", "bash", request,
+      { sessionId: first.sessionId, managedSettingsEnabled: true });
+    await manuallyDenied("wrong-sdk-session", "bash", request, { sessionId: second.sessionId });
+    await manuallyDenied("bypass", "bash", { ...request, requestSandboxBypass: true });
+    await manuallyDenied("wrong-kind", "bash", { kind: "write", fileName: "README.md", diff: "+x" } as PermissionRequest);
+    await manuallyDenied("unknown", "unrecognized_tool", request);
+    await manuallyDenied("mcp", "bash", { kind: "mcp", toolName: "bash", serverName: "external" } as PermissionRequest);
+    await manuallyDenied("custom", "bash", { kind: "custom-tool", toolName: "bash" } as PermissionRequest);
+    adapter.sessions.get(first.sessionId)!.emit(event("tool.execution_start", {
+      toolCallId: "mcp-provenance", toolName: "bash", mcpServerName: "external"
+    }));
+    const mcpProvenance = permission({ ...request, toolCallId: "mcp-provenance" });
+    assert.ok(first.review);
+    room.decide(first.id, first.review!.id, false);
+    assert.deepEqual(await mcpProvenance, { kind: "reject", feedback: "User denied this action." });
+    const noProvenance = permission({ kind: "read", path: "/outside", toolCallId: "missing-start" } as PermissionRequest);
+    assert.ok(first.review, "missing tool provenance must prompt");
+    room.decide(first.id, first.review!.id, false);
+    assert.deepEqual(await noProvenance, { kind: "reject", feedback: "User denied this action." });
+    start("read", "view");
+    assert.deepEqual(await permission({ kind: "read", path: "/outside", toolCallId: "read" } as PermissionRequest),
+      { kind: "approve-once" }, "consent acknowledges that reads outside the repo are possible");
+    start("write", "apply_patch");
+    assert.deepEqual(await permission({ kind: "write", fileName: "/outside", diff: "+x", toolCallId: "write" } as PermissionRequest),
+      { kind: "approve-once" });
+    await room.setTrustedLocal(first.id, first.assignmentId!, false);
+    assert.equal(first.trustedLocal, false);
+    await manuallyDenied("revoked", "bash", request);
+    adapter.sessions.get(first.sessionId)!.emit(event("session.idle"));
+    await room.setTrustedLocal(first.id, first.assignmentId!, true);
+    await room.send(first.id, "Next prompt in this assignment");
+    start("next-prompt", "bash");
+    assert.deepEqual(await permission({ ...request, toolCallId: "next-prompt" }), { kind: "approve-once" });
+    adapter.sessions.get(first.sessionId)!.emit(event("session.idle"));
     unsubscribe();
+    assert.equal(first.trustedLocal, false, "last browser disconnect revokes consent");
+    await room.close();
+    room = await RoomController.open(adapter, store, "/dedicated", join(fixture, "trees"), source);
+    await room.connect();
+    assert.equal(room.state.agents.find(item => item.id === first.id)?.trustedLocal, false,
+      "process restart must revoke active consent without losing the edit assignment");
+    assert.deepEqual(await permission({ ...request, toolCallId: "stale-sdk" }),
+      { kind: "reject", feedback: "This SDK assignment is no longer active." },
+      "an old SDK permission callback cannot reuse the same assignment after resume");
+    const resumedPermission = adapter.permissions.get(first.sessionId)!;
+    const resumedSubscription = room.subscribe(() => {});
+    await room.send(first.id, "Manual after restart");
+    const afterRestart = resumedPermission({ ...request, toolCallId: "after-restart" });
+    const resumedAgent = room.state.agents.find(item => item.id === first.id)!;
+    assert.ok(resumedAgent.review);
+    room.decide(first.id, resumedAgent.review!.id, false);
+    assert.deepEqual(await afterRestart, { kind: "reject", feedback: "User denied this action." });
+    adapter.sessions.get(first.sessionId)!.emit(event("session.idle"));
+    resumedSubscription();
     const attempts = [
       { kind: "shell", fullCommandText: `printf leak > ${join(fixture, "outside")}` },
       { kind: "shell", fullCommandText: `sh -c 'touch ${join(fixture, "outside")}'` },
@@ -1564,6 +1658,7 @@ test("configured write eligibility opens only an explicit per-task worktree and 
     const restored = await RoomController.open(adapter, store, "/dedicated", join(fixture, "trees"), source);
     await restored.connect();
     await restored.restore(first.id);
+    assert.equal(restored.state.agents.find(item => item.id === first.id)?.trustedLocal, false);
     assert.equal(restored.state.agents.find(item => item.id === first.id)?.repository?.worktree?.path,
       grant?.worktree?.path);
     await restored.setPersonaProject(first.id, "Fixture/fixture", "remove");
@@ -1599,6 +1694,7 @@ test("configured worktree revocation stops a pending tool and denies stale appro
     const secondTree = room.state.agents.find(item => item.id === second.id)!.repository!.worktree!;
     assert.notEqual(firstTree.path, secondTree.path);
     assert.notEqual(firstTree.branch, secondTree.branch);
+    await room.setTrustedLocal(first.id, first.assignmentId!, true);
     await room.send(first.id, "Change only this repo");
     const pending = adapter.permissions.get(first.sessionId)!({
       kind: "shell", toolCallId: "unsafe-shell", fullCommandText: `touch ${join(fixture, "outside")}`
@@ -1609,6 +1705,7 @@ test("configured worktree revocation stops a pending tool and denies stale appro
     assert.throws(() => room.decide(first.id, reviewId, true), /stale/);
     assert.equal(adapter.sessions.get(first.sessionId)?.aborts, 1);
     assert.equal(first.repository, undefined);
+    assert.equal(first.trustedLocal, false);
     assert.equal(second.repository, undefined);
     assert.equal(adapter.sessions.get(first.sessionId)?.directory, first.workspace);
     assert.equal(adapter.sessions.get(second.sessionId)?.directory, second.workspace);

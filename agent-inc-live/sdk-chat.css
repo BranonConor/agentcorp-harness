@@ -171,6 +171,11 @@
 .conversation-composer button { align-self: center; min-width: 30px; min-height: 30px; padding: 5px 9px; border: 1px solid var(--office-border); border-radius: 7px; color: var(--office-text); background: var(--office-muted); font: 650 16px var(--sans); cursor: pointer; }
 .conversation-composer button:hover:not(:disabled) { background: var(--office-accent-bg); }
 .conversation-composer .stop-turn { background: var(--office-warning-bg); color: var(--office-warning); border-color: var(--office-warning); font-size: 11px; cursor: pointer; }
+.trusted-local-card { padding: 12px 16px; border-bottom: 1px solid var(--office-warning); background: var(--office-warning-bg); font: 11px/1.5 var(--sans); }
+.trusted-local-card strong { color: var(--office-warning); font-size: 12px; }
+.trusted-local-card p { margin: 5px 0; }
+.trusted-local-card button { margin-top: 5px; min-height: 32px; padding: 6px 10px; border: 1px solid var(--office-warning); border-radius: 7px; color: var(--office-text); background: var(--office-panel); cursor: pointer; }
+.trusted-local-card button:disabled { opacity: .5; cursor: default; }
 .conversation-composer button:disabled { opacity: .4; cursor: default; }
 .access-message { margin-top: 16px; }
 .access-card { padding: 13px; font: 12px/1.45 var(--sans); }

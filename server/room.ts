@@ -16,6 +16,10 @@ const EXPIRE_MS = 90_000;
 const MEETING_TIMEOUT_MS = 120_000;
 type Pending = { agentId: string; resolve: (decision: PermissionRequestResult) => void; timer: NodeJS.Timeout };
 type PendingAccess = { agentId: string; resolve: (result: string) => void; timer: NodeJS.Timeout };
+type TrustedLocal = { assignmentId: string; sessionId: string; worktreePath: string };
+const ROUTINE_TOOLS: Record<string, PermissionRequest["kind"]> = {
+  bash: "shell", apply_patch: "write", view: "read", rg: "read", glob: "read"
+};
 
 export class RoomController {
   readonly state: Room;
@@ -31,6 +35,9 @@ export class RoomController {
   private stopped = new Set<string>();
   private stopping = new Set<string>();
   private armedTaskGrants = new Set<string>();
+  private trustedLocal = new Map<string, TrustedLocal>();
+  private toolStarts = new Map<string, Map<string, { name: string; kind: PermissionRequest["kind"] }>>();
+  private permissionEpochs = new Map<string, string>();
   private clones = new Map<string, AbortController>();
   private lookups = new Map<string, number>();
   private meetingTurns = new Map<string, { meetingId: string; start: number; handoffText: string; timer: NodeJS.Timeout }>();
@@ -63,6 +70,7 @@ export class RoomController {
       : { agents: [], error: null, connected: false, workspace, revision: 0 };
     if (Array.isArray(state.agents)) {
       for (const agent of state.agents) {
+        agent.trustedLocal = false;
         agent.archived ??= false;
         if (state.schemaVersion === undefined) {
           agent.createdAt ??= now;
@@ -338,9 +346,11 @@ export class RoomController {
       }
     }
     const snapshot = structuredClone(this.state);
+    const persisted = structuredClone(snapshot);
+    for (const agent of persisted.agents) delete agent.trustedLocal;
     this.saving = this.saving.catch(error => {
       console.error("Previous room save failed:", error);
-    }).then(() => this.store.write(snapshot));
+    }).then(() => this.store.write(persisted));
     await this.saving;
     for (const listener of this.listeners) listener(snapshot);
   }
@@ -510,6 +520,9 @@ export class RoomController {
   }
 
   private async resumeAgent(agent: Agent, repository: RepositoryGrant | null = agent.repository ?? null): Promise<LiveSession> {
+    const epoch = randomUUID();
+    this.permissionEpochs.set(agent.id, epoch);
+    this.toolStarts.delete(agent.id);
     const grant = repository ?? undefined;
     const profile = this.profile(this.state.assignments!.find(item => item.id === agent.assignmentId)!.modelProfileId!);
     if (grant?.remote) {
@@ -519,7 +532,7 @@ export class RoomController {
     try {
       const assignmentId = agent.assignmentId;
       const session = await this.adapter.resume(agent.sessionId, agent.workspace,
-        request => this.permission(agent.id, request, assignmentId), grant,
+        (request, invocation) => this.permission(agent.id, request, assignmentId, invocation, epoch), grant,
         intent => this.requestAccessForAssignment(agent.id, assignmentId, intent),
         fullName => this.researchGrant(agent.id, assignmentId, fullName), profile,
         () => this.meetingTurns.has(agent.id), this.assignmentGuidance(agent));
@@ -533,7 +546,7 @@ export class RoomController {
         !error.message.includes(`Session not found: ${agent.sessionId}`)) throw error;
       const assignmentId = agent.assignmentId;
       const session = await this.adapter.create(agent.workspace,
-        request => this.permission(agent.id, request, assignmentId), agent.sessionId, grant,
+        (request, invocation) => this.permission(agent.id, request, assignmentId, invocation, epoch), agent.sessionId, grant,
         intent => this.requestAccessForAssignment(agent.id, assignmentId, intent),
         fullName => this.researchGrant(agent.id, assignmentId, fullName), profile,
         () => this.meetingTurns.has(agent.id), this.assignmentGuidance(agent));
@@ -559,11 +572,13 @@ export class RoomController {
     if (this.availableDesk(deskIndex) !== deskIndex) throw new Error("This desk is already occupied.");
     this.creating.add(deskIndex);
     const id = randomUUID();
+    const epoch = randomUUID();
+    this.permissionEpochs.set(id, epoch);
     const profile = this.profile(this.state.defaultModelProfileId!);
     sessionModel(profile);
     try {
       const workspace = await this.adapter.prepareWorkspace(this.state.workspace, id);
-      const session = await this.adapter.create(workspace, request => this.permission(id, request, id), undefined, undefined,
+      const session = await this.adapter.create(workspace, (request, invocation) => this.permission(id, request, id, invocation, epoch), undefined, undefined,
         intent => this.requestAccessForAssignment(id, id, intent),
         fullName => this.researchGrant(id, id, fullName), profile, () => this.meetingTurns.has(id),
         personaGuidance({
@@ -1048,10 +1063,14 @@ export class RoomController {
     sessionModel(profile);
     this.lifecycle.add(agentId);
     const assignmentId = randomUUID();
+    const epoch = randomUUID();
+    const previousEpoch = this.permissionEpochs.get(agentId);
+    this.permissionEpochs.set(agentId, epoch);
+    this.toolStarts.delete(agentId);
     try {
       const workspace = await this.adapter.prepareWorkspace(this.state.workspace, assignmentId);
       const session = await this.adapter.create(workspace,
-        request => this.permission(agentId, request, assignmentId),
+        (request, invocation) => this.permission(agentId, request, assignmentId, invocation, epoch),
         undefined, undefined, intent => this.requestAccessForAssignment(agentId, assignmentId, intent),
         fullName => this.researchGrant(agentId, assignmentId, fullName), profile,
         () => this.meetingTurns.has(agentId), guidance);
@@ -1068,6 +1087,7 @@ export class RoomController {
       this.sessions.delete(agentId);
       this.unsubscribers.delete(agentId);
       previous.status = "completed";
+      this.clearTrustedLocal(agentId);
       previous.endedAt = Date.now();
       previous.outcome = outcome.trim();
       previous.messages = agent.messages;
@@ -1091,6 +1111,10 @@ export class RoomController {
       if (this.state.usage) this.state.usage.stale = true;
       await this.publish();
     } finally {
+      if (agent.assignmentId !== assignmentId) {
+        if (previousEpoch) this.permissionEpochs.set(agentId, previousEpoch);
+        else this.permissionEpochs.delete(agentId);
+      }
       this.lifecycle.delete(agentId);
     }
   }
@@ -1109,6 +1133,7 @@ export class RoomController {
     this.lifecycle.add(agentId);
     try {
       await this.sessions.get(agentId)?.disconnect();
+      this.clearTrustedLocal(agentId);
       this.unsubscribers.get(agentId)?.();
       this.unsubscribers.delete(agentId);
       this.sessions.delete(agentId);
@@ -1164,6 +1189,7 @@ export class RoomController {
     this.lifecycle.add(agentId);
     try {
       await this.sessions.get(agentId)?.disconnect();
+      this.clearTrustedLocal(agentId);
       this.unsubscribers.get(agentId)?.();
       this.unsubscribers.delete(agentId);
       this.sessions.delete(agentId);
@@ -1256,7 +1282,7 @@ export class RoomController {
     request.candidates = [verified];
     request.status = "review";
     request.error = undefined;
-    request.progress = "Review this task's worktree assignment; every built-in tool still needs approval.";
+    request.progress = "Review this task's worktree assignment; tools need approval unless you separately opt into trusted-local autonomy.";
     await this.publish();
     return request;
   }
@@ -1372,6 +1398,7 @@ export class RoomController {
       let next: RepositoryGrant = { ...grant, name: snapshot.fullName,
         remote: snapshot, scope: choice === "task" ? "task" : "session" };
       if (choice === "edit") {
+        this.clearTrustedLocal(agentId);
         next = await createResearchWorktree(this.worktreeRoot, next, agentId);
         if (request.configuredProject) next.configuredProject = request.configuredProject;
         this.state.worktrees!.push({ agentId, repository: snapshot.fullName, path: next.worktree!.path, branch: next.worktree!.branch });
@@ -1438,6 +1465,7 @@ export class RoomController {
   async revokeRepository(agentId: string): Promise<void> {
     const agent = this.agent(agentId);
     this.availableForLifecycle(agent);
+    this.clearTrustedLocal(agentId);
     this.lifecycle.add(agentId);
     try {
       if (agent.repository?.worktree && !agent.archived) {
@@ -1533,6 +1561,7 @@ export class RoomController {
     const session = this.sessions.get(agentId);
     if (!session) throw new Error("Agent SDK session is unavailable; cannot confirm cancellation.");
     this.lifecycle.add(agentId);
+    this.clearTrustedLocal(agentId);
     this.stopping.add(agentId);
     const message = reason === "user" ? "Turn stopped by user" : `Turn stopped: ${reason}`;
     try {
@@ -1602,6 +1631,16 @@ export class RoomController {
     const agent = this.agent(agentId);
     if (agent.archived) return;
     if (this.stopping.has(agentId) || this.stopped.has(agentId) && event.type !== "session.idle") return;
+    if (event.type === "tool.execution_start" && ["thinking", "working", "permission"].includes(agent.phase)) {
+      const { toolCallId, toolName, mcpServerName, mcpConfigServerName, mcpToolName } = event.data;
+      if (toolCallId && !mcpServerName && !mcpConfigServerName && !mcpToolName &&
+        ROUTINE_TOOLS[toolName] && !event.agentId) {
+        const starts = this.toolStarts.get(agentId) ?? new Map();
+        starts.set(toolCallId, { name: toolName, kind: ROUTINE_TOOLS[toolName] });
+        this.toolStarts.set(agentId, starts);
+      }
+    }
+    if (event.type === "tool.execution_complete") this.toolStarts.get(agentId)?.delete(event.data.toolCallId);
     switch (event.type) {
       case "assistant.message_delta": {
         const delta = event.data.deltaContent;
@@ -1635,6 +1674,7 @@ export class RoomController {
         agent.activity = event.data.error ? "Tool finished with an error" : "Tool finished";
         break;
       case "session.idle":
+        this.toolStarts.delete(agentId);
         if (agent.repository?.scope === "task" && !this.armedTaskGrants.has(agentId)) agent.repository = undefined;
         if (agent.phase !== "idle") agent.idleSince = Date.now();
         agent.phase = "idle";
@@ -1642,6 +1682,7 @@ export class RoomController {
         if (this.meetingTurns.has(agentId)) this.endMeetingTurn(agentId);
         break;
       case "session.error":
+        this.toolStarts.delete(agentId);
         agent.phase = "error";
         agent.activity = event.data.message ? this.redact(event.data.message) : "SDK session error";
         this.endMeetingTurn(agentId, agent.activity);
@@ -1653,9 +1694,45 @@ export class RoomController {
     void this.publish().catch(error => console.error("Cannot save SDK event:", error));
   }
 
-  private permission(agentId: string, request: PermissionRequest, assignmentId?: string): Promise<PermissionRequestResult> {
+  private clearTrustedLocal(agentId: string): void {
+    this.trustedLocal.delete(agentId);
+    this.toolStarts.delete(agentId);
     const agent = this.state.agents.find(item => item.id === agentId);
-    if (!agent || agent.assignmentId !== assignmentId) {
+    if (agent) agent.trustedLocal = false;
+  }
+
+  async setTrustedLocal(agentId: string, assignmentId: string, enabled: boolean): Promise<void> {
+    const agent = this.agent(agentId);
+    if (typeof enabled !== "boolean" || agent.assignmentId !== assignmentId || agent.archived ||
+      this.lifecycle.has(agentId)) throw new Error("Select an active agent and its current assignment.");
+    if (!enabled) {
+      this.clearTrustedLocal(agentId);
+      await this.publish();
+      return;
+    }
+    if (agent.review || agent.accessRequest || agent.phase !== "idle" || !this.sessions.has(agentId) ||
+      !this.listeners.size || !agent.repository?.worktree || !agent.repository.configuredProject ||
+      !this.canWrite(agent, agent.repository.configuredProject)) {
+      throw new Error("Autonomous local work requires an idle, connected edit assignment in an eligible worktree and an open browser.");
+    }
+    this.trustedLocal.set(agentId, { assignmentId, sessionId: agent.sessionId,
+      worktreePath: agent.repository.worktree.path });
+    agent.trustedLocal = true;
+    const notice = { id: randomUUID(), role: "system" as const, content:
+      "Trusted-local autonomy enabled for this agent's current edit assignment. Built-in routine tools may run as your account without individual prompts; this is not sandboxed." };
+    agent.messages.push(notice);
+    try { await this.publish(); }
+    catch (error) {
+      this.clearTrustedLocal(agentId);
+      agent.messages.splice(agent.messages.indexOf(notice), 1);
+      throw error;
+    }
+  }
+
+  private permission(agentId: string, request: PermissionRequest, assignmentId?: string,
+    invocation?: { sessionId: string; managedSettingsEnabled?: boolean }, epoch?: string): Promise<PermissionRequestResult> {
+    const agent = this.state.agents.find(item => item.id === agentId);
+    if (!agent || agent.assignmentId !== assignmentId || epoch !== this.permissionEpochs.get(agentId)) {
       return Promise.resolve({ kind: "reject", feedback: "This SDK assignment is no longer active." });
     }
     if (this.stopping.has(agentId) || this.stopped.has(agentId)) {
@@ -1665,7 +1742,31 @@ export class RoomController {
       return Promise.resolve({ kind: "reject", feedback: "Meeting handoffs are limited to shared material; tools require a separate ordinary turn." });
     }
     const requiresHuman = "managedApprovalRequired" in request && request.managedApprovalRequired === true;
-    if (!requiresHuman && request.kind === "custom-tool" && request.toolName === "research_attached_repository") {
+    const consent = this.trustedLocal.get(agentId);
+    const start = request.toolCallId && this.toolStarts.get(agentId)?.get(request.toolCallId);
+    if (consent && start && !requiresHuman && invocation?.managedSettingsEnabled !== true &&
+      invocation?.sessionId === agent.sessionId &&
+      !agent.archived && !this.lifecycle.has(agentId) &&
+      ["thinking", "working", "permission"].includes(agent.phase) &&
+      !agent.review && !agent.accessRequest && this.listeners.size &&
+      consent.assignmentId === assignmentId && consent.sessionId === agent.sessionId &&
+      consent.worktreePath === agent.repository?.worktree?.path &&
+      !!agent.repository?.configuredProject && this.canWrite(agent, agent.repository.configuredProject) &&
+      start.kind === request.kind && ROUTINE_TOOLS[start.name] === request.kind &&
+      !(("requestSandboxBypass" in request) && request.requestSandboxBypass === true) &&
+      (request.kind !== "shell" || typeof request.fullCommandText === "string") &&
+      (request.kind !== "write" || typeof request.fileName === "string") &&
+      (request.kind !== "read" || typeof request.path === "string")) {
+      this.toolStarts.get(agentId)?.delete(request.toolCallId!);
+      agent.messages.push({ id: randomUUID(), role: "system",
+        content: `Trusted-local autoapproval: ${start.name} (${request.kind}), tool call ${request.toolCallId}.` });
+      agent.updatedAt = Date.now();
+      void this.publish().catch(error => console.error("Cannot save trusted-local decision:", error));
+      return Promise.resolve({ kind: "approve-once" });
+    }
+    if (request.toolCallId) this.toolStarts.get(agentId)?.delete(request.toolCallId);
+    if (!requiresHuman && invocation?.managedSettingsEnabled !== true &&
+      request.kind === "custom-tool" && request.toolName === "research_attached_repository") {
       const name = typeof request.args === "object" && request.args !== null &&
         "repository" in request.args && typeof request.args.repository === "string" ? request.args.repository : "";
       const valid = typeof request.args === "object" && request.args !== null &&
@@ -1676,7 +1777,8 @@ export class RoomController {
       return Promise.resolve(this.canRead(agent, name) ?
         { kind: "approve-once" } : { kind: "reject", feedback: "No active repository research grant." });
     }
-    if (!requiresHuman && request.kind === "custom-tool" && request.toolName === "request_repository_access") {
+    if (!requiresHuman && invocation?.managedSettingsEnabled !== true &&
+      request.kind === "custom-tool" && request.toolName === "request_repository_access") {
       return Promise.resolve(agent && !agent.archived && !this.lifecycle.has(agentId) ? { kind: "approve-once" } :
         { kind: "reject", feedback: "Agent unavailable." });
     }
@@ -1716,6 +1818,7 @@ export class RoomController {
   }
 
   private denyPending(): void {
+    for (const agentId of this.trustedLocal.keys()) this.clearTrustedLocal(agentId);
     for (const controller of this.clones.values()) controller.abort();
     for (const [id, pending] of this.access) {
       this.resolveAccess(pending.agentId, id, "denied", "No browser available; request denied.");
@@ -1736,6 +1839,8 @@ export class RoomController {
 
   async close(): Promise<void> {
     this.denyPending();
+    this.permissionEpochs.clear();
+    this.toolStarts.clear();
     for (const [agentId] of this.meetingTurns) this.endMeetingTurn(agentId, "Handoff interrupted by server shutdown.");
     for (const unsubscribe of this.unsubscribers.values()) unsubscribe();
     try {

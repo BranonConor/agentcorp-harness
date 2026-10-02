@@ -55,6 +55,7 @@ export type Agent = {
   activity: string;
   messages: Message[];
   review?: Review;
+  trustedLocal?: boolean;
   repository?: RepositoryGrant;
   accessRequest?: RepositoryRequest;
   persona?: number;
@@ -91,11 +92,11 @@ export interface Adapter {
   probe(profile?: ModelProfile): Promise<void>;
   listModels?(): Promise<{ id: string; name: string }[]>;
   prepareWorkspace(root: string, agentId: string): Promise<string>;
-  create(workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>,
+  create(workspace: string, permission: (request: PermissionRequest, invocation?: { sessionId: string; managedSettingsEnabled?: boolean }) => Promise<PermissionRequestResult>,
     sessionId?: string, repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>,
     getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile?: ModelProfile,
     isMeetingTurn?: () => boolean, personaGuidance?: string): Promise<LiveSession>;
-  resume(id: string, workspace: string, permission: (request: PermissionRequest) => Promise<PermissionRequestResult>,
+  resume(id: string, workspace: string, permission: (request: PermissionRequest, invocation?: { sessionId: string; managedSettingsEnabled?: boolean }) => Promise<PermissionRequestResult>,
     repository?: RepositoryGrant, requestAccess?: (intent: AccessIntent) => Promise<string>,
     getGrant?: (fullName: string) => Promise<RepositoryGrant | undefined>, profile?: ModelProfile,
     isMeetingTurn?: () => boolean, personaGuidance?: string): Promise<LiveSession>;
