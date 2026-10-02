@@ -5,6 +5,7 @@ import type { RemoteRepository, RepositorySnapshot } from "./github-repositories
 import type { ModelProfile } from "./providers.js";
 import type { ProgressEvent } from "./progression.js";
 export type RepositoryRequest = { id: string; repoHint: string; purpose: string; scope: "read" | "edit";
+  configuredProject?: string;
   status?: "resolving" | "review" | "cloning" | "error"; candidates?: RemoteRepository[];
   error?: string; progress?: string };
 export type UsageSummary = { status: "ready" | "partial" | "unavailable"; measured: number; total: number; tokens: number; calls: number; filesChanged: number; startedAt?: string; updatedAt: number; stale?: boolean };
@@ -15,9 +16,9 @@ export type AgentPersona = {
   setupCompleted: boolean;
   profile: { instructions: string; workingStyle: string; specialties: string[]; title: string; rank: string };
   memories: PersonaMemory[];
-  repositoryPolicies?: { fullName: string; read: boolean; excluded: boolean }[];
+  repositoryPolicies?: { fullName: string; read: boolean; write?: boolean; excluded: boolean }[];
 };
-export type ProjectPolicy = { repository: RemoteRepository; sharedRead: boolean };
+export type ProjectPolicy = { repository: RemoteRepository; sharedRead: boolean; sharedWrite?: boolean };
 export type Assignment = {
   id: string; personaId: string; sessionId: string; workspace: string;
   modelProfileId?: string; modelProfile?: ModelProfile;

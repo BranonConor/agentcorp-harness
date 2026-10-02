@@ -35,3 +35,11 @@ test("assignment-only read is shown and explicit exclusion hides it", () => {
   assert.equal(effectiveProjectAccess(projects,
     [{ fullName: "Owner/Scoped", read: false, excluded: true }], assignment)[1].source, "excluded");
 });
+
+test("write eligibility implies read but never follows assignment or exclusion", () => {
+  assert.equal(effectiveProjectAccess(projects, [{ fullName: "Owner/Scoped", read: true, write: true, excluded: false }])[1].write, true);
+  assert.equal(effectiveProjectAccess(projects, [], { remote: { fullName: "Owner/Scoped" }, scope: "edit" })[1].write, false);
+  const shared = [{ ...projects[0], sharedWrite: true }];
+  assert.deepEqual(effectiveProjectAccess(shared)[0].write, true);
+  assert.equal(effectiveProjectAccess(shared, [{ fullName: "Owner/Shared", read: false, excluded: true }])[0].write, false);
+});

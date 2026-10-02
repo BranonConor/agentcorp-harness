@@ -251,8 +251,9 @@ const server = createServer(async (request, response) => {
       if (url.pathname === "/api/project-policy" && request.method === "POST") {
         const body = await payload(request);
         if (!body.repository || typeof body.repository !== "object" || Array.isArray(body.repository) ||
-          typeof body.sharedRead !== "boolean") throw new Error("Select a verified project and sharing policy.");
-        await room.addProject(body.repository as Parameters<typeof room.addProject>[0], body.sharedRead);
+          typeof body.sharedRead !== "boolean" ||
+          !(body.sharedWrite === undefined || typeof body.sharedWrite === "boolean")) throw new Error("Select a verified project and sharing policy.");
+        await room.addProject(body.repository as Parameters<typeof room.addProject>[0], body.sharedRead, body.sharedWrite ?? false);
         return json(response, 200, room.state);
       }
       if (url.pathname === "/api/project-share" && request.method === "POST") {
@@ -261,11 +262,23 @@ const server = createServer(async (request, response) => {
         await room.shareProject(body.fullName, body.sharedRead);
         return json(response, 200, room.state);
       }
+      if (url.pathname === "/api/project-write" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.fullName !== "string" || typeof body.sharedWrite !== "boolean") throw new Error("Select a project and write eligibility.");
+        await room.setProjectWrite(body.fullName, body.sharedWrite);
+        return json(response, 200, room.state);
+      }
+      if (url.pathname === "/api/project-worktree" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string" || typeof body.fullName !== "string") throw new Error("Select an agent and verified project.");
+        await room.prepareProjectWorktree(body.agentId, body.fullName);
+        return json(response, 200, room.state);
+      }
       if (url.pathname === "/api/persona-project" && request.method === "POST") {
         const body = await payload(request);
         if (typeof body.personaId !== "string" || typeof body.fullName !== "string" ||
-          !["read", "remove", "exclude", "inherit"].includes(String(body.choice))) throw new Error("Select a persona and project policy.");
-        await room.setPersonaProject(body.personaId, body.fullName, body.choice as "read" | "remove" | "exclude" | "inherit");
+          !["read", "write", "remove", "exclude", "inherit"].includes(String(body.choice))) throw new Error("Select a persona and project policy.");
+        await room.setPersonaProject(body.personaId, body.fullName, body.choice as "read" | "write" | "remove" | "exclude" | "inherit");
         return json(response, 200, room.state);
       }
       if (url.pathname === "/api/access-request" && request.method === "POST") {

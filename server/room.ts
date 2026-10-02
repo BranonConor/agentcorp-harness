@@ -254,6 +254,7 @@ export class RoomController {
     if (!Array.isArray(state.projects) || state.projects.some((project, index) =>
       !project?.repository || !validateRemoteRepository(project.repository) ||
       typeof project.sharedRead !== "boolean" ||
+      (project.sharedWrite !== undefined && typeof project.sharedWrite !== "boolean") ||
       state.projects!.findIndex(other => other.repository.fullName.toLowerCase() === project.repository.fullName.toLowerCase()) !== index)) {
       throw new Error("Saved verified project catalog is invalid; state was not changed.");
     }
@@ -262,7 +263,8 @@ export class RoomController {
       if (!Array.isArray(persona.repositoryPolicies) || persona.repositoryPolicies.some((policy, index) =>
         !state.projects!.some(project => project.repository.fullName.toLowerCase() === policy.fullName.toLowerCase()) ||
         typeof policy.read !== "boolean" || typeof policy.excluded !== "boolean" ||
-        policy.read && policy.excluded ||
+        (policy.write !== undefined && typeof policy.write !== "boolean") ||
+        (policy.read || policy.write) && policy.excluded ||
         persona.repositoryPolicies!.findIndex(other => other.fullName.toLowerCase() === policy.fullName.toLowerCase()) !== index)) {
         throw new Error("Saved persona repository policy is invalid; state was not changed.");
       }
@@ -298,6 +300,10 @@ export class RoomController {
     progression(state.progression, state.personas!.map(persona => persona.id), state.assignments!, state.meetings);
     for (const agent of room.state.agents) {
       agent.review = undefined;
+      if (agent.repository?.configuredProject && !room.canWrite(agent, agent.repository.configuredProject)) {
+        agent.repository = undefined;
+        agent.activity = "Configured worktree eligibility was revoked; worktree preserved";
+      }
       if (agent.archived) continue;
       if (["thinking", "working", "permission"].includes(agent.phase)) {
         agent.phase = "interrupted";
@@ -642,9 +648,17 @@ export class RoomController {
     if (!project) return false;
     const policy = this.persona(agent.personaId!).repositoryPolicies!.find(item =>
       item.fullName.toLowerCase() === fullName.toLowerCase());
-    return !policy?.excluded && (!!policy?.read || project.sharedRead ||
+    return !policy?.excluded && (!!policy?.read || !!policy?.write || project.sharedRead || !!project.sharedWrite ||
       agent.repository?.remote?.fullName.toLowerCase() === fullName.toLowerCase() &&
       ["task", "session", "edit"].includes(agent.repository.scope ?? ""));
+  }
+
+  private canWrite(agent: Agent, fullName: string): boolean {
+    const project = this.project(fullName);
+    if (!project) return false;
+    const policy = this.persona(agent.personaId!).repositoryPolicies!.find(item =>
+      item.fullName.toLowerCase() === fullName.toLowerCase());
+    return !policy?.excluded && (!!policy?.write || !!project.sharedWrite);
   }
 
   async createMeeting(input: { kind: "meeting" | "review"; participantIds: string[]; agenda: string;
@@ -852,11 +866,11 @@ export class RoomController {
     return verified;
   }
 
-  async addProject(repository: RemoteRepository, sharedRead: boolean): Promise<void> {
-    if (typeof sharedRead !== "boolean") throw new Error("Choose whether office-wide read access is enabled.");
+  async addProject(repository: RemoteRepository, sharedRead: boolean, sharedWrite = false): Promise<void> {
+    if (typeof sharedRead !== "boolean" || typeof sharedWrite !== "boolean") throw new Error("Choose valid office project eligibility.");
     const verified = await this.verifiedProject(repository);
     if (this.project(verified.fullName)) throw new Error("Project already exists; change its sharing policy instead.");
-    this.state.projects!.push({ repository: verified, sharedRead });
+    this.state.projects!.push({ repository: verified, sharedRead, sharedWrite });
     await this.publish();
   }
 
@@ -880,20 +894,44 @@ export class RoomController {
     await this.publish();
   }
 
-  async setPersonaProject(personaId: string, fullName: string, choice: "read" | "remove" | "exclude" | "inherit"): Promise<void> {
+  async setProjectWrite(fullName: string, sharedWrite: boolean): Promise<void> {
+    const project = this.project(fullName);
+    if (!project || typeof sharedWrite !== "boolean") throw new Error("Choose a catalogued GitHub project and write eligibility.");
+    project.sharedWrite = sharedWrite;
+    if (!sharedWrite) this.cancelProjectRequests(fullName);
+    await this.revokeIneligibleWorktrees(fullName);
+    await this.publish();
+  }
+
+  private async revokeIneligibleWorktrees(fullName: string): Promise<void> {
+    for (const agent of this.state.agents) {
+      if (agent.repository?.configuredProject?.toLowerCase() !== fullName.toLowerCase() ||
+        this.canWrite(agent, fullName)) continue;
+      if (agent.archived) {
+        agent.repository = undefined;
+        continue;
+      }
+      if (["thinking", "working", "permission"].includes(agent.phase)) await this.stop(agent.id, "project eligibility revoked");
+      await this.revokeRepository(agent.id);
+    }
+  }
+
+  async setPersonaProject(personaId: string, fullName: string, choice: "read" | "write" | "remove" | "exclude" | "inherit"): Promise<void> {
     const persona = this.persona(personaId);
     const project = this.project(fullName);
     if (!project) throw new Error("Add a verified GitHub project to the office catalog first.");
-    if (!["read", "remove", "exclude", "inherit"].includes(choice)) throw new Error("Unknown project policy decision.");
+    if (!["read", "write", "remove", "exclude", "inherit"].includes(choice)) throw new Error("Unknown project policy decision.");
     persona.repositoryPolicies = persona.repositoryPolicies!.filter(item =>
       item.fullName.toLowerCase() !== fullName.toLowerCase());
     if (choice === "read") persona.repositoryPolicies.push({ fullName: project.repository.fullName, read: true, excluded: false });
+    if (choice === "write") persona.repositoryPolicies.push({ fullName: project.repository.fullName, read: true, write: true, excluded: false });
     // Removing read access must not silently restore an assignment or office grant.
     if (choice === "exclude" || choice === "remove") persona.repositoryPolicies.push({
       fullName: project.repository.fullName, read: false, excluded: true
     });
     persona.updatedAt = Date.now();
-    if (choice !== "read") this.cancelProjectRequests(fullName, personaId);
+    if (choice !== "write") this.cancelProjectRequests(fullName, personaId);
+    await this.revokeIneligibleWorktrees(fullName);
     await this.publish();
   }
 
@@ -1191,10 +1229,31 @@ export class RoomController {
       ["thinking", "working", "permission"].includes(agent.phase)) {
       throw new Error("This agent cannot request repository access right now.");
     }
+
     const request: RepositoryRequest = { id: randomUUID(), repoHint: "", purpose: "Research or edit a GitHub repository",
       scope: "edit", status: "error", error: "Enter an owner/repo or repository name to look up; no clone has started." };
     agent.accessRequest = request;
     void this.publish().catch(error => console.error("Cannot save guided request:", error));
+    return request;
+  }
+
+  async prepareProjectWorktree(agentId: string, fullName: string): Promise<RepositoryRequest> {
+    const agent = this.agent(agentId);
+    if (!this.canWrite(agent, fullName)) throw new Error("No effective write eligibility for this verified project.");
+    const project = this.project(fullName)!;
+    const verified = await this.verifiedProject(project.repository);
+    if (!this.canWrite(agent, fullName) || this.project(fullName)?.repository !== project.repository) {
+      throw new Error("Project eligibility changed; request a new assignment.");
+    }
+    const request = this.guidedAccess(agentId);
+    request.repoHint = verified.fullName;
+    request.purpose = "Assign this verified project to this task's edit worktree";
+    request.configuredProject = verified.fullName;
+    request.candidates = [verified];
+    request.status = "review";
+    request.error = undefined;
+    request.progress = "Review this task's worktree assignment; every built-in tool still needs approval.";
+    await this.publish();
     return request;
   }
 
@@ -1204,6 +1263,7 @@ export class RoomController {
     if (!request || request.id !== id || this.lifecycle.has(agentId) || request.status === "cloning") {
       throw new Error("Repository request is stale or already being provisioned.");
     }
+    if (request.configuredProject) throw new Error("Configured worktree identity cannot be changed; deny and request another project.");
     if (!this.repositories) throw new Error("GitHub repository discovery is unavailable.");
     request.repoHint = hint;
     request.status = "resolving";
@@ -1278,6 +1338,11 @@ export class RoomController {
       throw new Error("Choose a verified GitHub repository before granting access.");
     }
     if (choice === "edit" && request.scope !== "edit") throw new Error("This agent requested read access, not edit access.");
+    if (request.configuredProject && (choice !== "edit" ||
+      fullName.toLowerCase() !== request.configuredProject.toLowerCase() ||
+      !this.canWrite(agent, fullName))) {
+      throw new Error("Configured worktree assignment requires current write eligibility for this project.");
+    }
     const candidate = request.candidates.find(item => item.fullName === fullName);
     if (!candidate) throw new Error("Repository identity was not offered in this agent's request.");
     const session = this.sessions.get(agentId);
@@ -1296,11 +1361,15 @@ export class RoomController {
       await this.publish();
       const snapshot = await this.snapshotFor(candidate, fresh, controller.signal);
       if (controller.signal.aborted || agent.accessRequest !== request) return;
+      if (request.configuredProject && !this.canWrite(agent, candidate.fullName)) {
+        throw new Error("Write eligibility was revoked while provisioning the worktree.");
+      }
       const grant = await validateRepository(snapshot.path);
       let next: RepositoryGrant = { ...grant, name: snapshot.fullName,
         remote: snapshot, scope: choice === "task" ? "task" : "session" };
       if (choice === "edit") {
         next = await createResearchWorktree(this.worktreeRoot, next, agentId);
+        if (request.configuredProject) next.configuredProject = request.configuredProject;
         this.state.worktrees!.push({ agentId, repository: snapshot.fullName, path: next.worktree!.path, branch: next.worktree!.branch });
         await this.publish();
         if (controller.signal.aborted || agent.accessRequest !== request) return;
@@ -1451,7 +1520,7 @@ export class RoomController {
     }
   }
 
-  async stop(agentId: string): Promise<void> {
+  async stop(agentId: string, reason = "user"): Promise<void> {
     const agent = this.agent(agentId);
     if (agent.archived || (this.lifecycle.has(agentId) && agent.accessRequest?.status !== "cloning") ||
       !["thinking", "working", "permission"].includes(agent.phase)) {
@@ -1461,16 +1530,17 @@ export class RoomController {
     if (!session) throw new Error("Agent SDK session is unavailable; cannot confirm cancellation.");
     this.lifecycle.add(agentId);
     this.stopping.add(agentId);
+    const message = reason === "user" ? "Turn stopped by user" : `Turn stopped: ${reason}`;
     try {
       this.clones.get(agentId)?.abort();
       const abort = session.abort();
       for (const [id, pending] of this.pending) {
         if (pending.agentId !== agentId) continue;
         clearTimeout(pending.timer);
-        pending.resolve({ kind: "reject", feedback: "Turn stopped by user." });
+        pending.resolve({ kind: "reject", feedback: `${message}.` });
         this.pending.delete(id);
       }
-      if (agent.accessRequest) this.resolveAccess(agentId, agent.accessRequest.id, "denied", "Turn stopped by user.");
+      if (agent.accessRequest) this.resolveAccess(agentId, agent.accessRequest.id, "denied", `${message}.`);
       if (agent.repository?.scope === "task") agent.repository = undefined;
       this.armedTaskGrants.delete(agentId);
       await abort;
@@ -1480,8 +1550,8 @@ export class RoomController {
       if (last?.pending) last.pending = false;
       this.stopped.add(agentId);
       agent.phase = "idle";
-      agent.activity = "Turn stopped by user · ready to chat";
-      agent.messages.push({ id: randomUUID(), role: "system", content: "Turn stopped by user." });
+      agent.activity = `${message} · ready to chat`;
+      agent.messages.push({ id: randomUUID(), role: "system", content: `${message}.` });
       agent.updatedAt = Date.now();
       await this.publish();
     } catch (error) {
@@ -1588,13 +1658,19 @@ export class RoomController {
     if (this.meetingTurns.has(agentId)) {
       return Promise.resolve({ kind: "reject", feedback: "Meeting handoffs are limited to shared material; tools require a separate ordinary turn." });
     }
-    if (request.kind === "custom-tool" && request.toolName === "research_attached_repository") {
+    const requiresHuman = "managedApprovalRequired" in request && request.managedApprovalRequired === true;
+    if (!requiresHuman && request.kind === "custom-tool" && request.toolName === "research_attached_repository") {
       const name = typeof request.args === "object" && request.args !== null &&
         "repository" in request.args && typeof request.args.repository === "string" ? request.args.repository : "";
-      return Promise.resolve(agent && this.canRead(agent, name) ?
+      const valid = typeof request.args === "object" && request.args !== null &&
+        "action" in request.args && (request.args.action === "list" || request.args.action === "read") &&
+        "path" in request.args && typeof request.args.path === "string" &&
+        Object.keys(request.args).sort().join(",") === "action,path,repository";
+      if (!valid) return Promise.resolve({ kind: "reject", feedback: "Invalid bounded repository research request." });
+      return Promise.resolve(this.canRead(agent, name) ?
         { kind: "approve-once" } : { kind: "reject", feedback: "No active repository research grant." });
     }
-    if (request.kind === "custom-tool" && request.toolName === "request_repository_access") {
+    if (!requiresHuman && request.kind === "custom-tool" && request.toolName === "request_repository_access") {
       return Promise.resolve(agent && !agent.archived && !this.lifecycle.has(agentId) ? { kind: "approve-once" } :
         { kind: "reject", feedback: "Agent unavailable." });
     }

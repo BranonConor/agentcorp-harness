@@ -12,7 +12,7 @@ const MAX_FILE = 64 * 1024;
 const forbidden = /(^\.|^node_modules$|^vendor$|^dist$|^build$|^(?:private|secrets?|credentials?|tokens?)(?:[._-]|$)|^id_(?:rsa|ed25519)(?:[._-]|$)|\.env(?:\.|$)|\.(?:pem|p12|pfx|key|keystore)$)/i;
 
 export type RepositoryGrant = { path: string; name: string; scope?: "task" | "session" | "edit";
-  worktree?: { path: string; branch: string }; remote?: RepositorySnapshot };
+  worktree?: { path: string; branch: string }; remote?: RepositorySnapshot; configuredProject?: string };
 export type AccessIntent = { repoHint: string; purpose: string; scope: "read" | "edit" };
 
 export async function createResearchWorktree(root: string, grant: RepositoryGrant, agentId: string): Promise<RepositoryGrant> {

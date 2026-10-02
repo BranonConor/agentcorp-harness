@@ -1013,17 +1013,17 @@ function LiveOffice() {
     </section>;
   };
   const personaProjects = (persona: AgentPersona) => <div className="persona-projects">
-    <h4>GitHub project read access</h4>
-    <p>Office-wide sharing applies unless excluded here. Direct grants apply only to this persona.</p>
+    <h4>GitHub project eligibility</h4>
+    <p>Write eligibility permits an explicit task worktree assignment, not automatic tool approval. Office-wide sharing applies unless excluded here.</p>
     {!sdkRoom?.projects?.length && <p>No verified GitHub projects configured.</p>}
     <ul>{effectiveProjectAccess(sdkRoom?.projects ?? [], persona.repositoryPolicies,
-      sdkRoom?.agents.find(agent => agent.personaId === persona.id)?.repository).map(({ project, read, source }) => {
+      sdkRoom?.agents.find(agent => agent.personaId === persona.id)?.repository).map(({ project, read, write, source }) => {
       const fullName = project.repository.fullName;
       const policy = persona.repositoryPolicies?.find(item => item.fullName.toLowerCase() === fullName.toLowerCase());
-      const change = (choice: "read" | "remove" | "exclude" | "inherit") =>
+      const change = (choice: "read" | "write" | "remove" | "exclude" | "inherit") =>
         void act("persona-project", { personaId: persona.id, fullName, choice });
       return <li key={fullName}>
-        <div><strong>{fullName}</strong><span>{read ?
+        <div><strong>{fullName}</strong><span>{write ? "Eligible for task worktree · tools require approval" : read ?
           source === "persona" ? "Read · direct" : source === "assignment" ? "Read · current assignment" : "Read · office-wide" :
           source === "excluded" ? "No read · excluded" : "No read access"}</span></div>
         <div className="project-actions">
@@ -1031,6 +1031,14 @@ function LiveOffice() {
             onClick={() => change("read")}>Grant to persona</button> :
             <button type="button" disabled={!connected}
               onClick={() => change("remove")}>Remove direct grant</button>}
+          <button type="button" disabled={!connected}
+            onClick={() => change(policy?.write ? "read" : "write")}>
+            {policy?.write ? "Remove direct worktree eligibility" : "Allow task worktrees"}</button>
+          {write && selectedAgent?.personaId === persona.id && <button type="button"
+            disabled={!connected || selectedAgent.archived || selectedAgent.phase !== "idle" ||
+              !!selectedAgent.accessRequest || !!selectedAgent.review}
+            onClick={() => void act("project-worktree", { agentId: selectedAgent.id, fullName })}>
+            Assign edit worktree to this task</button>}
           {!policy?.excluded ? <button type="button" disabled={!connected}
             onClick={() => change("exclude")}>Exclude</button> :
             <button type="button" disabled={!connected}
@@ -1444,8 +1452,8 @@ function LiveOffice() {
                 <div className="activity-row project-configurations">
                   <div className="activity-row-heading"><strong>Configurations · GitHub projects</strong>
                     <span className="activity-tag">{sdkRoom?.projects?.length ?? 0} verified</span></div>
-                  <p>Verified GitHub identities only. Office-wide read is inherited by personas unless excluded.
-                    Edit worktrees still require a separate request and approval.</p>
+                  <p>Verified GitHub identities only. Shared write is eligibility for explicit per-task worktree assignment,
+                    never automatic permission for shell, view, patch or other built-in tools. A worktree is not an OS sandbox.</p>
                   <form className="project-lookup" onSubmit={event => { event.preventDefault(); void lookupProject(); }}>
                     <label>Find a GitHub project <input value={projectHint} placeholder="owner/repo"
                       maxLength={150} onChange={event => {
@@ -1481,6 +1489,11 @@ function LiveOffice() {
                       onCheckedChange={checked => void act("project-share", {
                         fullName: project.repository.fullName, sharedRead: checked,
                       })}><Switch.Thumb /></Switch.Root><span>Shared read</span></div>
+                    <div className="overview-share"><Switch.Root checked={project.sharedWrite === true} disabled={!connected}
+                      aria-label={`Task worktree eligibility for ${project.repository.fullName}`}
+                      onCheckedChange={checked => void act("project-write", {
+                        fullName: project.repository.fullName, sharedWrite: checked,
+                      })}><Switch.Thumb /></Switch.Root><span>Eligible for task worktrees (tools still prompt)</span></div>
                   </li>)}</ul>
                 </div>
                 <div className="activity-row">
@@ -1910,7 +1923,7 @@ function LiveOffice() {
                             <button type="submit" disabled={!repoHint.trim() ||
                               ["resolving", "cloning"].includes(selectedAgent.accessRequest.status ?? "")}>Look up</button>
                           </form>}
-                          {chosenRepository && !editingRepoHint && selectedAgent.accessRequest.status !== "cloning" &&
+                          {chosenRepository && !selectedAgent.accessRequest.configuredProject && !editingRepoHint && selectedAgent.accessRequest.status !== "cloning" &&
                             <button type="button" className="access-change"
                               onClick={() => setEditingRepoHint(true)}>Wrong repo?</button>}
                           {["resolving", "cloning"].includes(selectedAgent.accessRequest.status ?? "") &&

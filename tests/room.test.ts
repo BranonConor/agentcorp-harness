@@ -1084,6 +1084,12 @@ test("verified research policy authorizes only selected read-only SDK tool, neve
     await room.addProject((await room.lookupProject("fixture"))[0], false);
     await room.setPersonaProject(agent.id, "Fixture/fixture", "read");
     assert.deepEqual(await adapter.permissions.get(agent.sessionId)!(attachedRequest), { kind: "approve-once" });
+    assert.deepEqual(await adapter.permissions.get(agent.sessionId)!({ ...attachedRequest, managedApprovalRequired: true }),
+      { kind: "user-not-available" }, "managed human approval must never be bypassed");
+    assert.deepEqual(await adapter.permissions.get(agent.sessionId)!({ kind: "custom-tool", toolCallId: "invalid-read",
+      toolName: "research_attached_repository", toolDescription: "Bounded research",
+      args: { repository: "Fixture/fixture", action: "read", path: "README.md", bypass: true } } as PermissionRequest),
+      { kind: "reject", feedback: "Invalid bounded repository research request." });
     const noBrowserShell = await adapter.permissions.get(agent.sessionId)!(request);
     assert.deepEqual(noBrowserShell, { kind: "user-not-available" });
     const noBrowserWrite = await adapter.permissions.get(agent.sessionId)!({ kind: "custom-tool", toolCallId: "write-1",
@@ -1472,6 +1478,160 @@ test("edit approval creates a unique worktree, persists location, and never auto
     await reloaded.close();
     unsubscribe();
     execFileSync("git", ["-C", repo, "worktree", "remove", agent.repository?.worktree?.path ?? reloaded.state.worktrees![0].path]);
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("configured write eligibility opens only an explicit per-task worktree and never bypasses tool permissions", async () => {
+  const fixture = await realpath(await mkdtemp(join(tmpdir(), "agentcorp-configured-")));
+  const repo = join(fixture, "repo");
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    await writeFile(join(repo, "README.md"), "Tracked\n");
+    execFileSync("git", ["-C", repo, "add", "README.md"]);
+    execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
+    const store = new MemoryStore();
+    const adapter = new MockAdapter();
+    const source = new FixtureSource(repo);
+    const room = await RoomController.open(adapter, store, "/dedicated", join(fixture, "trees"), source);
+    const first = await createReady(room, 0);
+    const second = await createReady(room, 1);
+    const unsubscribe = room.subscribe(() => {});
+    await room.addProject((await room.lookupProject("fixture"))[0], false);
+    await assert.rejects(room.prepareProjectWorktree(first.id, "Fixture/fixture"), /write eligibility/);
+    await room.setPersonaProject(first.id, "Fixture/fixture", "write");
+    assert.equal(room.state.projects![0].sharedWrite, false);
+    assert.deepEqual(room.state.personas![0].repositoryPolicies![0].write, true);
+    const pending = await room.prepareProjectWorktree(first.id, "Fixture/fixture");
+    assert.equal(source.clones, 0, "configuration and request cannot clone without a task decision");
+    assert.equal(first.repository, undefined);
+    assert.equal(second.repository, undefined);
+    await assert.rejects(room.findRepository(first.id, pending.id, "Fixture/other"), /cannot be changed/);
+    await assert.rejects(room.decideAccess(first.id, pending.id, "task", "Fixture/fixture"), /requires current write eligibility/);
+    await room.decideAccess(first.id, pending.id, "edit", "Fixture/fixture");
+    const grant = room.state.agents.find(item => item.id === first.id)?.repository;
+    assert.equal(grant?.configuredProject, "Fixture/fixture");
+    assert.equal(adapter.sessions.get(first.sessionId)?.directory, grant?.worktree?.path);
+    assert.equal(second.repository, undefined);
+    await assert.rejects(room.prepareProjectWorktree(second.id, "Fixture/fixture"), /write eligibility/);
+    unsubscribe();
+    const attempts = [
+      { kind: "shell", fullCommandText: `printf leak > ${join(fixture, "outside")}` },
+      { kind: "shell", fullCommandText: `sh -c 'touch ${join(fixture, "outside")}'` },
+      { kind: "write", fileName: join(fixture, "outside"), diff: "+leak" },
+      { kind: "write", fileName: join(grant!.worktree!.path, "link", "escape"), diff: "+leak" },
+      { kind: "read", path: join(fixture, "outside") },
+      { kind: "custom-tool", toolName: "apply_patch", args: { patch: "*** Begin Patch" } },
+      { kind: "custom-tool", toolName: "view", args: { path: join(fixture, "outside") } },
+      { kind: "url", url: "http://127.0.0.1:4173" },
+      { kind: "url", url: "https://example.invalid/upload?secret=x" }
+    ];
+    for (const [index, attempt] of attempts.entries()) {
+      const result = await adapter.permissions.get(first.sessionId)!({ ...attempt, toolCallId: `unsafe-${index}` } as PermissionRequest);
+      assert.deepEqual(result, { kind: "user-not-available" }, `uncontained ${attempt.kind} must not auto-approve`);
+    }
+    await room.archive(first.id);
+    await room.close();
+    const restored = await RoomController.open(adapter, store, "/dedicated", join(fixture, "trees"), source);
+    await restored.connect();
+    await restored.restore(first.id);
+    assert.equal(restored.state.agents.find(item => item.id === first.id)?.repository?.worktree?.path,
+      grant?.worktree?.path);
+    await restored.setPersonaProject(first.id, "Fixture/fixture", "remove");
+    assert.equal(restored.state.agents.find(item => item.id === first.id)?.repository, undefined);
+    assert.equal(adapter.sessions.get(first.sessionId)?.directory, first.workspace);
+    assert.equal(restored.state.worktrees?.length, 1, "revocation preserves worktree for inspection");
+    await restored.close();
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("configured worktree revocation stops a pending tool and denies stale approval", async () => {
+  const fixture = await realpath(await mkdtemp(join(tmpdir(), "agentcorp-revoke-")));
+  const repo = join(fixture, "repo");
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    await writeFile(join(repo, "README.md"), "Tracked\n");
+    execFileSync("git", ["-C", repo, "add", "README.md"]);
+    execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
+    const adapter = new MockAdapter();
+    const store = new MemoryStore();
+    const room = await RoomController.open(adapter, store, "/dedicated", join(fixture, "trees"), new FixtureSource(repo));
+    const first = await createReady(room, 0);
+    const second = await createReady(room, 1);
+    const unsubscribe = room.subscribe(() => {});
+    await room.addProject((await room.lookupProject("fixture"))[0], false, true);
+    for (const agent of [first, second]) {
+      const prepared = await room.prepareProjectWorktree(agent.id, "Fixture/fixture");
+      await room.decideAccess(agent.id, prepared.id, "edit", "Fixture/fixture");
+    }
+    const firstTree = room.state.agents.find(item => item.id === first.id)!.repository!.worktree!;
+    const secondTree = room.state.agents.find(item => item.id === second.id)!.repository!.worktree!;
+    assert.notEqual(firstTree.path, secondTree.path);
+    assert.notEqual(firstTree.branch, secondTree.branch);
+    await room.send(first.id, "Change only this repo");
+    const pending = adapter.permissions.get(first.sessionId)!({
+      kind: "shell", toolCallId: "unsafe-shell", fullCommandText: `touch ${join(fixture, "outside")}`
+    } as PermissionRequest);
+    const reviewId = first.review!.id;
+    await room.setProjectWrite("Fixture/fixture", false);
+    assert.deepEqual(await pending, { kind: "reject", feedback: "Turn stopped: project eligibility revoked." });
+    assert.throws(() => room.decide(first.id, reviewId, true), /stale/);
+    assert.equal(adapter.sessions.get(first.sessionId)?.aborts, 1);
+    assert.equal(first.repository, undefined);
+    assert.equal(second.repository, undefined);
+    assert.equal(adapter.sessions.get(first.sessionId)?.directory, first.workspace);
+    assert.equal(adapter.sessions.get(second.sessionId)?.directory, second.workspace);
+    assert.equal(room.state.worktrees?.length, 2);
+    await assert.rejects(room.prepareProjectWorktree(first.id, "Fixture/fixture"), /write eligibility/);
+    await room.close();
+    const restarted = await RoomController.open(adapter, store, "/dedicated", join(fixture, "trees"), new FixtureSource(repo));
+    assert.equal(restarted.state.projects![0].sharedWrite, false);
+    assert.equal(restarted.state.worktrees!.length, 2);
+    await restarted.close();
+    unsubscribe();
+  } finally {
+    await rm(fixture, { recursive: true, force: true });
+  }
+});
+
+test("write eligibility revoked during provisioning cannot attach a stale worktree", async () => {
+  const fixture = await realpath(await mkdtemp(join(tmpdir(), "agentcorp-write-race-")));
+  const repo = join(fixture, "repo");
+  try {
+    execFileSync("git", ["init", "-q", repo]);
+    await writeFile(join(repo, "README.md"), "Tracked\n");
+    execFileSync("git", ["-C", repo, "add", "README.md"]);
+    execFileSync("git", ["-C", repo, "-c", "user.name=Fixture", "-c", "user.email=fixture@example.invalid", "commit", "-qm", "fixture"]);
+    const source = new FixtureSource(repo);
+    let begun!: () => void;
+    let finish!: () => void;
+    const started = new Promise<void>(resolve => { begun = resolve; });
+    const paused = new Promise<void>(resolve => { finish = resolve; });
+    const provision = source.provision.bind(source);
+    source.provision = async (remote, signal) => {
+      begun();
+      await paused;
+      return provision(remote, signal);
+    };
+    const adapter = new MockAdapter();
+    const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated", join(fixture, "trees"), source);
+    const agent = await createReady(room, 0);
+    const unsubscribe = room.subscribe(() => {});
+    await room.addProject((await room.lookupProject("fixture"))[0], false, true);
+    const request = await room.prepareProjectWorktree(agent.id, "Fixture/fixture");
+    const decision = room.decideAccess(agent.id, request.id, "edit", "Fixture/fixture");
+    await started;
+    await room.setProjectWrite("Fixture/fixture", false);
+    finish();
+    await assert.rejects(decision, /cancelled|revoked/);
+    assert.equal(agent.repository, undefined);
+    assert.equal(adapter.sessions.get(agent.sessionId)?.directory, "");
+    assert.equal(room.state.worktrees?.length, 0);
+    unsubscribe();
+    await room.close();
   } finally {
     await rm(fixture, { recursive: true, force: true });
   }
