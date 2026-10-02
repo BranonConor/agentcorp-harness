@@ -17,7 +17,7 @@ import {
   EXTRA_DESKS, LIVE_COFFEE_Z, MAX_LIVE_DESKS, MIN_LIVE_DESKS,
   assignLoungeSpots, routeAroundDividers,
 } from "../../agent-inc/game/live-layout";
-import { AGENTCORP_LETTERS, AGENTCORP_MARK, AGENTCORP_WORDMARK, agentPortrait } from "../../agent-inc/game/sprite-art";
+import { HAPPY_MACHINES_MARK, HAPPY_MACHINES_WORDMARK, PIXEL_LETTERS, agentPortrait } from "../../agent-inc/game/sprite-art";
 import { createWorld } from "../../agent-inc/game/world";
 import { effectiveProjectAccess, noticeActivityForActor, roomActors } from "./room";
 import type { Actor, PersonaRepositoryPolicy, ProjectPolicy, Room as OfficeRoom, Status } from "./room";
@@ -68,8 +68,8 @@ function agentArt(room: SdkRoom | null, agent: SdkAgent): number {
 function isActive(agent: SdkAgent): agent is SdkAgent & { deskIndex: number } {
   return !agent.archived && agent.deskIndex !== null;
 }
-const wordmarkPaths = [...AGENTCORP_WORDMARK].map((letter, index) =>
-  AGENTCORP_LETTERS[letter].flatMap((row, y) =>
+const wordmarkPaths = [...HAPPY_MACHINES_WORDMARK.toUpperCase()].map((letter, index) =>
+  PIXEL_LETTERS[letter].flatMap((row, y) =>
     [...row].flatMap((bit, x) => bit === "1" ? [`M${index * 6 + x} ${y}h1v1h-1z`] : []),
   ).join(""));
 
@@ -1165,13 +1165,13 @@ function LiveOffice() {
         <div className="identity">
           <span className="brand-icon" aria-hidden="true">
             <svg viewBox="0 0 16 16" shapeRendering="crispEdges" focusable="false">
-              {AGENTCORP_MARK.flatMap(({ color, rects }, layer) =>
+              {HAPPY_MACHINES_MARK.flatMap(({ color, rects }, layer) =>
                 rects.map(([x, y, width, height], index) =>
                   <rect key={`${layer}-${index}`} x={x} y={y} width={width} height={height} fill={color} />))}
             </svg>
           </span>
-          <svg className="brand-wordmark" viewBox={`0 0 ${AGENTCORP_WORDMARK.length * 6 - 1} 7`}
-            role="img" aria-label="agentcorp"
+          <svg className="brand-wordmark" viewBox={`0 0 ${HAPPY_MACHINES_WORDMARK.length * 6 - 1} 7`}
+            role="img" aria-label="HappyMachines"
             shapeRendering="crispEdges">
             {wordmarkPaths.map((path, index) =>
               <path key={index} d={path} fill={index < 5 ? "var(--office-text)" : "var(--office-purple)"} />)}
@@ -2119,5 +2119,5 @@ function LiveOffice() {
 }
 
 const root = document.getElementById("root");
-if (!root) throw new Error("agentcorp office root is missing");
+if (!root) throw new Error("HappyMachines office root is missing");
 createRoot(root).render(<LiveOffice />);

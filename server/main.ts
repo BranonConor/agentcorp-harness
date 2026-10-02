@@ -327,7 +327,7 @@ const server = createServer(async (request, response) => {
     json(response, error instanceof SyntaxError ? 400 : 422, { error: message });
   }
 });
-server.listen(port, "127.0.0.1", () => console.log(`AgentCorp SDK office: ${origin}\nTool workspace: ${workspace}`));
+server.listen(port, "127.0.0.1", () => console.log(`HappyMachines SDK office: ${origin}\nTool workspace: ${workspace}`));
 void room.connect().catch(error => console.error("SDK connection:", error));
 let shuttingDown = false;
 async function shutdown(): Promise<void> {

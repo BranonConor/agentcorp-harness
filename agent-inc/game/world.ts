@@ -10,7 +10,7 @@ import {
 import { sampleDaylight } from "./lighting";
 import { interpolatePosition } from "./animation";
 import {
-  agentArt, agentCorpNeonArt, bookcaseArt, chairArt, chatRoomTitleArt,
+  agentArt, happyMachinesNeonArt, bookcaseArt, chairArt, chatRoomTitleArt,
   coffeeCounterArt, contextConsoleArt, coreBodyArt, deskArt, deskDetailArt,
   liveNoticeArt, loungeFrontArt, loungeSofaArt, monitorArt, monitorEmissionArt,
   monsteraArt, posterArt, stackArt, stationNoticeArt, statusLightArt, workflowKitArt,
@@ -579,7 +579,7 @@ export function createWorld(host: HTMLElement, simulation: Simulation, variant: 
     neonLight.position.set(0, 3.18, room.back + 0.55);
     scene.add(neonLight);
   }
-  const titleMap = track(isLive ? agentCorpNeonArt() : chatRoomTitleArt());
+  const titleMap = track(isLive ? happyMachinesNeonArt() : chatRoomTitleArt());
   const title = new THREE.Mesh(
     new THREE.PlaneGeometry(isLive ? 4.16 : 3.35, isLive ? 1.03 : 0.82),
     new THREE.MeshBasicMaterial({

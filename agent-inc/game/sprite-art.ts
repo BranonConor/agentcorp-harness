@@ -56,17 +56,18 @@ function texture(width: number, height: number, paint: (ctx: CanvasRenderingCont
   return map;
 }
 
-export const AGENTCORP_MARK = [
+export const HAPPY_MACHINES_MARK = [
   { color: "#74e7cc", rects: [[5, 0, 6, 1], [3, 1, 10, 1], [2, 2, 12, 1], [1, 3, 14, 2], [0, 5, 16, 6], [1, 11, 14, 2], [2, 13, 12, 1], [4, 14, 8, 1]] },
   { color: "#263247", rects: [[5, 1, 6, 1], [3, 2, 10, 1], [2, 3, 12, 2], [1, 5, 14, 6], [2, 11, 12, 2], [3, 13, 10, 1]] },
   { color: "#ddf7d8", rects: [[5, 3, 6, 1], [3, 4, 10, 8], [4, 12, 8, 1]] },
   { color: "#f4ffe9", rects: [[5, 4, 6, 1], [4, 5, 2, 4]] },
   { color: "#314058", rects: [[5, 6, 2, 2], [9, 6, 2, 2], [4, 9, 1, 2], [5, 11, 2, 1], [7, 12, 2, 1], [9, 11, 2, 1], [11, 9, 1, 2]] },
   { color: "#eaa99c", rects: [[3, 9, 1, 1], [12, 9, 1, 1]] },
+  { color: "#fff2bd", rects: [[12, 1, 1, 1], [13, 2, 1, 1]] },
 ] as const;
 
-function drawAgentCorpMark(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {
-  for (const { color, rects } of AGENTCORP_MARK) {
+function drawHappyMachinesMark(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {
+  for (const { color, rects } of HAPPY_MACHINES_MARK) {
     for (const [left, top, width, height] of rects) {
       pixel(ctx, color, x + left * scale, y + top * scale, width * scale, height * scale);
     }
@@ -296,47 +297,97 @@ export function chatRoomTitleArt(text = "CHAT ROOM"): THREE.CanvasTexture {
   });
 }
 
-export const AGENTCORP_WORDMARK = "AGENTCORP";
-export const AGENTCORP_LETTERS: Record<string, readonly string[]> = {
+export const HAPPY_MACHINES_WORDMARK = "HappyMachines";
+export const PIXEL_LETTERS: Record<string, readonly string[]> = {
+  " ": ["00000", "00000", "00000", "00000", "00000", "00000", "00000"],
+  "-": ["00000", "00000", "00000", "11111", "00000", "00000", "00000"],
+  "0": ["01110", "10001", "10011", "10101", "11001", "10001", "01110"],
+  "1": ["00100", "01100", "00100", "00100", "00100", "00100", "01110"],
+  "2": ["01110", "10001", "00001", "00010", "00100", "01000", "11111"],
+  "3": ["11110", "00001", "00001", "01110", "00001", "00001", "11110"],
+  "4": ["00010", "00110", "01010", "10010", "11111", "00010", "00010"],
+  "5": ["11111", "10000", "10000", "11110", "00001", "00001", "11110"],
+  "6": ["01111", "10000", "10000", "11110", "10001", "10001", "01110"],
+  "7": ["11111", "00001", "00010", "00100", "01000", "01000", "01000"],
+  "8": ["01110", "10001", "10001", "01110", "10001", "10001", "01110"],
+  "9": ["01110", "10001", "10001", "01111", "00001", "00001", "11110"],
   A: ["01110", "10001", "10001", "11111", "10001", "10001", "10001"],
+  B: ["11110", "10001", "10001", "11110", "10001", "10001", "11110"],
   C: ["01111", "10000", "10000", "10000", "10000", "10000", "01111"],
+  D: ["11110", "10001", "10001", "10001", "10001", "10001", "11110"],
   E: ["11111", "10000", "10000", "11110", "10000", "10000", "11111"],
+  F: ["11111", "10000", "10000", "11110", "10000", "10000", "10000"],
   G: ["01111", "10000", "10000", "10111", "10001", "10001", "01110"],
+  H: ["10001", "10001", "10001", "11111", "10001", "10001", "10001"],
+  I: ["11111", "00100", "00100", "00100", "00100", "00100", "11111"],
+  J: ["00111", "00010", "00010", "00010", "10010", "10010", "01100"],
+  K: ["10001", "10010", "10100", "11000", "10100", "10010", "10001"],
+  L: ["10000", "10000", "10000", "10000", "10000", "10000", "11111"],
+  M: ["10001", "11011", "10101", "10101", "10001", "10001", "10001"],
   N: ["10001", "11001", "10101", "10101", "10011", "10001", "10001"],
   O: ["01110", "10001", "10001", "10001", "10001", "10001", "01110"],
   P: ["11110", "10001", "10001", "11110", "10000", "10000", "10000"],
+  Q: ["01110", "10001", "10001", "10001", "10101", "10010", "01101"],
   R: ["11110", "10001", "10001", "11110", "10100", "10010", "10001"],
+  S: ["01111", "10000", "10000", "01110", "00001", "00001", "11110"],
   T: ["11111", "00100", "00100", "00100", "00100", "00100", "00100"],
+  U: ["10001", "10001", "10001", "10001", "10001", "10001", "01110"],
+  V: ["10001", "10001", "10001", "10001", "10001", "01010", "00100"],
+  W: ["10001", "10001", "10001", "10101", "10101", "10101", "01010"],
+  X: ["10001", "10001", "01010", "00100", "01010", "10001", "10001"],
+  Y: ["10001", "10001", "01010", "00100", "00100", "00100", "00100"],
+  Z: ["11111", "00001", "00010", "00100", "01000", "10000", "11111"],
 };
 
-export function agentCorpNeonArt(): THREE.CanvasTexture {
-  return texture(256, 80, (ctx) => {
-    pixel(ctx, "#111b2a", 2, 6, 252, 68);
-    pixel(ctx, "#42616c", 5, 9, 246, 62);
-    pixel(ctx, "#172637", 8, 12, 240, 56);
-    pixel(ctx, "#74e7cc", 9, 13, 2, 13);
-    pixel(ctx, "#74e7cc", 9, 55, 2, 12);
-    pixel(ctx, "#b6a1d7", 245, 13, 2, 13);
-    pixel(ctx, "#b6a1d7", 245, 55, 2, 12);
-    pixel(ctx, "#506577", 16, 62, 222, 1);
-    drawAgentCorpMark(ctx, 20, 24, 2);
-    pixel(ctx, "#4edec7", 61, 20, 2, 40);
-    let x = 73;
-    for (const [index, letter] of [...AGENTCORP_WORDMARK].entries()) {
-      const rows = AGENTCORP_LETTERS[letter];
+export const SIGN_WIDTH = 384;
+export const SIGN_HEIGHT = 96;
+export const OFFICE_SIGN_TEXT = "HappyMachines HQ";
+const signTextX = 80;
+const signTextY = 37;
+const signScale = 3;
+const signAdvance = 18;
+
+export function layoutBrandedSign(displayText: string): { glyphs: readonly (readonly string[])[]; width: number } {
+  if (!/^[A-Za-z0-9 -]{1,16}$/.test(displayText) || displayText.trim() !== displayText || displayText.includes("  ")) {
+    throw new Error("Office sign text must be 1–16 ASCII letters, digits, spaces or hyphens, without surrounding or repeated spaces.");
+  }
+  const glyphs = [...displayText.toUpperCase()].map(letter => PIXEL_LETTERS[letter]);
+  if (glyphs.some(glyph => !glyph)) throw new Error("Office sign text has an unsupported glyph.");
+  const width = (glyphs.length - 1) * signAdvance + 5 * signScale;
+  if (signTextX + width > SIGN_WIDTH - 14) throw new Error("Office sign text does not fit the sign.");
+  return { glyphs, width };
+}
+
+export function drawBrandedSign(ctx: CanvasRenderingContext2D, displayText: string, mark: "smile" = "smile") {
+  const { glyphs } = layoutBrandedSign(displayText);
+  if (mark !== "smile") throw new Error("Unsupported office sign mark.");
+  pixel(ctx, "#111b2a", 2, 7, 380, 82);
+  pixel(ctx, "#42616c", 5, 10, 374, 76);
+  pixel(ctx, "#172637", 8, 13, 368, 70);
+  pixel(ctx, "#74e7cc", 9, 15, 2, 17);
+  pixel(ctx, "#74e7cc", 9, 64, 2, 17);
+  pixel(ctx, "#b6a1d7", 373, 15, 2, 17);
+  pixel(ctx, "#b6a1d7", 373, 64, 2, 17);
+  pixel(ctx, "#506577", 17, 77, 350, 1);
+  drawHappyMachinesMark(ctx, 21, 32, 2);
+  pixel(ctx, "#4edec7", 67, 26, 2, 46);
+  for (const [index, rows] of glyphs.entries()) {
+    const x = signTextX + index * signAdvance;
       for (const [row, bits] of rows.entries()) {
         for (const [column, bit] of [...bits].entries()) {
           if (bit === "0") continue;
-          pixel(ctx, "#34435d", x + column * 3 + 1, 28 + row * 3 + 2, 3, 3);
+          pixel(ctx, "#34435d", x + column * signScale + 1, signTextY + row * signScale + 2, signScale, signScale);
           pixel(ctx, index < 5 ? "#a7ffe6" : "#e3caf7",
-            x + column * 3, 28 + row * 3, 3, 3);
+            x + column * signScale, signTextY + row * signScale, signScale, signScale);
         }
       }
-      x += 18;
-    }
-    pixel(ctx, "#e6b48a", 201, 62, 29, 2);
-    pixel(ctx, "#a7ffe6", 20, 62, 30, 2);
-  });
+  }
+  pixel(ctx, "#e6b48a", 327, 77, 35, 2);
+  pixel(ctx, "#a7ffe6", 21, 77, 36, 2);
+}
+
+export function happyMachinesNeonArt(displayText: string = OFFICE_SIGN_TEXT): THREE.CanvasTexture {
+  return texture(SIGN_WIDTH, SIGN_HEIGHT, ctx => drawBrandedSign(ctx, displayText));
 }
 
 export function stationNoticeArt(status: "queued" | "assigned" | "working" | "complete" | "failed", progressStep = 0): THREE.CanvasTexture {

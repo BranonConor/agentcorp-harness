@@ -78,7 +78,7 @@
   image-rendering: pixelated;
   filter: drop-shadow(0 0 4px #74e7ccaa);
 }
-.live-shell .brand-wordmark { display: block; flex: none; width: 106px; height: 14px; }
+.live-shell .brand-wordmark { display: block; flex: none; width: 155px; height: 14px; }
 .identity-controls {
   display: inline-flex;
   align-items: center;
@@ -477,9 +477,10 @@
 }
 @media (max-width: 540px) {
   .live-shell .identity { gap: 6px; padding: 5px 6px; }
+  .live-shell .top-stats { top: calc(max(var(--office-inset), env(safe-area-inset-top)) + 52px); }
   .live-shell .brand-icon { width: 24px; height: 24px; }
   .live-shell .brand-icon svg { width: 20px; height: 20px; }
-  .live-shell .brand-wordmark { width: 92px; height: auto; }
+  .live-shell .brand-wordmark { width: 130px; height: auto; }
   .identity-controls { gap: 8px; margin-left: 0; padding-left: 7px; }
   .live-shell .time-preview {
     grid-template-columns: 14px 5ch 14px;
@@ -498,10 +499,11 @@
   .activity-scroll { padding: 16px; }
 }
 @media (max-width: 470px) {
-  .live-shell .brand-wordmark { display: none; }
+  .live-shell .brand-wordmark { width: 126px; }
 }
 @media (max-width: 360px) {
   .live-shell .identity .brand-icon { display: grid; }
+  .live-shell .brand-wordmark { width: 108px; }
   .live-shell .time-preview { grid-template-columns: 12px 5ch; padding: 0 3px; }
   .live-shell .time-preview .time-icon { width: 12px; }
   .live-shell .time-preview .time-arrow { display: none; }

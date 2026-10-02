@@ -1,6 +1,6 @@
-# AgentCorp SDK office
+# HappyMachines SDK office
 
-A local, single-user spatial Copilot SDK harness using the **actual AgentCorp 3D office**: its original room geometry, procedural pixel art, shaders, lighting/day cycle, desks, camera controls, activity chrome, and sprite movement. Click **+ above an empty desk** (or **Add agent**) to create an independent SDK session and sprite; click a sprite to focus the camera and open its persistent chat. SDK events drive speech, working, idle, and permission states. This does not attach to existing Copilot app sessions.
+HappyMachines is a local, single-user spatial Copilot SDK harness built on the **original AgentCorp 3D office**: its room geometry, procedural pixel art, shaders, lighting/day cycle, desks, camera controls, activity chrome, and sprite movement. The HappyMachines smile, HUD wordmark and HQ sign are generated from pixel art; the sign renderer accepts only short, locally supplied ASCII text and a predefined mark (there is no user-facing sign configuration). Click **+ above an empty desk** (or **Add agent**) to create an independent SDK session and sprite; click a sprite to focus the camera and open its persistent chat. SDK events drive speech, working, idle, and permission states. This does not attach to existing Copilot app sessions.
 
 ## Install and run
 
