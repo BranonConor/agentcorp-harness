@@ -55,3 +55,9 @@ test("project groups follow global sharing without inventing edit permissions", 
   assert.deepEqual(groups.global.map(item => [item.project.repository.fullName, item.read]),
     [["Owner/Shared", false]]);
 });
+
+test("global worktree eligibility is grouped globally even without global read", () => {
+  const access = effectiveProjectAccess([{ ...projects[1], sharedWrite: true }]);
+  assert.deepEqual(groupedProjectAccess(access).global.map(item => [item.read, item.write]), [[true, true]]);
+  assert.deepEqual(groupedProjectAccess(access).agent, []);
+});

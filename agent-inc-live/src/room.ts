@@ -30,8 +30,8 @@ export function groupedProjectAccess(access: readonly EffectiveProjectAccess[]):
   agent: EffectiveProjectAccess[]; global: EffectiveProjectAccess[];
 } {
   return {
-    agent: access.filter(item => !item.project.sharedRead),
-    global: access.filter(item => item.project.sharedRead),
+    agent: access.filter(item => !item.project.sharedRead && !item.project.sharedWrite),
+    global: access.filter(item => item.project.sharedRead || !!item.project.sharedWrite),
   };
 }
 

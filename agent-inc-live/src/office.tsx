@@ -1033,7 +1033,8 @@ function LiveOffice() {
   };
   const projectChooser = (persona?: AgentPersona) => <div className="project-chooser">
     <button type="button" className="project-chooser-toggle" aria-expanded={projectChooserOpen}
-      onClick={() => setProjectChooserOpen(open => !open)}>Select GitHub Repos</button>
+      onClick={() => setProjectChooserOpen(open => !open)}>
+      {persona ? "Select GitHub Repos" : "Assign projects globally"}</button>
     {projectChooserOpen && <div className="project-chooser-content">
       <p>Find a repository on GitHub, then select its verified identity. Paths and unverified names cannot grant access.</p>
       <form className="project-lookup" onSubmit={event => { event.preventDefault(); void lookupProject(); }}>
@@ -1062,9 +1063,11 @@ function LiveOffice() {
             if (!repository) { setActionError("Select a verified repository."); return; }
             setProjectSaving(true);
             try {
-              const exists = sdkRoom?.projects?.some(item =>
+              const exists = sdkRoom?.projects?.find(item =>
                 item.repository.fullName.toLowerCase() === repository.fullName.toLowerCase());
               if (!exists && !await act("project-policy", { repository, sharedRead: !persona })) return;
+              if (exists && !persona && !exists.sharedRead &&
+                !await act("project-share", { fullName: repository.fullName, sharedRead: true })) return;
               if (persona && !await act("persona-project", {
                 personaId: persona.id, fullName: repository.fullName, choice: projectAccessChoice,
               })) return;
@@ -1100,9 +1103,10 @@ function LiveOffice() {
             onClick={() => change("read")}>Give read</button> :
             <button type="button" disabled={!connected}
               onClick={() => change("remove")}>Remove agent access</button>}
-          <button type="button" disabled={!connected}
+          {(!write || policy?.write) && <button type="button" disabled={!connected}
             onClick={() => change(policy?.write ? "read" : "write")}>
-            {policy?.write ? "Keep read only" : "Allow task worktrees"}</button>
+            {policy?.write ? project.sharedWrite ? "Remove direct write (global remains)" : "Keep read only" :
+              "Allow task worktrees"}</button>}
           {write && selectedAgent?.personaId === persona.id && <button type="button"
             disabled={!connected || selectedAgent.archived || selectedAgent.phase !== "idle" ||
               !!selectedAgent.accessRequest || !!selectedAgent.review}
@@ -2009,8 +2013,9 @@ function LiveOffice() {
                                 agentId: selectedAgent.id, id: selectedAgent.accessRequest!.id, choice: "deny" })}>Deny</button>
                             {([...(selectedAgent.accessRequest.scope === "read" ?
                               [["persona", "Read for persona (default)", "Grant read access to this persona"]] : []),
-                              ["task", "Read this task", "Read for this task"],
-                              ["session", "Read this session", "Read for this agent session"],
+                              ...(!selectedAgent.accessRequest.configuredProject ?
+                                [["task", "Read this task", "Read for this task"],
+                                  ["session", "Read this session", "Read for this agent session"]] : []),
                               ...(selectedAgent.accessRequest.scope === "read" ?
                                 [["office", "Read for office", "Add verified repository to office catalog and share read access"]] : []),
                               ...(selectedAgent.accessRequest.scope === "edit" ?
