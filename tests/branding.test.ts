@@ -59,38 +59,63 @@ test("future sign text accepts only bounded locally rendered ASCII glyphs", () =
   }
 });
 
-test("two-color pixel smile stays recognizable at 16 and 24 CSS pixels", () => {
-  assert.deepEqual([...new Set(HAPPY_MACHINES_MARK.map(layer => layer.color))], ["#263247", "#a7ffe6"]);
-  assert.ok(HAPPY_MACHINES_MARK.reduce((count, layer) => count + layer.rects.length, 0) <= 15);
+test("square x-eyes and grin stay legible at 16, 24 and 64 CSS pixels on either theme", () => {
+  assert.deepEqual(HAPPY_MACHINES_MARK.map(layer => layer.color), ["#fff7e9", "#e34b54", "#171b25"]);
   const luminance = (hex: string) => {
     const channels = [1, 3, 5].map(offset => parseInt(hex.slice(offset, offset + 2), 16) / 255)
       .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
     return channels[0] * 0.2126 + channels[1] * 0.7152 + channels[2] * 0.0722;
   };
-  assert.ok((luminance("#a7ffe6") + 0.05) / (luminance("#263247") + 0.05) >= 10);
-  for (const size of [16, 24]) {
-    const image = pixels(16, 16);
-    for (const { color, rects } of HAPPY_MACHINES_MARK) {
-      image.ctx.fillStyle = color;
-      for (const [x, y, width, height] of rects) image.ctx.fillRect(x, y, width, height);
+  assert.ok((luminance("#fff7e9") + 0.05) / (luminance("#171b25") + 0.05) >= 15);
+  for (const background of ["#ffffff", "#0d202b"]) {
+    for (const size of [16, 24, 64]) {
+      const image = pixels(16, 16);
+      for (const { color, rects } of HAPPY_MACHINES_MARK) {
+        image.ctx.fillStyle = color;
+        for (const [x, y, width, height] of rects) image.ctx.fillRect(x, y, width, height);
+      }
+      assert.equal(image.isClipped(), false);
+      const displayedPixel = (x: number, y: number) =>
+        image.data[Math.floor(y * 16 / size)][Math.floor(x * 16 / size)] || background;
+      const center = (coordinate: number) => Math.floor((coordinate + 0.5) * size / 16);
+      const sample = (x: number, y: number) => displayedPixel(center(x), center(y));
+      assert.equal(sample(3, 2), "#171b25", "left eye upper stroke");
+      assert.equal(sample(6, 2), "#171b25", "left eye other upper stroke");
+      assert.equal(sample(4, 4), "#171b25", "left eye crossing");
+      assert.equal(sample(9, 2), "#171b25", "right eye upper stroke");
+      assert.equal(sample(12, 2), "#171b25", "right eye other upper stroke");
+      assert.equal(sample(10, 4), "#171b25", "right eye crossing");
+      assert.equal(sample(4, 2), "#fff7e9", "eye arms stay separate");
+      assert.equal(sample(7, 8), "#fff7e9", "mouth stays open");
+      assert.equal(sample(2, 8), "#171b25", "left raised corner");
+      assert.equal(sample(13, 8), "#171b25", "right raised corner");
+      assert.equal(sample(7, 12), "#171b25", "broad lower grin");
+      assert.equal(sample(14, 9), "#e34b54", "stepped red edge");
+      assert.equal(sample(7, 14), "#e34b54", "red below grin");
+      assert.equal(sample(0, 8), background, "transparent left margin");
+      assert.equal(sample(15, 8), background, "transparent right margin");
+      assert.equal(sample(8, 0), background, "transparent top margin");
+      assert.equal(sample(8, 15), background, "transparent bottom margin");
     }
-    assert.equal(image.isClipped(), false);
-    const displayedPixel = (x: number, y: number) =>
-      image.data[Math.floor(y * 16 / size)][Math.floor(x * 16 / size)];
-    const center = (coordinate: number) => Math.floor((coordinate + 0.5) * size / 16);
-    assert.equal(displayedPixel(center(5), center(5)), "#263247", "left eye");
-    assert.equal(displayedPixel(center(10), center(5)), "#263247", "right eye");
-    assert.equal(displayedPixel(center(7), center(8)), "#a7ffe6", "open space between eyes and smile");
-    assert.equal(displayedPixel(center(4), center(9)), "#263247", "left smile corner");
-    assert.equal(displayedPixel(center(11), center(9)), "#263247", "right smile corner");
-    assert.equal(displayedPixel(center(7), center(12)), "#263247", "center of smile");
-    assert.equal(displayedPixel(center(1), center(8)), "#263247", "contrasting outline");
-    assert.equal(displayedPixel(center(0), center(8)), "", "transparent margin");
   }
 });
 
-test("favicon matches the shared smile sprite pixel for pixel", () => {
-  const svg = readFileSync(new URL("../favicon.svg", import.meta.url), "utf8");
+test("HQ sign draws the shared sprite at 2x without changing its text", () => {
+  const sign = pixels(SIGN_WIDTH, SIGN_HEIGHT);
+  drawBrandedSign(sign.ctx, OFFICE_SIGN_TEXT);
+  const sprite = pixels(16, 16);
+  for (const { color, rects } of HAPPY_MACHINES_MARK) {
+    sprite.ctx.fillStyle = color;
+    for (const [x, y, width, height] of rects) sprite.ctx.fillRect(x, y, width, height);
+  }
+  for (let y = 0; y < 16; y++) for (let x = 0; x < 16; x++) {
+    if (sprite.data[y][x]) assert.equal(sign.data[32 + y * 2][21 + x * 2], sprite.data[y][x]);
+  }
+  assert.equal(sign.isClipped(), false);
+});
+
+test("favicon matches the shared x-eyes sprite pixel for pixel", () => {
+  const svg = readFileSync(new URL("../public/favicon.svg", import.meta.url), "utf8");
   assert.match(svg, /viewBox="0 0 16 16" shape-rendering="crispEdges"/);
   const paths = [...svg.matchAll(/<path fill="([^"]+)" d="([^"]+)"\/>/g)];
   assert.equal(paths.length, HAPPY_MACHINES_MARK.length);

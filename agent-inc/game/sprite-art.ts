@@ -56,10 +56,22 @@ function texture(width: number, height: number, paint: (ctx: CanvasRenderingCont
   return map;
 }
 
+const markStrokes = [
+  [3, 2, 1, 1], [6, 2, 1, 1], [9, 2, 1, 1], [12, 2, 1, 1],
+  [3, 3, 4, 1], [9, 3, 4, 1],
+  [4, 4, 2, 1], [10, 4, 2, 1],
+  [3, 5, 4, 1], [9, 5, 4, 1],
+  [3, 6, 1, 1], [6, 6, 1, 1], [9, 6, 1, 1], [12, 6, 1, 1],
+  [2, 8, 2, 2], [12, 8, 2, 2],
+  [3, 10, 2, 1], [11, 10, 2, 1],
+  [4, 11, 3, 1], [9, 11, 3, 1],
+  [5, 12, 6, 1], [6, 13, 4, 1],
+] as const;
+
 export const HAPPY_MACHINES_MARK = [
-  { color: "#263247", rects: [[4, 1, 8, 1], [2, 2, 12, 1], [1, 3, 14, 10], [2, 13, 12, 1], [4, 14, 8, 1]] },
-  { color: "#a7ffe6", rects: [[4, 2, 8, 1], [3, 3, 10, 10], [4, 13, 8, 1]] },
-  { color: "#263247", rects: [[5, 5, 2, 2], [9, 5, 2, 2], [4, 9, 1, 2], [5, 11, 2, 1], [7, 12, 2, 1], [9, 11, 2, 1], [11, 9, 1, 2]] },
+  { color: "#fff7e9", rects: [[2, 1, 12, 1], [1, 2, 14, 12], [2, 14, 12, 1]] },
+  { color: "#e34b54", rects: markStrokes.map(([x, y, width, height]) => [x + 1, y + 1, width, height] as const) },
+  { color: "#171b25", rects: markStrokes },
 ] as const;
 
 function drawHappyMachinesMark(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {
