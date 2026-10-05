@@ -59,9 +59,9 @@ test("future sign text accepts only bounded locally rendered ASCII glyphs", () =
   }
 });
 
-test("square wink and toothy open grin stay legible at 16, 24 and 64 CSS pixels on either theme", () => {
-  assert.deepEqual(HAPPY_MACHINES_MARK.map(layer => layer.color), ["#5a4c78", "#5a4c78", "#28322e", "#f8eedf"]);
-  assert.deepEqual(HAPPY_MACHINES_DARK_MARK.map(layer => layer.color), ["#ead5f3", "#5a4c78", "#f1e8d6", "#f8eedf"]);
+test("stroke-only wink and open grin stay legible at 16, 24 and 64 CSS pixels on either theme", () => {
+  assert.deepEqual(HAPPY_MACHINES_MARK.map(layer => layer.color), ["#5a4c78", "#28322e"]);
+  assert.deepEqual(HAPPY_MACHINES_DARK_MARK.map(layer => layer.color), ["#ead5f3", "#f1e8d6"]);
   const luminance = (hex: string) => {
     const channels = [1, 3, 5].map(offset => parseInt(hex.slice(offset, offset + 2), 16) / 255)
       .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
@@ -83,7 +83,7 @@ test("square wink and toothy open grin stay legible at 16, 24 and 64 CSS pixels 
         image.data[Math.floor(y * 16 / size)][Math.floor(x * 16 / size)] || background;
       const center = (coordinate: number) => Math.floor((coordinate + 0.5) * size / 16);
       const sample = (x: number, y: number) => displayedPixel(center(x), center(y));
-      const [accent, cavity, ink, tooth] = mark.map(layer => layer.color);
+      const [accent, ink] = mark.map(layer => layer.color);
       assert.equal(sample(3, 3), ink, "left squinted eye upper stroke");
       assert.equal(sample(6, 4), ink, "left squinted eye tip");
       assert.equal(sample(3, 5), ink, "left squinted eye lower stroke");
@@ -91,22 +91,24 @@ test("square wink and toothy open grin stay legible at 16, 24 and 64 CSS pixels 
       assert.equal(sample(10, 2), ink, "right eye starts above the wink");
       assert.equal(sample(11, 5), ink, "right eye remains open and tall");
       assert.equal(sample(9, 3), background, "space beside the open eye");
-      assert.equal(sample(3, 7), ink, "wide upper grin");
       assert.equal(sample(2, 8), ink, "left raised corner");
       assert.equal(sample(13, 8), ink, "right raised corner");
-      assert.equal(sample(4, 8), tooth, "upper tooth row");
-      assert.equal(sample(6, 9), tooth, "lower tooth row");
-      assert.equal(sample(7, 10), cavity, "open purple mouth cavity");
-      assert.equal(sample(7, 12), cavity, "cavity curves to lower lip");
-      assert.equal(sample(7, 13), ink, "lower rim closes the grin");
-      assert.equal(sample(14, 9), accent, "stepped purple edge");
-      assert.equal(sample(7, 14), accent, "purple below grin");
+      assert.equal(sample(4, 11), ink, "left grin curve");
+      assert.equal(sample(11, 11), ink, "right grin curve");
+      assert.equal(sample(6, 13), ink, "left bottom grin stroke");
+      assert.equal(sample(7, 13), accent, "small purple grin accent");
+      assert.equal(sample(9, 13), ink, "right bottom grin stroke");
+      for (const y of [8, 9, 10, 11, 12]) {
+        assert.equal(sample(7, y), background, `mouth interior row ${y} is transparent`);
+      }
+      assert.equal(sample(8, 7), background, "no upper border enclosing the smile");
       assert.equal(sample(0, 8), background, "transparent left margin");
       assert.equal(sample(15, 8), background, "transparent right margin");
       assert.equal(sample(8, 0), background, "transparent top margin");
       assert.equal(sample(8, 15), background, "transparent bottom margin");
       assert.equal(image.data[1][8], "", "no painted square behind the eyes");
       assert.equal(image.data[6][8], "", "no painted square between eyes and mouth");
+      assert.ok(image.data.flat().filter(Boolean).length <= 40, "face contains strokes, not a filled badge");
     }
   }
 });
@@ -131,7 +133,7 @@ test("favicon matches the shared winking sprite pixel for pixel", () => {
   const paths = [...svg.matchAll(/<path class="([^"]+)" d="([^"]+)"\/>/g)];
   assert.equal(paths.length, HAPPY_MACHINES_MARK.length);
   for (const [index, layer] of HAPPY_MACHINES_MARK.entries()) {
-    const className = ["accent", "cavity", "ink", "teeth"][index];
+    const className = ["accent", "ink"][index];
     assert.equal(paths[index][1], className);
     assert.match(svg, new RegExp(`\\.${className} \\{ fill: ${layer.color}; \\}`));
     assert.match(svg, new RegExp(`\\.${className} \\{ fill: ${HAPPY_MACHINES_DARK_MARK[index].color}; \\}`));
@@ -145,7 +147,7 @@ test("favicon matches the shared winking sprite pixel for pixel", () => {
       paths[index][2].length, "favicon contains only the shared rectangles");
   }
   assert.match(svg, /@media \(prefers-color-scheme: dark\)/);
-  assert.doesNotMatch(svg, /<rect|<path[^>]+fill="#fff|<path[^>]+fill="#e34b54"/);
+  assert.doesNotMatch(svg, /<rect|class="cavity"|class="teeth"|<path[^>]+fill="#fff"/);
   for (const [dark, mark] of [[false, HAPPY_MACHINES_MARK], [true, HAPPY_MACHINES_DARK_MARK]] as const) {
     const dynamic = happyMachinesFavicon(dark);
     const dynamicPaths = [...dynamic.matchAll(/<path fill="([^"]+)" d="([^"]+)"\/>/g)];
