@@ -1,12 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">
   <style>
+    .cavity { fill: #5a4c78; }
     .accent { fill: #5a4c78; }
     .ink { fill: #28322e; }
+    .teeth { fill: #f8eedf; }
     @media (prefers-color-scheme: dark) {
       .accent { fill: #ead5f3; }
       .ink { fill: #f1e8d6; }
     }
   </style>
-  <path class="accent" d="M7 13h2v1H7z"/>
-  <path class="ink" d="M3 3h2v1H3zM4 4h3v1H4zM3 5h2v1H3zM10 2h2v4H10zM2 8h2v2H2zM12 8h2v2H12zM3 10h2v1H3zM11 10h2v1H11zM4 11h2v1H4zM10 11h2v1H10zM5 12h2v1H5zM9 12h2v1H9zM6 13h1v1H6zM9 13h1v1H9z"/>
+  <path class="cavity" d="M5 10h6v2H5zM6 12h4v1H6z"/>
+  <path class="ink" d="M2 2h1v1H2zM3 3h1v1H3zM4 4h2v1H4zM3 5h1v1H3zM2 6h1v1H2zM9 2h1v1H9zM13 2h1v1H13zM10 3h1v1H10zM12 3h1v1H12zM9 4h5v1H9zM10 5h1v1H10zM12 5h1v1H12zM9 6h1v1H9zM13 6h1v1H13zM2 8h2v2H2zM12 8h2v2H12zM3 10h2v1H3zM11 10h2v1H11zM4 11h2v1H4zM10 11h2v1H10zM5 12h2v1H5zM9 12h2v1H9zM6 13h4v1H6zM7 14h2v1H7z"/>
+  <path class="accent" d="M11 4h1v1H11z"/>
+  <path class="teeth" d="M6 10h4v1H6z"/>
 </svg>

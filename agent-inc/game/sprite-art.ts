@@ -57,23 +57,31 @@ function texture(width: number, height: number, paint: (ctx: CanvasRenderingCont
 }
 
 const markStrokes = [
-  [3, 3, 2, 1], [4, 4, 3, 1], [3, 5, 2, 1],
-  [10, 2, 2, 4],
+  [2, 2, 1, 1], [3, 3, 1, 1], [4, 4, 2, 1], [3, 5, 1, 1], [2, 6, 1, 1],
+  [9, 2, 1, 1], [13, 2, 1, 1],
+  [10, 3, 1, 1], [12, 3, 1, 1],
+  [9, 4, 5, 1],
+  [10, 5, 1, 1], [12, 5, 1, 1],
+  [9, 6, 1, 1], [13, 6, 1, 1],
   [2, 8, 2, 2], [12, 8, 2, 2],
   [3, 10, 2, 1], [11, 10, 2, 1],
   [4, 11, 2, 1], [10, 11, 2, 1],
   [5, 12, 2, 1], [9, 12, 2, 1],
-  [6, 13, 1, 1], [9, 13, 1, 1],
+  [6, 13, 4, 1], [7, 14, 2, 1],
 ] as const;
 
 export const HAPPY_MACHINES_MARK = [
-  { color: "#5a4c78", rects: [[7, 13, 2, 1]] },
+  { color: "#5a4c78", rects: [[5, 10, 6, 2], [6, 12, 4, 1]] },
   { color: "#28322e", rects: markStrokes },
+  { color: "#5a4c78", rects: [[11, 4, 1, 1]] },
+  { color: "#f8eedf", rects: [[6, 10, 4, 1]] },
 ] as const;
 
 export const HAPPY_MACHINES_DARK_MARK = [
-  { ...HAPPY_MACHINES_MARK[0], color: "#ead5f3" },
+  HAPPY_MACHINES_MARK[0],
   { ...HAPPY_MACHINES_MARK[1], color: "#f1e8d6" },
+  { ...HAPPY_MACHINES_MARK[2], color: "#ead5f3" },
+  HAPPY_MACHINES_MARK[3],
 ] as const;
 
 export function happyMachinesFavicon(dark: boolean): string {
