@@ -63,25 +63,19 @@ const markStrokes = [
   [9, 4, 5, 1],
   [10, 5, 1, 1], [12, 5, 1, 1],
   [9, 6, 1, 1], [13, 6, 1, 1],
-  [2, 8, 2, 2], [12, 8, 2, 2],
-  [3, 10, 2, 1], [11, 10, 2, 1],
-  [4, 11, 2, 1], [10, 11, 2, 1],
-  [5, 12, 2, 1], [9, 12, 2, 1],
-  [6, 13, 4, 1], [7, 14, 2, 1],
+  [5, 8, 5, 1], [5, 9, 1, 5],
+  [10, 9, 2, 1], [11, 10, 2, 3], [10, 13, 2, 1],
+  [5, 14, 5, 1],
 ] as const;
 
 export const HAPPY_MACHINES_MARK = [
-  { color: "#5a4c78", rects: [[5, 10, 6, 2], [6, 12, 4, 1]] },
   { color: "#28322e", rects: markStrokes },
-  { color: "#5a4c78", rects: [[11, 4, 1, 1]] },
-  { color: "#f8eedf", rects: [[6, 10, 4, 1]] },
+  { color: "#5a4c78", rects: [[4, 8, 1, 7], [11, 4, 1, 1]] },
 ] as const;
 
 export const HAPPY_MACHINES_DARK_MARK = [
-  HAPPY_MACHINES_MARK[0],
-  { ...HAPPY_MACHINES_MARK[1], color: "#f1e8d6" },
-  { ...HAPPY_MACHINES_MARK[2], color: "#ead5f3" },
-  HAPPY_MACHINES_MARK[3],
+  { ...HAPPY_MACHINES_MARK[0], color: "#f1e8d6" },
+  { ...HAPPY_MACHINES_MARK[1], color: "#ead5f3" },
 ] as const;
 
 export function happyMachinesFavicon(dark: boolean): string {
