@@ -255,6 +255,7 @@ function LiveOffice() {
   const [meetingBusy, setMeetingBusy] = useState(false);
   const [previewOffset, setPreviewOffset] = useState(0);
   const [selected, setSelected] = useState("");
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [hover, setHover] = useState<{ name: string; x: number; y: number } | null>(null);
   const [draft, setDraft] = useState("");
   const [repoHint, setRepoHint] = useState("");
@@ -310,6 +311,11 @@ function LiveOffice() {
   const host = useRef<HTMLDivElement>(null);
   const activityToggle = useRef<HTMLButtonElement>(null);
   const activityClose = useRef<HTMLButtonElement>(null);
+  const agentDetailBack = useRef<HTMLButtonElement>(null);
+  const editAgentButton = useRef<HTMLButtonElement>(null);
+  const chatOptionsButton = useRef<HTMLButtonElement>(null);
+  const restoreChatScroll = useRef<number | null>(null);
+  const returnAgentFocus = useRef<"edit" | "settings" | null>(null);
   const storeEntry = useRef<HTMLButtonElement>(null);
   const storeBack = useRef<HTMLButtonElement>(null);
   const returnStoreFocus = useRef(false);
@@ -444,6 +450,10 @@ function LiveOffice() {
     selectedRef.current = "";
     focusedKey.current = ":-1";
     setSelected("");
+    setSettingsOpen(false);
+    setProfileEditingId(null);
+    restoreChatScroll.current = null;
+    returnAgentFocus.current = null;
     setChatOptionsOpen(false);
     setHover(null);
     hoverDeskRef.current = null;
@@ -456,6 +466,26 @@ function LiveOffice() {
     unfocusActor();
     setTab("agents");
   };
+  const backToConversation = () => {
+    returnAgentFocus.current = settingsOpen ? "settings" : "edit";
+    setSettingsOpen(false);
+    setProfileEditingId(null);
+    setChatOptionsOpen(false);
+  };
+  const openSettings = () => {
+    restoreChatScroll.current = chatScroll.current?.scrollTop ?? 0;
+    followTail.current = false;
+    setChatOptionsOpen(false);
+    setSettingsOpen(true);
+  };
+  useLayoutEffect(() => {
+    if (!panelOpen || !selected) return;
+    if (settingsOpen || profileEditingId) agentDetailBack.current?.focus();
+    else if (returnAgentFocus.current) {
+      (returnAgentFocus.current === "edit" ? editAgentButton : chatOptionsButton).current?.focus();
+      returnAgentFocus.current = null;
+    }
+  }, [panelOpen, selected, settingsOpen, profileEditingId]);
   const backToOverview = () => {
     returnStoreFocus.current = true;
     setTab("office");
@@ -495,6 +525,7 @@ function LiveOffice() {
     }
     focusedKey.current = `${key}:${agent.archived ? "archived" : index}`;
     setSelected(key);
+    setSettingsOpen(false);
     setPanelOpen(true);
     setTab("agents");
     setMenuAgentId(null);
@@ -522,8 +553,12 @@ function LiveOffice() {
           if (!confirmSubmitting) closeConfirmation();
         } else if (assignmentAgentId && !assignmentSubmitting) {
           setAssignmentAgentId(null);
-        } else if (chatOptionsOpen) setChatOptionsOpen(false);
+        } else if (chatOptionsOpen) {
+          setChatOptionsOpen(false);
+          chatOptionsButton.current?.focus();
+        }
         else if (menuAgentId) setMenuAgentId(null);
+        else if (selectedRef.current && (settingsOpen || profileEditingId)) backToConversation();
         else if (selectedRef.current) backToActivity();
         else if (tab === "store") backToOverview();
         else closeActivity();
@@ -531,7 +566,7 @@ function LiveOffice() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [panelOpen, tab, selected, menuAgentId, chatOptionsOpen, confirmAgentId, confirmSubmitting, assignmentAgentId, assignmentSubmitting]);
+  }, [panelOpen, tab, selected, settingsOpen, profileEditingId, menuAgentId, chatOptionsOpen, confirmAgentId, confirmSubmitting, assignmentAgentId, assignmentSubmitting]);
 
   useLayoutEffect(() => {
     if (!panelOpen || selected) return;
@@ -565,7 +600,7 @@ function LiveOffice() {
   }, [chatOptionsOpen]);
 
   useLayoutEffect(() => {
-    if (!panelOpen || !selected || !chatScroll.current?.querySelector(".conversation-view")) return;
+    if (!panelOpen || !selected || settingsOpen || setupOpen || !chatScroll.current?.querySelector(".conversation-view")) return;
     followTail.current = true;
     const scroll = chatScroll.current;
     if (scroll) scroll.scrollTop = scroll.scrollHeight;
@@ -739,11 +774,21 @@ function LiveOffice() {
     signKind === "connecting" ? "Connecting" : "Offline";
   const selectedAgent = sdkRoom?.agents.find(agent => agent.sessionId === selected);
   const selectedPersona = personaFor(sdkRoom, selectedAgent);
+  useEffect(() => {
+    if (selectedAgent?.accessRequest || selectedAgent?.review) {
+      setSettingsOpen(false);
+      if (selectedPersona?.setupCompleted !== false) setProfileEditingId(null);
+    }
+  }, [selectedAgent?.accessRequest?.id, selectedAgent?.review?.id]);
   const setupOpen = !!selectedPersona && (selectedPersona.setupCompleted === false ||
     profileEditingId === selectedPersona.id);
   useLayoutEffect(() => {
-    if (setupOpen || !selected) chatScroll.current?.scrollTo(0, 0);
-  }, [selected, setupOpen, tab]);
+    if (!selected || setupOpen || settingsOpen) chatScroll.current?.scrollTo(0, 0);
+    else if (restoreChatScroll.current !== null && chatScroll.current) {
+      chatScroll.current.scrollTop = restoreChatScroll.current;
+      restoreChatScroll.current = null;
+    }
+  }, [selected, setupOpen, settingsOpen, tab]);
   const previousAssignments = (sdkRoom?.assignments ?? [])
     .filter(assignment => assignment.personaId === selectedPersona?.id && assignment.id !== selectedAgent?.assignmentId)
     .sort((a, b) => b.startedAt - a.startedAt);
@@ -874,6 +919,10 @@ function LiveOffice() {
     if (next) setMeetingHandoffs(handoffs => ({ ...handoffs, [key]: "" }));
   };
   const startProfileEdit = (persona: AgentPersona) => {
+    if (selectedAgent?.personaId === persona.id && !settingsOpen) {
+      restoreChatScroll.current = chatScroll.current?.scrollTop ?? 0;
+      followTail.current = false;
+    }
     setProfileDraft({
       name: persona.name, artId: persona.artId, workingStyle: persona.profile.workingStyle,
       instructions: persona.profile.instructions ?? "",
@@ -891,7 +940,10 @@ function LiveOffice() {
           .split(/[,\n]/).map(item => item.trim()).filter(Boolean),
         instructions: profileDraft.instructions.trim(), title: profileDraft.title.trim(), rank: persona.profile.rank,
       });
-      if (saved) setProfileEditingId(null);
+      if (saved) {
+        if (selectedAgent?.personaId === persona.id && persona.setupCompleted !== false) returnAgentFocus.current = "edit";
+        setProfileEditingId(null);
+      }
       return saved;
     } finally {
       setProfileBusy(false);
@@ -1379,25 +1431,36 @@ function LiveOffice() {
           </div>
         </section>
         <aside id="system-panel" className={`sidebar activity-panel ${panelOpen ? "sidebar-open" : ""} ${selectedAgent ? "chat-open" : ""}`}
-          aria-label={selectedAgent ? `${selectedActor?.name ?? "Agent"} ${setupOpen ? "profile setup" : "conversation"}` : "Manage"}
+          aria-label={selectedAgent ? `${selectedActor?.name ?? "Agent"} ${setupOpen ? "profile setup" : settingsOpen ? "settings" : "conversation"}` : "Manage"}
           aria-hidden={!panelOpen} inert={!panelOpen}>
           <div className="activity-header">
             <div className="activity-title-row">
-              {selectedAgent ? <button type="button" className="chat-back" onClick={backToActivity}
-                aria-label="Back to agents">←</button> : tab === "store" &&
+              {selectedAgent ? <button ref={setupOpen || settingsOpen ? agentDetailBack : undefined}
+                type="button" className="chat-back"
+                onClick={setupOpen && selectedPersona?.setupCompleted === false ? backToActivity :
+                  setupOpen || settingsOpen ? backToConversation : backToActivity}
+                aria-label={setupOpen && selectedPersona?.setupCompleted === false ? "Back to agents" :
+                  setupOpen || settingsOpen ? "Back to conversation" : "Back to agents"}>←</button> : tab === "store" &&
                 <button ref={storeBack} type="button" className="chat-back" onClick={backToOverview}
                   aria-label="Back to Overview">←</button>}
-              <h2>{selectedAgent ? selectedActor?.name : tab === "store" ? "Store" : "Manage"}</h2>
+              <h2>{selectedAgent ? settingsOpen ? "Agent settings" : setupOpen && selectedPersona?.setupCompleted !== false ?
+                "Edit agent" : selectedActor?.name : tab === "store" ? "Store" : "Manage"}</h2>
               {selectedAgent && <span className={`activity-tag chat-status status-${selectedActor?.status}`}>
                 {selectedAgent.archived ? "Archived" : selectedAgent.phase}</span>}
-              {selectedPersona && selectedPersona.setupCompleted !== false && selectedAgent && !setupOpen && <Button type="button"
-                className="profile-header-edit" onClick={() => startProfileEdit(selectedPersona)}>Edit profile</Button>}
-              {selectedAgent && <div className="chat-options" data-chat-options>
-                <button type="button" className="chat-options-toggle" aria-label={`Options for ${selectedActor?.name ?? "agent"}`}
+              {selectedPersona && selectedPersona.setupCompleted !== false && selectedAgent && !setupOpen && !settingsOpen &&
+                <Button ref={editAgentButton} type="button" className="profile-header-edit"
+                  aria-label="Edit agent" title="Edit agent" onClick={() => startProfileEdit(selectedPersona)}>
+                  <svg viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M4 14.5V17h2.5L16 7.5 12.5 4 3 13.5v3.5h3.5M11.5 5l3.5 3.5" /></svg>
+                </Button>}
+              {selectedAgent && !setupOpen && !settingsOpen && <div className="chat-options" data-chat-options>
+                <button ref={chatOptionsButton} type="button" className="chat-options-toggle" aria-label={`Options for ${selectedActor?.name ?? "agent"}`}
                   aria-expanded={chatOptionsOpen} aria-controls="chat-options-menu"
                   onClick={() => setChatOptionsOpen(open => !open)}>⋯</button>
                 {chatOptionsOpen && <div id="chat-options-menu" className="chat-options-menu"
-                  aria-label={`Repository permissions for ${selectedActor?.name ?? "agent"}`}>
+                  aria-label={`Options for ${selectedActor?.name ?? "agent"}`}>
+                  <button type="button" disabled={!!selectedAgent.review || !!selectedAgent.accessRequest}
+                    title={selectedAgent.review || selectedAgent.accessRequest ? "Respond to the pending request first" : undefined}
+                    onClick={openSettings}>Agent settings & more options</button>
                   <strong>Repository access</strong>
                   {selectedAgent.repository ? <>
                     <span>{selectedAgent.repository.name} · {selectedAgent.repository.worktree ? "edit worktree" :
@@ -1431,17 +1494,16 @@ function LiveOffice() {
                 onClick={() => setTab(item)}>{label}</button>
             ))}
           </nav>}
-          <div ref={chatScroll} className={`activity-scroll ${selectedAgent ? "conversation-scroll" : "activity-list-scroll"}`}
+          <div ref={chatScroll} className={`activity-scroll ${selectedAgent && !setupOpen && !settingsOpen ? "conversation-scroll" : "activity-list-scroll"}`}
             onScroll={event => {
-              if (!selectedAgent) return;
+              if (!selectedAgent || setupOpen || settingsOpen) return;
               const scroll = event.currentTarget;
               followTail.current = scroll.scrollHeight - scroll.scrollTop - scroll.clientHeight < 70;
             }}>
             {!selectedAgent && tab === "office" && (
               <section className="activity-view overview-list" aria-label="Office overview">
-                <div className="overview-group-label">Your office</div>
                 <div className="activity-row activity-row-first overview-office">
-                  <div className="activity-row-heading"><strong>The office</strong><span className="activity-tag">{deskCount} desks</span></div>
+                  <div className="activity-row-heading"><span className="activity-tag">{deskCount} desks</span></div>
                   <div className="overview-metrics">
                     <div><strong>{activeAgents.length}</strong><span>At desks</span></div>
                     <div><strong>{deskCount - activeAgents.length}</strong><span>Open</span></div>
@@ -1458,13 +1520,10 @@ function LiveOffice() {
                   <Button ref={storeEntry} type="button" onClick={() => setTab("store")}>Open Store →</Button>
                 </div>
                 <div className="overview-group-label">Configuration</div>
-                <div className="activity-row overview-connection">
-                  <div className="activity-row-heading"><strong>Connection</strong>
-                    <span className={`activity-tag ${connected ? "activity-tag-live" : "activity-tag-warning"}`}>
-                      {connected ? "Connected" : "Needs attention"}</span></div>
-                  {!connected && <p role="status">{sdkRoom?.error || connection}</p>}
-                  {!connected && <Button type="button" disabled={!sdkRoom} onClick={() => void act("retry", {})}>Retry SDK connection</Button>}
-                </div>
+                {!connected && <div className="activity-row overview-connection" role="status">
+                  <strong>SDK needs attention</strong><p>{sdkRoom?.error || connection}</p>
+                  <Button type="button" disabled={!sdkRoom} onClick={() => void act("retry", {})}>Retry SDK connection</Button>
+                </div>}
                 <Disclosure.Root className="activity-row overview-model">
                   <div className="activity-row-heading"><strong>Model provider</strong>
                     <span className="activity-tag">{sdkRoom?.defaultModelProfileId ?? "copilot"}</span></div>
@@ -1593,7 +1652,6 @@ function LiveOffice() {
                     {sdkRoom.usage.stale ? " · Outdated; refresh for recent work." : ""}</p> :
                     <p>Usage not loaded yet.</p>}
                   <button type="button" className="focus-button" disabled={!connected} onClick={() => void act("usage", {})}>Refresh SDK usage</button>
-                  <p>SDK-reported usage, not cost, XP or credits. Covers recorded sessions, not all past assignments.</p>
                 </div>
                 {!!sdkRoom?.worktrees?.length && <div className="activity-row">
                   <div className="activity-row-heading"><strong>Preserved worktrees</strong>
@@ -1852,7 +1910,7 @@ function LiveOffice() {
                   </div>;
                 })}
                 {formerPersonas.length > 0 && <>
-                  <h3 className="former-personas-title">Former personas</h3>
+                  <h3 className="former-personas-title">Retired agents</h3>
                   {formerPersonas.map(persona =>
                     <Disclosure.Root className="former-persona" key={persona.id}>
                       <Disclosure.Trigger><img src={agentPortrait(persona.artId)} alt="" width="36" height="36" />
@@ -1933,8 +1991,8 @@ function LiveOffice() {
                 </Disclosure.Root>
               </section>
             )}
-            {selectedAgent && !setupOpen && (
-              <section className="activity-view conversation-view" aria-label="SDK conversation">
+            {selectedAgent && settingsOpen && !setupOpen && (
+              <section className="activity-view agent-settings" aria-label={`${agentName(sdkRoom, selectedAgent)} settings`}>
                   <div className="persona-details">
                     <div className="profile-summary panel-section"><div className="persona-heading">
                       <img src={agentPortrait(agentArt(sdkRoom, selectedAgent))} alt="" width="42" height="42" />
@@ -1944,13 +2002,14 @@ function LiveOffice() {
                       </div>
                     </div>
                     {selectedPersona ? <>
-                      {profileEditingId === selectedPersona.id ? profileEditor(selectedPersona) : <>
-                        {selectedPersona.profile.workingStyle && <p><strong>Working style:</strong> {selectedPersona.profile.workingStyle}</p>}
-                        {!!selectedPersona.profile.specialties.length &&
-                          <p><strong>Specialties:</strong> {selectedPersona.profile.specialties.join(", ")}</p>}
-                      </>}
+                      {selectedPersona.profile.workingStyle && <p><strong>Working style:</strong> {selectedPersona.profile.workingStyle}</p>}
+                      {!!selectedPersona.profile.specialties.length &&
+                        <p><strong>Specialties:</strong> {selectedPersona.profile.specialties.join(", ")}</p>}
                     </> : <p>Profile is not available for this agent yet.</p>}
                     </div>
+                    <Disclosure.Root className="agent-settings-more panel-section">
+                      <Disclosure.Trigger>More options · notes, career, projects & assignments</Disclosure.Trigger>
+                      <Disclosure.Panel className="ui-disclosure-panel">
                     {selectedPersona && <>
                       {personaNotes(selectedPersona)}
                       {personaCareer(selectedPersona)}
@@ -1989,8 +2048,14 @@ function LiveOffice() {
                           setAssignmentModelProfileId(currentAssignment?.modelProfileId ?? "copilot");
                         }}>New assignment…</button>}
                     </div>
+                    <p className="settings-search-status panel-section" role="status">{searchCapability}</p>
+                      </Disclosure.Panel>
+                    </Disclosure.Root>
                   </div>
-                  <p className="archived-chat-notice" role="status">{searchCapability}</p>
+              </section>
+            )}
+            {selectedAgent && !setupOpen && !settingsOpen && (
+              <section className="activity-view conversation-view" aria-label="SDK conversation">
                   <div className="conversation-messages">
                     {selectedAgent.archived && selectedAgent.messages.length === 0 &&
                       <p className="activity-empty conversation-empty">No messages yet.</p>}
@@ -2134,7 +2199,7 @@ function LiveOffice() {
             </section>}
           {selectedAgent?.archived && <p className="archived-chat-notice">Archived · open Agents to restore this agent before sending a message.</p>}
           {selectedAgent?.phase === "error" && !selectedAgent.archived && <button type="button" className="focus-button" onClick={() => void act("retry", {})}>Retry agent connection</button>}
-          {selectedAgent && !setupOpen && !selectedAgent.archived && <form className="conversation-composer" onSubmit={event => {
+          {selectedAgent && !setupOpen && !settingsOpen && !selectedAgent.archived && <form className="conversation-composer" onSubmit={event => {
             event.preventDefault();
             if (!draft.trim()) return;
             const prompt = draft;

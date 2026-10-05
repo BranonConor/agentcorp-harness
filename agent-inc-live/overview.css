@@ -58,9 +58,7 @@
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
   gap: 0;
-  margin-top: var(--ui-space-4);
-  padding-top: var(--ui-space-3);
-  border-top: 1px solid var(--ui-line);
+  margin-top: var(--ui-space-3);
 }
 .live-shell .overview-metrics > div {
   display: grid;
@@ -75,6 +73,8 @@
 .live-shell .overview-metrics span { color: var(--ui-subtle); font: 600 10px/1.25 var(--sans); white-space: nowrap; }
 .live-shell .overview-metrics .attention { color: var(--office-warning); }
 .live-shell .overview-metrics .attention span { color: inherit; }
+.live-shell .overview-office .activity-row-heading { justify-content: flex-end; }
+.live-shell .overview-office { padding-top: var(--ui-space-4); }
 .live-shell .overview-store-entry > button { margin-top: var(--ui-space-3); }
 .live-shell .overview-list button:not(.overview-disclosure):not(.ui-select-trigger),
 .live-shell .overview-list input:not([type="checkbox"]) {
@@ -138,17 +138,37 @@
 .live-shell .overview-list .workspace-path { overflow-wrap: anywhere; }
 .live-shell .overview-share { display: flex; align-items: center; gap: 7px; font: 600 11px var(--sans); }
 .live-shell .activity-title-row .profile-header-edit {
-  margin-left: auto;
-  padding: 5px 8px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 27px;
+  height: 27px;
+  padding: 0;
   border: 1px solid var(--office-border);
   border-radius: var(--ui-radius-sm);
   background: var(--office-muted);
   color: var(--office-text);
-  font: 650 11px var(--sans);
-  white-space: nowrap;
   cursor: pointer;
 }
+.live-shell .profile-header-edit svg {
+  width: 16px; height: 16px; stroke: currentColor; stroke-width: 1.6;
+  stroke-linecap: round; stroke-linejoin: round;
+}
 .live-shell .activity-title-row .profile-header-edit:hover { background: var(--office-accent-bg); }
+.live-shell .agent-settings-more > .ui-disclosure-trigger { border-top: 0; }
+.live-shell .agent-settings-more .ui-disclosure-panel[hidden] { display: none; }
+.live-shell .agent-settings-more > .ui-disclosure-panel {
+  margin-inline: calc(-1 * var(--panel-inline));
+}
+.live-shell .agent-settings-more .panel-section {
+  padding: var(--panel-section-block) var(--panel-inline);
+  margin: 0;
+  border-bottom: 1px solid var(--ui-line);
+}
+.live-shell .agent-settings-more .assignment-history { border-bottom: 0; }
+.live-shell .agent-settings-more .settings-search-status {
+  margin: 0; padding-top: 0; border: 0; color: var(--ui-subtle); font: 11px/1.5 var(--sans);
+}
 .live-shell .agent-setup { display: grid; gap: 0; padding: 0 0 32px; }
 .live-shell .agent-setup-intro h3 { margin: 5px 0 0; font-size: 18px; letter-spacing: -.03em; }
 .live-shell .agent-setup p { margin: 7px 0 0; color: var(--office-secondary); font: 11px/1.5 var(--sans); }

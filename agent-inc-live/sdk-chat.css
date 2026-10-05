@@ -265,7 +265,11 @@
 .assignment-outcome code { display: inline; padding: 0 3px; margin: 0; }
 .former-personas-title { margin: 0; padding: 20px var(--panel-inline) 8px; color: var(--office-secondary); font-size: 12px; }
 .former-persona { border-bottom: 1px solid var(--office-border); }
-.former-persona .ui-disclosure-trigger { justify-content: flex-start; gap: 10px; min-height: 60px; padding: 12px var(--panel-inline); border-top: 0; color: var(--office-text); font: 650 12px var(--sans); }
+.live-shell .former-persona > .ui-disclosure-trigger {
+  box-sizing: border-box; justify-content: flex-start; gap: 10px;
+  min-height: 60px; padding: 12px var(--panel-inline); border-top: 0;
+  color: var(--office-text); font: 650 12px var(--sans);
+}
 .former-persona .ui-disclosure-trigger:hover { background: var(--office-muted); }
 .former-persona .ui-disclosure-trigger img { flex: none; }
 .former-persona .ui-disclosure-chevron { margin-left: auto; }
