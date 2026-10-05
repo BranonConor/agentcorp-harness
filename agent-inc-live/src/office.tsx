@@ -241,7 +241,7 @@ function LiveOffice() {
   const [sdkRoom, setSdkRoom] = useState<SdkRoom | null>(null);
   const [connection, setConnection] = useState("Connecting to local Copilot SDK…");
   const [panelOpen, setPanelOpen] = useState(false);
-  const [tab, setTab] = useState<"office" | "agents" | "meetings">("office");
+  const [tab, setTab] = useState<"office" | "store" | "agents" | "meetings">("office");
   const [meetingKind, setMeetingKind] = useState<Meeting["kind"]>("meeting");
   const [meetingParticipants, setMeetingParticipants] = useState<string[]>([]);
   const [meetingAgenda, setMeetingAgenda] = useState("");
@@ -310,6 +310,9 @@ function LiveOffice() {
   const host = useRef<HTMLDivElement>(null);
   const activityToggle = useRef<HTMLButtonElement>(null);
   const activityClose = useRef<HTMLButtonElement>(null);
+  const storeEntry = useRef<HTMLButtonElement>(null);
+  const storeBack = useRef<HTMLButtonElement>(null);
+  const returnStoreFocus = useRef(false);
   const sceneRef = useRef<Simulation | null>(null);
   const worldRef = useRef<ReturnType<typeof createWorld> | null>(null);
   const actorsRef = useRef<(DeskActor | null)[]>([]);
@@ -453,8 +456,13 @@ function LiveOffice() {
     unfocusActor();
     setTab("agents");
   };
+  const backToOverview = () => {
+    returnStoreFocus.current = true;
+    setTab("office");
+  };
   const closeActivity = () => {
     unfocusActor();
+    if (tab === "store") setTab("office");
     returnFocus.current = true;
     setPanelOpen(false);
     setMenuAgentId(null);
@@ -496,13 +504,17 @@ function LiveOffice() {
   useEffect(() => {
     const focusTimer = window.setTimeout(() => {
       if (panelOpen) {
-        activityClose.current?.focus();
+        if (selected || !document.activeElement?.closest("#system-panel")) activityClose.current?.focus();
       } else if (returnFocus.current) {
         returnFocus.current = false;
         activityToggle.current?.focus();
       }
     }, 50);
-    if (!panelOpen) return () => window.clearTimeout(focusTimer);
+    return () => window.clearTimeout(focusTimer);
+  }, [panelOpen, selected]);
+
+  useEffect(() => {
+    if (!panelOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
@@ -513,15 +525,22 @@ function LiveOffice() {
         } else if (chatOptionsOpen) setChatOptionsOpen(false);
         else if (menuAgentId) setMenuAgentId(null);
         else if (selectedRef.current) backToActivity();
+        else if (tab === "store") backToOverview();
         else closeActivity();
       }
     };
     window.addEventListener("keydown", onKeyDown);
-    return () => {
-      window.clearTimeout(focusTimer);
-      window.removeEventListener("keydown", onKeyDown);
-    };
-  }, [panelOpen, selected, menuAgentId, chatOptionsOpen, confirmAgentId, confirmSubmitting, assignmentAgentId, assignmentSubmitting]);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [panelOpen, tab, selected, menuAgentId, chatOptionsOpen, confirmAgentId, confirmSubmitting, assignmentAgentId, assignmentSubmitting]);
+
+  useLayoutEffect(() => {
+    if (!panelOpen || selected) return;
+    if (tab === "store") storeBack.current?.focus();
+    else if (tab === "office" && returnStoreFocus.current) {
+      returnStoreFocus.current = false;
+      storeEntry.current?.focus();
+    }
+  }, [panelOpen, selected, tab]);
 
   useEffect(() => {
     if (confirmAgentId) confirmCheckboxRef.current?.focus();
@@ -1091,7 +1110,7 @@ function LiveOffice() {
   </div>;
   const personaProjects = (persona: AgentPersona) => <div className="persona-projects panel-section">
     <h4>Assign projects</h4>
-    <p>Choose verified repositories for this agent to read or become eligible for task worktrees. Global access applies unless excluded.</p>
+    <p>Choose verified repositories for this agent. Office access applies unless excluded.</p>
     {projectChooser(persona)}
     {!sdkRoom?.projects?.length && <p>No verified repositories yet.</p>}
     {(["agent", "global"] as const).map(group => {
@@ -1099,7 +1118,7 @@ function LiveOffice() {
         sdkRoom?.agents.find(agent => agent.personaId === persona.id)?.repository))[group];
       if (!items.length) return null;
       return <section className="project-group" key={group}>
-        <h5>{group === "agent" ? "Agent" : "Global"}</h5>
+        {group === "agent" && <h5>Agent</h5>}
         <ul>{items.map(({ project, read, write, source }) => {
       const fullName = project.repository.fullName;
       const policy = persona.repositoryPolicies?.find(item => item.fullName.toLowerCase() === fullName.toLowerCase());
@@ -1107,7 +1126,7 @@ function LiveOffice() {
         void act("persona-project", { personaId: persona.id, fullName, choice });
       return <li key={fullName}>
         <div><strong>{fullName}</strong><span>{write ? "Eligible for task worktree · manual by default" : read ?
-          source === "persona" ? "Read · agent" : source === "assignment" ? "Read · current task" : "Read · global" :
+          source === "persona" ? "Read · agent" : source === "assignment" ? "Read · current task" : "Read" :
           source === "excluded" ? "Not readable · excluded" : "Not readable"}</span></div>
         <div className="project-actions">
           {!policy?.read ? <button type="button" disabled={!connected}
@@ -1132,8 +1151,6 @@ function LiveOffice() {
         })}</ul>
       </section>;
     })}
-    <p className="project-edit-notice">Write eligibility permits a separately approved task worktree, not automatic editing.
-      Manual mode prompts for tools; worktrees are not OS sandboxes.</p>
   </div>;
   const newAssignment = async () => {
     if (!assignmentAgent || !canStartAssignment(assignmentAgent) || assignmentSubmitting) return;
@@ -1366,9 +1383,11 @@ function LiveOffice() {
           aria-hidden={!panelOpen} inert={!panelOpen}>
           <div className="activity-header">
             <div className="activity-title-row">
-              {selectedAgent && <button type="button" className="chat-back" onClick={backToActivity}
-                aria-label="Back to agents">←</button>}
-              <h2>{selectedAgent ? selectedActor?.name : "Manage"}</h2>
+              {selectedAgent ? <button type="button" className="chat-back" onClick={backToActivity}
+                aria-label="Back to agents">←</button> : tab === "store" &&
+                <button ref={storeBack} type="button" className="chat-back" onClick={backToOverview}
+                  aria-label="Back to Overview">←</button>}
+              <h2>{selectedAgent ? selectedActor?.name : tab === "store" ? "Store" : "Manage"}</h2>
               {selectedAgent && <span className={`activity-tag chat-status status-${selectedActor?.status}`}>
                 {selectedAgent.archived ? "Archived" : selectedAgent.phase}</span>}
               {selectedPersona && selectedPersona.setupCompleted !== false && selectedAgent && !setupOpen && <Button type="button"
@@ -1406,7 +1425,7 @@ function LiveOffice() {
               </button>
             </div>
           </div>
-          {!selectedAgent && <nav className="activity-tabs" aria-label="Manage views">
+          {!selectedAgent && tab !== "store" && <nav className="activity-tabs" aria-label="Manage views">
             {([["office", "Overview"], ["agents", "Agents"], ["meetings", "Meetings"]] as const).map(([item, label]) => (
               <button key={item} type="button" aria-pressed={tab === item}
                 onClick={() => setTab(item)}>{label}</button>
@@ -1430,28 +1449,13 @@ function LiveOffice() {
                     <div className={blocked ? "attention" : ""}><strong>{blocked}</strong><span>Attention</span></div>
                   </div>
                   {!sdkRoom && <p role="status">Connecting to the local office…</p>}
-                  {sdkRoom && !activeAgents.length && <p>No agents at desks yet. Add one from an empty desk or the top bar.</p>}
+                  {sdkRoom && !activeAgents.length && <p>No agents yet. Add one at an empty desk or from the top bar.</p>}
                 </div>
-                <div className="activity-row upgrade-shop">
-                  <div className="activity-row-heading"><strong>Office upgrades</strong>
+                <div className="activity-row overview-store-entry">
+                  <div className="activity-row-heading"><strong>Store</strong>
                     <span className="activity-tag">{career.balance} credits</span></div>
-                  <p>Decorative upgrades only. Earn credits from confirmed outcomes.</p>
-                  <ul>{UPGRADES.map(upgrade => <li key={upgrade.id}>
-                    <strong>{upgrade.name}</strong>
-                    <span>{upgrade.description}</span>
-                    {career.purchases.has(upgrade.id) ? <span className="overview-installed">Installed</span> :
-                      <Button type="button" disabled={career.balance < upgrade.price}
-                        onMouseEnter={() => worldRef.current?.setUpgrades([...career.purchases, upgrade.id])}
-                        onMouseLeave={() => worldRef.current?.setUpgrades([...career.purchases])}
-                        onFocus={() => worldRef.current?.setUpgrades([...career.purchases, upgrade.id])}
-                        onBlur={() => worldRef.current?.setUpgrades([...career.purchases])}
-                        onClick={() => {
-                        if (window.confirm(`Preview: ${upgrade.description}. Purchase ${upgrade.name} for ${upgrade.price} credits? Balance after: ${career.balance - upgrade.price}. Decorative only.`)) {
-                          void act("upgrade-purchase", { upgradeId: upgrade.id, confirmed: true });
-                        }
-                      }}>Preview & buy · {upgrade.price}</Button>}
-                  </li>)}</ul>
-                  <small>{rewardEvents.length} confirmed outcomes · {career.purchases.size} installed</small>
+                  <p>Decorative office upgrades · {career.purchases.size} installed</p>
+                  <Button ref={storeEntry} type="button" onClick={() => setTab("store")}>Open Store →</Button>
                 </div>
                 <div className="overview-group-label">Configuration</div>
                 <div className="activity-row overview-connection">
@@ -1554,8 +1558,7 @@ function LiveOffice() {
                 <div className="activity-row project-configurations">
                   <div className="activity-row-heading"><strong>Global project access</strong>
                     <span className="activity-tag">{sdkRoom?.projects?.length ?? 0} verified</span></div>
-                  <p>Share verified GitHub repositories for every agent to read, or enable explicit task worktree requests.
-                    Individual exclusions stay in the agent profile. Built-in tools prompt by default.</p>
+                  <p>Share read access with agents or allow separately approved task worktrees. Agent exclusions stay in the profile.</p>
                   {projectChooser()}
                   {!sdkRoom?.projects?.length && <p>No verified repositories yet.</p>}
                   <ul className="project-list">{sdkRoom?.projects?.map(project => <li key={project.repository.fullName}>
@@ -1577,8 +1580,8 @@ function LiveOffice() {
                   <div className="activity-row-heading"><strong>Scratch workspace root</strong><span className="activity-tag">Local only</span></div>
                   <p className="workspace-path">{sdkRoom?.workspace || "Loading…"}</p>
                   <p>{sdkRoom?.agents.some(agent => agent.workspaceKind === "root") ?
-                    "The existing agent retains this root; new agents use separate disposable subfolders here." :
-                    "Each agent uses a separate disposable subfolder here."} Agents request repository access in their own chat. Worktrees do not provide OS isolation; review each shell or write permission in manual mode.</p>
+                    "An existing agent retains this root; new agents use separate subfolders." :
+                    "Each agent uses a separate subfolder."} Worktrees are not OS sandboxes; review shell and write permissions.</p>
                 </div>
                 <div className="activity-row">
                   <div className="activity-row-heading"><strong>SDK usage · all recorded agents</strong>
@@ -1590,8 +1593,7 @@ function LiveOffice() {
                     {sdkRoom.usage.stale ? " · Outdated; refresh for recent work." : ""}</p> :
                     <p>Usage not loaded yet.</p>}
                   <button type="button" className="focus-button" disabled={!connected} onClick={() => void act("usage", {})}>Refresh SDK usage</button>
-                  <p>Aggregate SDK-reported consumption only; not a monetary cost, XP source or credit source.
-                    Coverage reflects current recorded agent sessions, not all historical assignments.</p>
+                  <p>SDK-reported usage, not cost, XP or credits. Covers recorded sessions, not all past assignments.</p>
                 </div>
                 {!!sdkRoom?.worktrees?.length && <div className="activity-row">
                   <div className="activity-row-heading"><strong>Preserved worktrees</strong>
@@ -1600,6 +1602,31 @@ function LiveOffice() {
                   {sdkRoom.worktrees.map(tree => <p className="workspace-path" key={tree.path}>
                     {tree.branch} · {tree.path}</p>)}
                 </div>}
+              </section>
+            )}
+            {!selectedAgent && tab === "store" && (
+              <section className="activity-view overview-list store-view" aria-label="Office Store">
+                <div className="activity-row upgrade-shop">
+                  <div className="activity-row-heading"><strong>Office upgrades</strong>
+                    <span className="activity-tag">{career.balance} credits</span></div>
+                  <p>Decorative upgrades only. Earn credits from confirmed outcomes.</p>
+                  <ul>{UPGRADES.map(upgrade => <li key={upgrade.id}>
+                    <strong>{upgrade.name}</strong>
+                    <span>{upgrade.description}</span>
+                    {career.purchases.has(upgrade.id) ? <span className="overview-installed">Installed</span> :
+                      <Button type="button" disabled={career.balance < upgrade.price}
+                        onMouseEnter={() => worldRef.current?.setUpgrades([...career.purchases, upgrade.id])}
+                        onMouseLeave={() => worldRef.current?.setUpgrades([...career.purchases])}
+                        onFocus={() => worldRef.current?.setUpgrades([...career.purchases, upgrade.id])}
+                        onBlur={() => worldRef.current?.setUpgrades([...career.purchases])}
+                        onClick={() => {
+                          if (window.confirm(`Preview: ${upgrade.description}. Purchase ${upgrade.name} for ${upgrade.price} credits? Balance after: ${career.balance - upgrade.price}. Decorative only.`)) {
+                            void act("upgrade-purchase", { upgradeId: upgrade.id, confirmed: true });
+                          }
+                        }}>Preview & buy · {upgrade.price}</Button>}
+                  </li>)}</ul>
+                  <small>{rewardEvents.length} confirmed outcomes · {career.purchases.size} installed</small>
+                </div>
               </section>
             )}
             {!selectedAgent && tab === "meetings" && (
@@ -1969,7 +1996,9 @@ function LiveOffice() {
                       <p className="activity-empty conversation-empty">No messages yet.</p>}
                     {displayedMessages.map(message =>
                       <div className={`conversation-message ${message.role}`} key={message.id}>
-                        <span>{message.role === "user" ? "YOU" : message.role === "system" ? "OFFICE" : selectedActor?.name}{message.pending ? " · STREAMING" : ""}</span>
+                        {message.role === "assistant" && <img className="message-avatar"
+                          src={agentPortrait(agentArt(sdkRoom, selectedAgent))} alt="" width="28" height="28" />}
+                        <span>{message.role === "user" ? "YOU" : message.role === "system" ? "OFFICE" : agentName(sdkRoom, selectedAgent)}{message.pending ? " · STREAMING" : ""}</span>
                         <div className="message-bubble">
                         <button type="button" className="copy-message" aria-label={`${copiedId === message.id ? "Copied" : "Copy"} ${message.role} message as Markdown`}
                           title={copiedId === message.id ? "Copied" : "Copy Markdown"}
@@ -1990,6 +2019,8 @@ function LiveOffice() {
                         <span>{agentName(sdkRoom, selectedAgent)} is thinking</span>
                       </div>}
                     {selectedAgent.accessRequest && <div className="conversation-message assistant access-message">
+                      <img className="message-avatar" src={agentPortrait(agentArt(sdkRoom, selectedAgent))}
+                        alt="" width="28" height="28" />
                       <span>{selectedActor?.name}</span>
                       <div className="message-bubble">
                         <section className="access-card" role="group"

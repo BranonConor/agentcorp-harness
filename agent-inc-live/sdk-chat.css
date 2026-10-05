@@ -20,6 +20,8 @@
 @keyframes thinking-pulse { 50% { opacity: .28; transform: translateY(-2px); } }
 .conversation-message { margin: 0 0 13px; }
 .conversation-message > span { font-size: 10px; font-weight: 700; letter-spacing: .06em; color: var(--office-secondary); }
+.conversation-message .message-avatar { display: block; width: 28px; height: 28px; object-fit: contain; image-rendering: pixelated; }
+.conversation-message.assistant > span { display: block; margin-top: 4px; }
 .conversation-message .message-bubble {
   position: relative;
   margin-top: 6px;
@@ -33,9 +35,8 @@
   font-size: 13px;
   overflow-wrap: anywhere;
 }
-.conversation-message.user .message-markdown { padding-left: 42px; }
+.conversation-message.user .message-markdown, .conversation-message.system .message-markdown { padding-left: 42px; }
 .conversation-message.assistant .message-markdown { padding-right: 42px; }
-.conversation-message .message-bubble.single-line .message-markdown { padding-inline: 13px; }
 .message-markdown p { margin: 0 0 10px; }
 .message-markdown p:last-child { margin-bottom: 0; }
 .message-markdown h1, .message-markdown h2, .message-markdown h3, .message-markdown h4 { margin: 16px 0 7px; line-height: 1.3; }
@@ -60,8 +61,7 @@
 .conversation-message.assistant { margin-right: 24px; }
 .copy-message { position: absolute; bottom: 5px; left: 6px; z-index: 1; display: grid; place-items: center; width: 27px; height: 27px; padding: 5px; border: 1px solid var(--office-border); border-radius: 6px; background: var(--office-panel); color: var(--office-secondary); cursor: pointer; opacity: 0; }
 .conversation-message.assistant .copy-message { left: auto; right: 6px; }
-.conversation-message .message-bubble.single-line .copy-message { bottom: 50%; left: -25px; transform: translateY(50%); }
-.conversation-message.assistant .message-bubble.single-line .copy-message { left: auto; right: -25px; }
+.conversation-message .message-bubble.single-line .copy-message { bottom: 50%; transform: translateY(50%); }
 .copy-message svg { width: 17px; height: 17px; stroke: currentColor; stroke-width: 1.6; }
 .conversation-message:hover .copy-message, .conversation-message:focus-within .copy-message, .copy-message:focus-visible { opacity: 1; border-color: var(--office-border); }
 .copy-message:focus-visible { outline: 2px solid var(--office-accent); }
