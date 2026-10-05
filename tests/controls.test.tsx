@@ -101,6 +101,7 @@ test("keyboard selection, switch state, disclosure, portal and reduced motion", 
     assert.equal(await page.locator('input[name="format"]').inputValue(), "review");
     await select.focus();
     await select.press("ArrowDown");
+    await page.getByRole("option", { name: "Review", selected: true }).waitFor({ state: "visible" });
     await page.keyboard.press("ArrowUp");
     await page.keyboard.press("Enter");
     assert.equal(await page.locator('input[name="format"]').inputValue(), "meeting");
