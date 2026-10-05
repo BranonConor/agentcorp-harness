@@ -59,9 +59,9 @@ test("future sign text accepts only bounded locally rendered ASCII glyphs", () =
   }
 });
 
-test("square x-eyes and grin stay legible at 16, 24 and 64 CSS pixels on either theme", () => {
-  assert.deepEqual(HAPPY_MACHINES_MARK.map(layer => layer.color), ["#5a4c78", "#28322e"]);
-  assert.deepEqual(HAPPY_MACHINES_DARK_MARK.map(layer => layer.color), ["#ead5f3", "#f1e8d6"]);
+test("square wink and toothy open grin stay legible at 16, 24 and 64 CSS pixels on either theme", () => {
+  assert.deepEqual(HAPPY_MACHINES_MARK.map(layer => layer.color), ["#5a4c78", "#5a4c78", "#28322e", "#f8eedf"]);
+  assert.deepEqual(HAPPY_MACHINES_DARK_MARK.map(layer => layer.color), ["#ead5f3", "#5a4c78", "#f1e8d6", "#f8eedf"]);
   const luminance = (hex: string) => {
     const channels = [1, 3, 5].map(offset => parseInt(hex.slice(offset, offset + 2), 16) / 255)
       .map(value => value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
@@ -83,18 +83,22 @@ test("square x-eyes and grin stay legible at 16, 24 and 64 CSS pixels on either 
         image.data[Math.floor(y * 16 / size)][Math.floor(x * 16 / size)] || background;
       const center = (coordinate: number) => Math.floor((coordinate + 0.5) * size / 16);
       const sample = (x: number, y: number) => displayedPixel(center(x), center(y));
-      const [accent, ink] = mark.map(layer => layer.color);
-      assert.equal(sample(3, 2), ink, "left eye upper stroke");
-      assert.equal(sample(6, 2), ink, "left eye other upper stroke");
-      assert.equal(sample(4, 4), ink, "left eye crossing");
-      assert.equal(sample(9, 2), ink, "right eye upper stroke");
-      assert.equal(sample(12, 2), ink, "right eye other upper stroke");
-      assert.equal(sample(10, 4), ink, "right eye crossing");
-      assert.equal(sample(4, 2), background, "transparent gap between eye arms");
-      assert.equal(sample(7, 8), background, "transparent open mouth");
+      const [accent, cavity, ink, tooth] = mark.map(layer => layer.color);
+      assert.equal(sample(3, 3), ink, "left squinted eye upper stroke");
+      assert.equal(sample(6, 4), ink, "left squinted eye tip");
+      assert.equal(sample(3, 5), ink, "left squinted eye lower stroke");
+      assert.equal(sample(5, 3), background, "wink is not a solid eye");
+      assert.equal(sample(10, 2), ink, "right eye starts above the wink");
+      assert.equal(sample(11, 5), ink, "right eye remains open and tall");
+      assert.equal(sample(9, 3), background, "space beside the open eye");
+      assert.equal(sample(3, 7), ink, "wide upper grin");
       assert.equal(sample(2, 8), ink, "left raised corner");
       assert.equal(sample(13, 8), ink, "right raised corner");
-      assert.equal(sample(7, 12), ink, "broad lower grin");
+      assert.equal(sample(4, 8), tooth, "upper tooth row");
+      assert.equal(sample(6, 9), tooth, "lower tooth row");
+      assert.equal(sample(7, 10), cavity, "open purple mouth cavity");
+      assert.equal(sample(7, 12), cavity, "cavity curves to lower lip");
+      assert.equal(sample(7, 13), ink, "lower rim closes the grin");
       assert.equal(sample(14, 9), accent, "stepped purple edge");
       assert.equal(sample(7, 14), accent, "purple below grin");
       assert.equal(sample(0, 8), background, "transparent left margin");
@@ -102,7 +106,7 @@ test("square x-eyes and grin stay legible at 16, 24 and 64 CSS pixels on either 
       assert.equal(sample(8, 0), background, "transparent top margin");
       assert.equal(sample(8, 15), background, "transparent bottom margin");
       assert.equal(image.data[1][8], "", "no painted square behind the eyes");
-      assert.equal(image.data[10][7], "", "no painted square inside the smile");
+      assert.equal(image.data[6][8], "", "no painted square between eyes and mouth");
     }
   }
 });
@@ -121,13 +125,13 @@ test("HQ sign draws the shared sprite at 2x without changing its text", () => {
   assert.equal(sign.isClipped(), false);
 });
 
-test("favicon matches the shared x-eyes sprite pixel for pixel", () => {
+test("favicon matches the shared winking sprite pixel for pixel", () => {
   const svg = readFileSync(new URL("../public/favicon.svg", import.meta.url), "utf8");
   assert.match(svg, /viewBox="0 0 16 16" shape-rendering="crispEdges"/);
   const paths = [...svg.matchAll(/<path class="([^"]+)" d="([^"]+)"\/>/g)];
   assert.equal(paths.length, HAPPY_MACHINES_MARK.length);
   for (const [index, layer] of HAPPY_MACHINES_MARK.entries()) {
-    const className = index === 0 ? "accent" : "ink";
+    const className = ["accent", "cavity", "ink", "teeth"][index];
     assert.equal(paths[index][1], className);
     assert.match(svg, new RegExp(`\\.${className} \\{ fill: ${layer.color}; \\}`));
     assert.match(svg, new RegExp(`\\.${className} \\{ fill: ${HAPPY_MACHINES_DARK_MARK[index].color}; \\}`));

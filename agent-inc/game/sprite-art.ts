@@ -57,25 +57,33 @@ function texture(width: number, height: number, paint: (ctx: CanvasRenderingCont
 }
 
 const markStrokes = [
-  [3, 2, 1, 1], [6, 2, 1, 1], [9, 2, 1, 1], [12, 2, 1, 1],
-  [3, 3, 4, 1], [9, 3, 4, 1],
-  [4, 4, 2, 1], [10, 4, 2, 1],
-  [3, 5, 4, 1], [9, 5, 4, 1],
-  [3, 6, 1, 1], [6, 6, 1, 1], [9, 6, 1, 1], [12, 6, 1, 1],
-  [2, 8, 2, 2], [12, 8, 2, 2],
-  [3, 10, 2, 1], [11, 10, 2, 1],
-  [4, 11, 3, 1], [9, 11, 3, 1],
-  [5, 12, 6, 1], [6, 13, 4, 1],
+  [3, 3, 2, 1], [4, 4, 3, 1], [3, 5, 2, 1],
+  [10, 2, 2, 4],
+  [3, 7, 10, 1], [2, 8, 2, 3], [12, 8, 2, 3],
+  [3, 11, 2, 1], [11, 11, 2, 1],
+  [4, 12, 2, 1], [10, 12, 2, 1], [5, 13, 6, 1],
+] as const;
+
+const mouthInterior = [
+  [4, 8, 8, 3], [5, 11, 6, 1], [6, 12, 4, 1],
+] as const;
+
+const teeth = [
+  [4, 8, 8, 1], [5, 9, 6, 1],
 ] as const;
 
 export const HAPPY_MACHINES_MARK = [
   { color: "#5a4c78", rects: markStrokes.map(([x, y, width, height]) => [x + 1, y + 1, width, height] as const) },
+  { color: "#5a4c78", rects: mouthInterior },
   { color: "#28322e", rects: markStrokes },
+  { color: "#f8eedf", rects: teeth },
 ] as const;
 
 export const HAPPY_MACHINES_DARK_MARK = [
   { ...HAPPY_MACHINES_MARK[0], color: "#ead5f3" },
-  { ...HAPPY_MACHINES_MARK[1], color: "#f1e8d6" },
+  HAPPY_MACHINES_MARK[1],
+  { ...HAPPY_MACHINES_MARK[2], color: "#f1e8d6" },
+  HAPPY_MACHINES_MARK[3],
 ] as const;
 
 export function happyMachinesFavicon(dark: boolean): string {
