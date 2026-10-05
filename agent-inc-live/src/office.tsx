@@ -1,12 +1,12 @@
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { Button } from "@base-ui/react/button";
-import { Collapsible } from "@base-ui/react/collapsible";
-import { Switch } from "@base-ui/react/switch";
+import { Disclosure, SelectField, Toggle } from "./controls";
 import "../../agent-inc/app/styles.css";
 import "../live.css";
 import "../sdk-chat.css";
 import "../overview.css";
+import "../controls.css";
 import { MAX_AGENTS, type Agent as ServerAgent, type Room as ServerRoom } from "../../server/types";
 import {
   COFFEE_SPOTS, DESKS, initialProgress, Simulation,
@@ -908,17 +908,17 @@ function LiveOffice() {
     <label>Instructions for future assignments <textarea rows={3} maxLength={600} value={profileDraft.instructions}
       placeholder="How should this agent approach work?"
       onChange={event => setProfileDraft({ ...profileDraft, instructions: event.target.value })} /></label>
-    <Collapsible.Root className="profile-extras">
-      <Collapsible.Trigger className="overview-disclosure">More profile details <span aria-hidden="true">⌄</span></Collapsible.Trigger>
-      <Collapsible.Panel className="profile-extras-panel">
+    <Disclosure.Root className="profile-extras">
+      <Disclosure.Trigger className="overview-disclosure">More profile details</Disclosure.Trigger>
+      <Disclosure.Panel className="ui-disclosure-panel profile-extras-panel">
         <label>Portrait number <input required type="number" min="0" max={MAX_AGENTS - 1} step="1" value={profileDraft.artId}
           onChange={event => setProfileDraft({ ...profileDraft, artId: Number(event.target.value) })} /></label>
         <label>Title <input maxLength={1000} value={profileDraft.title}
           onChange={event => setProfileDraft({ ...profileDraft, title: event.target.value })} /></label>
         <label>Specialties (comma-separated) <input value={profileDraft.specialties}
           onChange={event => setProfileDraft({ ...profileDraft, specialties: event.target.value })} /></label>
-      </Collapsible.Panel>
-    </Collapsible.Root>
+      </Disclosure.Panel>
+    </Disclosure.Root>
     <div className="persona-actions">
       <button type="button" disabled={profileBusy} onClick={() => {
         if (persona.setupCompleted === false) backToActivity();
@@ -1055,17 +1055,19 @@ function LiveOffice() {
           {projectLookingUp ? "Looking up…" : "Find on GitHub"}</button>
       </form>
       {projectCandidates.length > 0 && <div className="project-confirm">
-        <label>Verified repository <select value={projectCandidate}
-          onChange={event => setProjectCandidate(event.target.value)}>
-          {projectCandidates.length > 1 && <option value="">Select owner/repo…</option>}
-          {projectCandidates.map(candidate => <option key={candidate.fullName} value={candidate.fullName}>
-            {candidate.fullName} · {candidate.privacy} · {candidate.defaultBranch}</option>)}
-        </select></label>
-        {persona && <label>Agent access <select value={projectAccessChoice}
-          onChange={event => setProjectAccessChoice(event.target.value as "read" | "write")}>
-          <option value="read">Read for this agent</option>
-          <option value="write">Eligible for task worktree (manual tools prompt by default)</option>
-        </select></label>}
+        <SelectField label="Verified repository" value={projectCandidate} onValueChange={setProjectCandidate}
+          options={[
+            ...(projectCandidates.length > 1 ? [{ value: "", label: "Select owner/repo…" }] : []),
+            ...projectCandidates.map(candidate => ({
+              value: candidate.fullName,
+              label: `${candidate.fullName} · ${candidate.privacy} · ${candidate.defaultBranch}`,
+            })),
+          ]} />
+        {persona && <SelectField label="Agent access" value={projectAccessChoice}
+          onValueChange={setProjectAccessChoice} options={[
+            { value: "read", label: "Read for this agent" },
+            { value: "write", label: "Eligible for task worktree (manual tools prompt by default)" },
+          ]} />}
         <button type="button" disabled={!connected || !projectCandidate || projectSaving}
           onClick={() => void (async () => {
             const repository = projectCandidates.find(item => item.fullName === projectCandidate);
@@ -1232,7 +1234,7 @@ function LiveOffice() {
         .meeting-panel p { margin: 0; }
         .meeting-panel form, .meeting-detail { display: grid; gap: 13px; }
         .meeting-panel label { display: grid; gap: 5px; font-size: 11px; font-weight: 600; }
-        .meeting-panel input:not([type="checkbox"]), .meeting-panel textarea, .meeting-panel select {
+        .meeting-panel input:not([type="checkbox"]), .meeting-panel textarea {
           width: 100%; min-width: 0; box-sizing: border-box; padding: 7px; border: 1px solid var(--office-border);
           border-radius: 5px; color: var(--office-text); background: var(--office-muted); font: 12px var(--sans); }
         .meeting-panel textarea { resize: vertical; }
@@ -1459,16 +1461,16 @@ function LiveOffice() {
                   {!connected && <p role="status">{sdkRoom?.error || connection}</p>}
                   {!connected && <Button type="button" disabled={!sdkRoom} onClick={() => void act("retry", {})}>Retry SDK connection</Button>}
                 </div>
-                <Collapsible.Root className="activity-row overview-model">
+                <Disclosure.Root className="activity-row overview-model">
                   <div className="activity-row-heading"><strong>Model provider</strong>
                     <span className="activity-tag">{sdkRoom?.defaultModelProfileId ?? "copilot"}</span></div>
-                  <label>Default for new agents <select disabled={!sdkRoom || !connected} value={sdkRoom?.defaultModelProfileId ?? "copilot"}
-                    onChange={event => void act("model-default", { id: event.target.value })}>
-                    {(sdkRoom?.modelProfiles ?? [{ id: "copilot", kind: "copilot", model: "auto" }]).map(profile =>
-                      <option key={profile.id} value={profile.id}>{profile.id} · {profile.kind} / {profile.model}</option>)}
-                  </select></label>
-                  <Collapsible.Trigger className="overview-disclosure">Add a model profile or see provider details <span aria-hidden="true">⌄</span></Collapsible.Trigger>
-                  <Collapsible.Panel className="overview-disclosure-panel">
+                  <SelectField label="Default for new agents" disabled={!sdkRoom || !connected}
+                    value={sdkRoom?.defaultModelProfileId ?? "copilot"}
+                    onValueChange={id => void act("model-default", { id })}
+                    options={(sdkRoom?.modelProfiles ?? [{ id: "copilot", kind: "copilot", model: "auto" }]).map(profile =>
+                      ({ value: profile.id, label: `${profile.id} · ${profile.kind} / ${profile.model}` }))} />
+                  <Disclosure.Trigger className="overview-disclosure">Add a model profile or see provider details</Disclosure.Trigger>
+                  <Disclosure.Panel className="ui-disclosure-panel overview-disclosure-panel">
                     <p>Profiles are immutable. Changing the default affects new agents only; use a new assignment to change an existing agent's model.</p>
                     <p>Copilot requires CLI sign-in; external providers receive prompts and tool context. Use an environment variable name, never a key. GitHub authentication and tool permissions remain separate.</p>
                     <form className="overview-model-form" onSubmit={event => {
@@ -1494,13 +1496,16 @@ function LiveOffice() {
                     <h3>Add immutable model profile</h3>
                     <label>Profile ID <input required pattern="[a-zA-Z][a-zA-Z0-9_-]*" maxLength={64} value={modelDraft.id}
                       onChange={event => setModelDraft(draft => ({ ...draft, id: event.target.value }))} /></label>
-                    <label>Provider <select value={modelDraft.kind} onChange={event => setModelDraft(draft => ({
-                      ...draft, kind: event.target.value as ModelProfile["kind"],
-                      endpoint: event.target.value === "ollama" ? "http://127.0.0.1:11434/v1" : ""
-                    }))}>
-                      <option value="copilot">Copilot account model</option><option value="ollama">Local Ollama</option><option value="openai">OpenAI-compatible HTTPS</option>
-                      <option value="anthropic">Anthropic HTTPS</option><option value="azure">Azure HTTPS</option>
-                    </select></label>
+                    <SelectField label="Provider" value={modelDraft.kind} onValueChange={kind => setModelDraft(draft => ({
+                      ...draft, kind,
+                      endpoint: kind === "ollama" ? "http://127.0.0.1:11434/v1" : ""
+                    }))} options={[
+                      { value: "copilot", label: "Copilot account model" },
+                      { value: "ollama", label: "Local Ollama" },
+                      { value: "openai", label: "OpenAI-compatible HTTPS" },
+                      { value: "anthropic", label: "Anthropic HTTPS" },
+                      { value: "azure", label: "Azure HTTPS" },
+                    ]} />
                     <label>Model ID <input required value={modelDraft.model}
                       onChange={event => setModelDraft(draft => ({ ...draft, model: event.target.value }))} /></label>
                     {modelDraft.kind !== "copilot" && <label>Endpoint <input required type="url" value={modelDraft.endpoint}
@@ -1508,13 +1513,13 @@ function LiveOffice() {
                     {modelDraft.kind !== "copilot" && <label>API key environment variable name {modelDraft.kind === "ollama" && "(optional)"}
                       <input required={modelDraft.kind !== "ollama"} placeholder="MY_PROVIDER_API_KEY" value={modelDraft.credentialEnv}
                         onChange={event => setModelDraft(draft => ({ ...draft, credentialEnv: event.target.value }))} /></label>}
-                    {["openai", "azure"].includes(modelDraft.kind) && <label>Wire API
-                      <select value={modelDraft.wireApi} onChange={event => setModelDraft(draft => ({
-                        ...draft, wireApi: event.target.value as "completions" | "responses"
-                      }))}><option value="completions">Chat completions</option><option value="responses">Responses</option></select></label>}
-                    {modelDraft.kind !== "copilot" && <Collapsible.Root className="overview-advanced">
-                      <Collapsible.Trigger className="overview-disclosure">Advanced model settings <span aria-hidden="true">⌄</span></Collapsible.Trigger>
-                      <Collapsible.Panel className="overview-advanced-panel">
+                    {["openai", "azure"].includes(modelDraft.kind) && <SelectField label="Wire API"
+                      value={modelDraft.wireApi} onValueChange={wireApi => setModelDraft(draft => ({ ...draft, wireApi }))}
+                      options={[{ value: "completions", label: "Chat completions" },
+                        { value: "responses", label: "Responses" }]} />}
+                    {modelDraft.kind !== "copilot" && <Disclosure.Root className="overview-advanced">
+                      <Disclosure.Trigger className="overview-disclosure">Advanced model settings</Disclosure.Trigger>
+                      <Disclosure.Panel className="ui-disclosure-panel overview-advanced-panel">
                       <label>Wire model / Azure deployment <input value={modelDraft.wireModel}
                         onChange={event => setModelDraft(draft => ({ ...draft, wireModel: event.target.value }))} /></label>
                       {modelDraft.kind === "azure" && <label>Azure API version <input placeholder="2024-10-21" value={modelDraft.azureApiVersion}
@@ -1525,12 +1530,14 @@ function LiveOffice() {
                         onChange={event => setModelDraft(draft => ({ ...draft, maxOutputTokens: event.target.value }))} /></label>
                       <label>Context window tokens <input type="number" min="1024" value={modelDraft.maxContextWindowTokens}
                         onChange={event => setModelDraft(draft => ({ ...draft, maxContextWindowTokens: event.target.value }))} /></label>
-                      <label><input type="checkbox" checked={modelDraft.supportsVision}
-                        onChange={event => setModelDraft(draft => ({ ...draft, supportsVision: event.target.checked }))} /> Model supports vision</label>
-                      <label><input type="checkbox" checked={modelDraft.supportsReasoningEffort}
-                        onChange={event => setModelDraft(draft => ({ ...draft, supportsReasoningEffort: event.target.checked }))} /> Model supports reasoning effort</label>
-                      </Collapsible.Panel>
-                    </Collapsible.Root>}
+                      <div className="ui-toggle-row"><Toggle label="Model supports vision" checked={modelDraft.supportsVision}
+                        onCheckedChange={supportsVision => setModelDraft(draft => ({ ...draft, supportsVision }))} />
+                        <span>Model supports vision</span></div>
+                      <div className="ui-toggle-row"><Toggle label="Model supports reasoning effort" checked={modelDraft.supportsReasoningEffort}
+                        onCheckedChange={supportsReasoningEffort => setModelDraft(draft => ({ ...draft, supportsReasoningEffort }))} />
+                        <span>Model supports reasoning effort</span></div>
+                      </Disclosure.Panel>
+                    </Disclosure.Root>}
                     <Button type="submit" className="overview-primary">Save profile (no secrets)</Button>
                   </form>
                   <Button type="button" className="overview-model-list" onClick={() => void fetch("/api/copilot-models").then(async response => {
@@ -1542,8 +1549,8 @@ function LiveOffice() {
                     List Copilot account models</Button>
                   {copilotModels && <p role="status">{copilotModels.length ? copilotModels.map(model => `${model.name} (${model.id})`).join(", ") :
                     "No Copilot account models returned."}</p>}
-                  </Collapsible.Panel>
-                </Collapsible.Root>
+                  </Disclosure.Panel>
+                </Disclosure.Root>
                 <div className="activity-row project-configurations">
                   <div className="activity-row-heading"><strong>Global project access</strong>
                     <span className="activity-tag">{sdkRoom?.projects?.length ?? 0} verified</span></div>
@@ -1554,16 +1561,16 @@ function LiveOffice() {
                   <ul className="project-list">{sdkRoom?.projects?.map(project => <li key={project.repository.fullName}>
                     <div><strong>{project.repository.fullName}</strong>
                       <small>GitHub · {project.repository.privacy} · {project.repository.defaultBranch}</small></div>
-                    <div className="overview-share"><Switch.Root checked={project.sharedRead} disabled={!connected}
-                      aria-label={`Global read for ${project.repository.fullName}`}
+                    <div className="overview-share"><Toggle checked={project.sharedRead} disabled={!connected}
+                      label={`Global read for ${project.repository.fullName}`}
                       onCheckedChange={checked => void act("project-share", {
                         fullName: project.repository.fullName, sharedRead: checked,
-                      })}><Switch.Thumb /></Switch.Root><span>Global read</span></div>
-                    <div className="overview-share"><Switch.Root checked={project.sharedWrite === true} disabled={!connected}
-                      aria-label={`Task worktree eligibility for ${project.repository.fullName}`}
+                      })} /><span>Global read</span></div>
+                    <div className="overview-share"><Toggle checked={project.sharedWrite === true} disabled={!connected}
+                      label={`Task worktree eligibility for ${project.repository.fullName}`}
                       onCheckedChange={checked => void act("project-write", {
                         fullName: project.repository.fullName, sharedWrite: checked,
-                      })}><Switch.Thumb /></Switch.Root><span>Eligible for task worktrees (manual tools prompt by default)</span></div>
+                      })} /><span>Eligible for task worktrees (manual tools prompt by default)</span></div>
                   </li>)}</ul>
                 </div>
                 <div className="activity-row">
@@ -1605,12 +1612,10 @@ function LiveOffice() {
                 </div>
                 <form className="panel-section" onSubmit={event => { event.preventDefault(); void createMeeting(); }}>
                   <h3>New handoff</h3>
-                  <label>Format
-                    <select value={meetingKind} disabled={meetingBusy}
-                      onChange={event => setMeetingKind(event.target.value as Meeting["kind"])}>
-                      <option value="meeting">Meeting</option><option value="review">Review</option>
-                    </select>
-                  </label>
+                  <SelectField label="Format" value={meetingKind} disabled={meetingBusy}
+                    onValueChange={setMeetingKind} options={[
+                      { value: "meeting", label: "Meeting" }, { value: "review", label: "Review" },
+                    ]} />
                   <fieldset>
                     <legend>Participants · select 2–4 active, idle agents</legend>
                     {activeAgents.length === 0 && <small>No agents at desks yet. Add an agent in the Agents tab to begin.</small>}
@@ -1635,21 +1640,20 @@ function LiveOffice() {
                       onChange={event => setMeetingSharedText(event.target.value)}
                       placeholder="Paste only the facts or snippets these agents should see." />
                   </label>
-                  <Collapsible.Root className="meeting-options">
-                    <Collapsible.Trigger className="overview-disclosure">More options <span aria-hidden="true">⌄</span></Collapsible.Trigger>
-                    <Collapsible.Panel className="meeting-options-panel">
+                  <Disclosure.Root className="meeting-options">
+                    <Disclosure.Trigger className="overview-disclosure">More options</Disclosure.Trigger>
+                    <Disclosure.Panel className="ui-disclosure-panel meeting-options-panel">
                       <label>Repository context (optional; does not grant access)
                         <input type="text" maxLength={240} value={meetingRepository}
                           onChange={event => setMeetingRepository(event.target.value)} placeholder="owner/repo" />
                       </label>
-                      <label>Maximum approved turns
-                        <select value={meetingMaxTurns} onChange={event => setMeetingMaxTurns(Number(event.target.value))}>
-                          {Array.from({ length: 8 }, (_, index) => index + 1).map(value =>
-                            <option value={value} key={value}>{value}</option>)}
-                        </select>
-                      </label>
-                    </Collapsible.Panel>
-                  </Collapsible.Root>
+                      <SelectField label="Maximum approved turns" value={meetingMaxTurns}
+                        onValueChange={setMeetingMaxTurns}
+                        options={Array.from({ length: 8 }, (_, index) => ({
+                          value: index + 1, label: String(index + 1),
+                        }))} />
+                    </Disclosure.Panel>
+                  </Disclosure.Root>
                   <button type="submit" className="meeting-primary" disabled={!canCreateMeeting}>
                     {meetingBusy ? "Saving…" : "Create handoff"}</button>
                 </form>
@@ -1672,9 +1676,12 @@ function LiveOffice() {
                   </p>
                   <p>Participants: {currentMeeting.participantIds.map(meetingName).join(" · ")}</p>
                   {currentMeeting.repository && <p>Repository context: <code>{currentMeeting.repository}</code> (no access granted)</p>}
-                  {currentMeeting.sharedText && <details><summary>Explicitly shared excerpts</summary>
-                    <div className="message-markdown"><SafeMarkdown content={currentMeeting.sharedText} /></div>
-                  </details>}
+                  {currentMeeting.sharedText && <Disclosure.Root>
+                    <Disclosure.Trigger>Explicitly shared excerpts</Disclosure.Trigger>
+                    <Disclosure.Panel className="ui-disclosure-panel">
+                      <div className="message-markdown"><SafeMarkdown content={currentMeeting.sharedText} /></div>
+                    </Disclosure.Panel>
+                  </Disclosure.Root>}
                   {currentMeeting.error && <p role="alert">Partial result · {currentMeeting.error}</p>}
                   {currentMeeting.turns.map((turn, index) => <div className="meeting-turn" key={`${index}-${turn.at}`}>
                     <strong>Turn {index + 1} · {meetingName(turn.agentId)} · {new Date(turn.at).toLocaleString()}</strong>
@@ -1820,11 +1827,11 @@ function LiveOffice() {
                 {formerPersonas.length > 0 && <>
                   <h3 className="former-personas-title">Former personas</h3>
                   {formerPersonas.map(persona =>
-                    <details className="former-persona" key={persona.id}>
-                      <summary><img src={agentPortrait(persona.artId)} alt="" width="36" height="36" />
+                    <Disclosure.Root className="former-persona" key={persona.id}>
+                      <Disclosure.Trigger><img src={agentPortrait(persona.artId)} alt="" width="36" height="36" />
                         <span>{persona.name} · {((sdkRoom?.assignments ?? [])
-                          .filter(assignment => assignment.personaId === persona.id)).length} preserved assignments</span></summary>
-                      <div className="persona-details">
+                          .filter(assignment => assignment.personaId === persona.id)).length} preserved assignments</span></Disclosure.Trigger>
+                      <Disclosure.Panel className="ui-disclosure-panel persona-details">
                         <div className="panel-section"><p>{[persona.profile.title, persona.profile.rank, `Portrait #${persona.artId}`]
                           .filter(Boolean).join(" · ")}</p>
                         {persona.profile.workingStyle && <p><strong>Working style:</strong> {persona.profile.workingStyle}</p>}
@@ -1845,17 +1852,19 @@ function LiveOffice() {
                                 {assignment.retention && <span>SDK session: {assignment.retention === "keep" ? "retained" : "deleted by request"}</span>}
                                 <span>Workspace: <code>{assignment.workspace}</code></span>
                                 <span>{assignment.messages.length} messages preserved</span>
-                                {assignment.messages.length > 0 && <details className="assignment-transcript">
-                                  <summary>Read preserved transcript</summary>
+                                {assignment.messages.length > 0 && <Disclosure.Root className="assignment-transcript">
+                                  <Disclosure.Trigger>Read preserved transcript</Disclosure.Trigger>
+                                  <Disclosure.Panel className="ui-disclosure-panel">
                                   {assignment.messages.map(message => <div key={message.id}>
                                     <strong>{message.role}</strong>
                                     <SafeMarkdown content={message.content} />
                                   </div>)}
-                                </details>}
+                                  </Disclosure.Panel>
+                                </Disclosure.Root>}
                               </li>)}</ul>
                         </div>
-                      </div>
-                    </details>)}
+                      </Disclosure.Panel>
+                    </Disclosure.Root>)}
                 </>}
               </section>
             )}
@@ -1882,9 +1891,9 @@ function LiveOffice() {
                   <h4>Assign projects</h4>
                   {personaProjects(selectedPersona)}
                 </div>
-                <Collapsible.Root className="agent-setup-card panel-section">
-                  <Collapsible.Trigger className="overview-disclosure">Preview profile instructions <span aria-hidden="true">⌄</span></Collapsible.Trigger>
-                  <Collapsible.Panel className="setup-preview-panel">
+                <Disclosure.Root className="agent-setup-card panel-section">
+                  <Disclosure.Trigger className="overview-disclosure">Preview profile instructions</Disclosure.Trigger>
+                  <Disclosure.Panel className="ui-disclosure-panel setup-preview-panel">
                     <p>Saved profile instructions apply to this agent's next job or chat. The current chat keeps its existing context.
                       Save your edits before previewing.</p>
                     <Button type="button" disabled={guidanceLoading} onClick={() => void loadGuidance(selectedPersona)}>
@@ -1893,8 +1902,8 @@ function LiveOffice() {
                       <strong>Next job or chat</strong><p>{guidancePreview.next}</p>
                       <strong>Current chat</strong><p>{guidancePreview.current ?? "No snapshot available."}</p>
                     </div>}
-                  </Collapsible.Panel>
-                </Collapsible.Root>
+                  </Disclosure.Panel>
+                </Disclosure.Root>
               </section>
             )}
             {selectedAgent && !setupOpen && (
@@ -1935,13 +1944,15 @@ function LiveOffice() {
                         <span>Workspace: <code>{assignment.workspace}</code></span>
                         {assignment.repository && <span>Repository: {assignment.repository.name}</span>}
                         <span>{assignment.messages.length} messages preserved</span>
-                        {assignment.messages.length > 0 && <details className="assignment-transcript">
-                          <summary>Read preserved transcript</summary>
+                        {assignment.messages.length > 0 && <Disclosure.Root className="assignment-transcript">
+                          <Disclosure.Trigger>Read preserved transcript</Disclosure.Trigger>
+                          <Disclosure.Panel className="ui-disclosure-panel">
                           {assignment.messages.map(message => <div key={message.id}>
                             <strong>{message.role}</strong>
                             <SafeMarkdown content={message.content} />
                           </div>)}
-                        </details>}
+                          </Disclosure.Panel>
+                        </Disclosure.Root>}
                       </li>)}</ul>
                       {!selectedAgent.archived && <button type="button" disabled={!canStartAssignment(selectedAgent)}
                         title={!canStartAssignment(selectedAgent) ? "Available only when this agent is idle and no turn or permission is pending" : undefined}
@@ -1989,15 +2000,14 @@ function LiveOffice() {
                           {chosenRepository && <p className="access-source">
                             GitHub · {chosenRepository.privacy} · {chosenRepository.defaultBranch}
                           </p>}
-                          {candidates.length > 1 && <label className="access-picker" htmlFor="access-candidate">
-                            Which repository?
-                            <select id="access-candidate" value={selectedRepository}
-                              onChange={event => setSelectedRepository(event.target.value)}>
-                              <option value="">Select owner/repo…</option>
-                              {candidates.map(item => <option key={item.fullName} value={item.fullName}>
-                                {item.fullName} · {item.privacy}</option>)}
-                            </select>
-                          </label>}
+                          {candidates.length > 1 && <div className="access-picker">
+                            <SelectField id="access-candidate" label="Which repository?"
+                              value={selectedRepository} onValueChange={setSelectedRepository}
+                              options={[{ value: "", label: "Select owner/repo…" },
+                                ...candidates.map(item => ({
+                                  value: item.fullName, label: `${item.fullName} · ${item.privacy}`,
+                                }))]} />
+                          </div>}
                           {(editingRepoHint || selectedAgent.accessRequest.status === "error") && <form
                             className="access-lookup" onSubmit={event => {
                               event.preventDefault();
@@ -2042,19 +2052,23 @@ function LiveOffice() {
                           </div>
                           {chosenRepository && chosenRepository.sizeKiB > 100_000 &&
                             <small className="access-error">Repository too large to clone (100 MB limit).</small>}
-                          {chosenRepository && <details className="access-details">
-                            <summary>Access details</summary>
+                          {chosenRepository && <Disclosure.Root className="access-details">
+                            <Disclosure.Trigger>Access details</Disclosure.Trigger>
+                            <Disclosure.Panel className="ui-disclosure-panel">
                             <span>{chosenRepository.url} · {chosenRepository.sizeKiB.toLocaleString()} KiB</span>
                             <span>{cachedSnapshot ? `Cached ${new Date(cachedSnapshot.fetchedAt).toLocaleString()}; reused for up to 6 hours.` :
                               "A shallow clone starts only after approval."} Remote snapshots exclude local unpushed changes.</span>
-                            {cachedSnapshot && <label><input type="checkbox" checked={freshSnapshot}
-                              disabled={selectedAgent.accessRequest.status === "cloning"}
-                              onChange={event => setFreshSnapshot(event.target.checked)} /> Fetch fresh snapshot</label>}
+                            {cachedSnapshot && <div className="ui-toggle-row">
+                              <Toggle label="Fetch fresh snapshot" checked={freshSnapshot}
+                                disabled={selectedAgent.accessRequest.status === "cloning"}
+                                onCheckedChange={setFreshSnapshot} /><span>Fetch fresh snapshot</span>
+                            </div>}
                             <span>Task and session grants apply only to this agent. Persona read survives assignments;
                               office read is shared with all personas except those excluded in their inspector.
                               A request expires after 90 seconds; grants do not.
                               Reads are guarded; shell/writes need separate approval by default. Worktrees are not sandboxes.</span>
-                          </details>}
+                            </Disclosure.Panel>
+                          </Disclosure.Root>}
                         </section>
                       </div>
                     </div>}
@@ -2135,10 +2149,8 @@ function LiveOffice() {
           <label>Outcome evidence in your words (10–500 characters)
             <textarea required minLength={10} maxLength={500} value={outcomeEvidence}
               onChange={event => setOutcomeEvidence(event.target.value)} rows={3} /></label>
-          <label>Specialty <select value={outcomeSpecialty}
-            onChange={event => setOutcomeSpecialty(event.target.value as Specialty)}>
-            {SPECIALTIES.map(item => <option key={item} value={item}>{item}</option>)}
-          </select></label>
+          <SelectField label="Specialty" value={outcomeSpecialty} onValueChange={setOutcomeSpecialty}
+            options={SPECIALTIES.map(item => ({ value: item, label: item }))} />
           <label><input type="checkbox" checked={outcomeConfirmed}
             onChange={event => setOutcomeConfirmed(event.target.checked)} />
             I reviewed the recorded work and confirm this outcome belongs to this persona and assignment.</label>
@@ -2171,13 +2183,12 @@ function LiveOffice() {
             <input autoFocus maxLength={240} value={assignmentOutcome}
               onChange={event => setAssignmentOutcome(event.target.value)} placeholder="What did the previous assignment accomplish?" />
           </label>
-          <label className="assignment-outcome">Model profile for new SDK session
-            <select value={assignmentModelProfileId || sdkRoom?.assignments?.find(item => item.id === assignmentAgent.assignmentId)?.modelProfileId || "copilot"}
-              onChange={event => setAssignmentModelProfileId(event.target.value)}>
-              {(sdkRoom?.modelProfiles ?? []).map(profile => <option key={profile.id} value={profile.id}>
-                {profile.id} · {profile.kind} / {profile.model}</option>)}
-            </select>
-          </label>
+          <SelectField label="Model profile for new SDK session"
+            value={assignmentModelProfileId || sdkRoom?.assignments?.find(item => item.id === assignmentAgent.assignmentId)?.modelProfileId || "copilot"}
+            onValueChange={setAssignmentModelProfileId}
+            options={(sdkRoom?.modelProfiles ?? []).map(profile => ({
+              value: profile.id, label: `${profile.id} · ${profile.kind} / ${profile.model}`,
+            }))} />
           <div className="send-home-buttons">
             <button type="button" disabled={assignmentSubmitting} onClick={() => setAssignmentAgentId(null)}>Cancel</button>
             <button type="button" disabled={!canStartAssignment(assignmentAgent) || assignmentSubmitting}

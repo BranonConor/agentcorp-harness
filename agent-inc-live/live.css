@@ -372,7 +372,7 @@
   margin-top: 10px;
 }
 .project-lookup label, .project-confirm label { flex: 1 1 180px; }
-.project-lookup input, .project-confirm select { width: 100%; min-width: 0; box-sizing: border-box; }
+.project-lookup input { width: 100%; min-width: 0; box-sizing: border-box; }
 .project-list, .persona-projects ul { list-style: none; padding: 0; margin: 9px 0 0; }
 .project-list li, .persona-projects li {
   display: flex;

@@ -73,8 +73,7 @@
 .live-shell .overview-metrics span { color: var(--ui-subtle); font: 600 10px/1.25 var(--sans); }
 .live-shell .overview-metrics .attention { background: var(--office-warning-bg); color: var(--office-warning); }
 .live-shell .overview-metrics .attention span { color: inherit; }
-.live-shell .overview-list button:not(.overview-disclosure),
-.live-shell .overview-list select,
+.live-shell .overview-list button:not(.overview-disclosure):not(.ui-select-trigger),
 .live-shell .overview-list input:not([type="checkbox"]) {
   box-sizing: border-box;
   min-height: 34px;
@@ -84,14 +83,13 @@
   color: var(--ui-ink);
   font: 600 11px/1.35 var(--sans);
 }
-.live-shell .overview-list button:not(.overview-disclosure) {
+.live-shell .overview-list button:not(.overview-disclosure):not(.ui-select-trigger) {
   padding: 6px 10px;
   cursor: pointer;
 }
-.live-shell .overview-list button:not(.overview-disclosure):hover:not(:disabled) { background: var(--office-accent-bg); }
+.live-shell .overview-list button:not(.overview-disclosure):not(.ui-select-trigger):hover:not(:disabled) { background: var(--office-accent-bg); }
 .live-shell .overview-list button:disabled { opacity: .55; cursor: not-allowed; }
-.live-shell .overview-list input:not([type="checkbox"]),
-.live-shell .overview-list select { width: 100%; min-width: 0; padding: 6px 9px; font-weight: 500; }
+.live-shell .overview-list input:not([type="checkbox"]) { width: 100%; min-width: 0; padding: 6px 9px; font-weight: 500; }
 .live-shell .overview-list label { display: grid; gap: 5px; min-width: 0; color: var(--ui-ink); font: 650 11px/1.4 var(--sans); }
 .live-shell .overview-list :is(button, input, select, [role="switch"]):focus-visible {
   outline: 2px solid var(--ui-focus);
@@ -118,22 +116,6 @@
 .live-shell .overview-list .upgrade-shop li > .overview-installed { grid-column: 2; grid-row: 1 / span 2; }
 .live-shell .overview-installed { color: var(--office-accent); font: 700 11px var(--sans); }
 .live-shell .overview-model { display: grid; gap: 10px; }
-.live-shell .overview-disclosure {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  width: 100%;
-  padding: 7px 0;
-  border: 0;
-  border-top: 1px solid var(--ui-line);
-  background: transparent;
-  color: var(--office-accent);
-  font: 650 11px var(--sans);
-  text-align: left;
-  cursor: pointer;
-}
-.live-shell .overview-disclosure[data-panel-open] span { transform: rotate(180deg); }
 .live-shell .overview-disclosure-panel { display: grid; gap: 12px; padding-top: 2px; }
 .live-shell .overview-list .overview-disclosure-panel[hidden],
 .live-shell .overview-list .overview-advanced-panel[hidden] { display: none; }
@@ -146,39 +128,12 @@
   background: transparent;
 }
 .live-shell .overview-model-form h3 { margin: 0; font-size: 12px; }
-.live-shell .overview-model-form label:has(input[type="checkbox"]) {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-.live-shell .overview-model-form input[type="checkbox"] { accent-color: var(--office-accent); }
 .live-shell .overview-advanced-panel { display: grid; gap: 10px; }
 .live-shell .overview-list .overview-primary { background: var(--office-accent-bg) !important; color: var(--office-accent) !important; }
 .live-shell .overview-model-list { justify-self: start; }
 .live-shell .overview-list .project-list li { gap: 6px 12px; }
 .live-shell .overview-list .workspace-path { overflow-wrap: anywhere; }
 .live-shell .overview-share { display: flex; align-items: center; gap: 7px; font: 600 11px var(--sans); }
-.live-shell .overview-list .overview-share [role="switch"] {
-  position: relative;
-  width: 32px;
-  height: 19px;
-  min-height: 19px;
-  padding: 2px;
-  border: 1px solid var(--ui-line);
-  border-radius: 20px;
-  background: var(--office-muted);
-  cursor: pointer;
-}
-.live-shell .overview-list .overview-share [role="switch"][data-checked] { background: var(--office-accent-bg); border-color: var(--office-accent); }
-.live-shell .overview-share [role="switch"] > span {
-  display: block;
-  width: 13px;
-  height: 13px;
-  border-radius: 50%;
-  background: var(--office-secondary);
-  transition: transform .15s ease;
-}
-.live-shell .overview-share [role="switch"][data-checked] > span { background: var(--office-accent); transform: translateX(13px); }
 .live-shell .activity-title-row .profile-header-edit {
   margin-left: auto;
   padding: 5px 8px;
@@ -224,8 +179,8 @@
 .live-shell .project-group { margin-top: 17px; }
 .live-shell .project-group h5 { margin: 0; color: var(--office-secondary); font-size: 10px; letter-spacing: .08em; text-transform: uppercase; }
 .live-shell .persona-projects .project-actions button,
-.live-shell .persona-projects .project-chooser button,
-.live-shell .overview-list .project-chooser button {
+.live-shell .persona-projects .project-chooser button:not(.ui-select-trigger),
+.live-shell .overview-list .project-chooser button:not(.ui-select-trigger) {
   min-height: 34px; padding: 6px 10px; border: 1px solid var(--office-border);
   border-radius: var(--ui-radius-sm); background: var(--office-muted);
   color: var(--office-text); font: 650 11px var(--sans); cursor: pointer;
@@ -233,7 +188,7 @@
 .live-shell .persona-projects .project-actions button:hover:not(:disabled) { background: var(--office-accent-bg); }
 .live-shell .persona-projects .project-actions button:disabled { opacity: .5; cursor: not-allowed; }
 .live-shell .project-chooser label { display: grid; gap: 5px; flex: 1 1 180px; font: 650 11px var(--sans); }
-.live-shell .project-chooser input, .live-shell .project-chooser select {
+.live-shell .project-chooser input {
   box-sizing: border-box; width: 100%; min-width: 0; padding: 7px;
   border: 1px solid var(--office-border); border-radius: var(--ui-radius-sm);
   background: var(--office-panel); color: var(--office-text);
@@ -241,7 +196,7 @@
 .live-shell .project-chooser :is(button, input, select):focus-visible,
 .live-shell .profile-extras :is(button, input):focus-visible { outline: 2px solid var(--ui-focus); outline-offset: 2px; }
 .live-shell .agent-setup-card > button { margin-top: 10px; }
-.live-shell .agent-setup-card button {
+.live-shell .agent-setup-card button:not(.ui-select-trigger):not(.ui-disclosure-trigger) {
   min-height: 32px;
   padding: 5px 9px;
   border: 1px solid var(--office-border);
@@ -251,7 +206,7 @@
   font: 650 11px var(--sans);
   cursor: pointer;
 }
-.live-shell .agent-setup-card button:hover:not(:disabled) { background: var(--office-accent-bg); }
+.live-shell .agent-setup-card button:not(.ui-select-trigger):not(.ui-disclosure-trigger):hover:not(:disabled) { background: var(--office-accent-bg); }
 .live-shell .agent-setup-card button:disabled { opacity: .55; cursor: not-allowed; }
 .live-shell .agent-setup-card .setup-finish { background: var(--office-accent-bg); color: var(--office-accent); }
 .live-shell .agent-setup :is(button, input, textarea):focus-visible,
@@ -275,7 +230,4 @@
   .live-shell .overview-list .upgrade-shop li { grid-template-columns: 1fr; }
   .live-shell .overview-list .upgrade-shop li > button,
   .live-shell .overview-list .upgrade-shop li > .overview-installed { grid-column: 1; grid-row: auto; justify-self: start; }
-}
-@media (prefers-reduced-motion: reduce) {
-  .live-shell .overview-share [role="switch"] > span { transition: none; }
 }

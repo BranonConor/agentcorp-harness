@@ -183,7 +183,7 @@
 .access-card .access-source { margin: 0 0 11px; color: var(--office-secondary); font: 10px var(--mono); }
 .access-picker { display: grid; gap: 5px; margin: 8px 0; }
 .access-card .access-lookup { display: flex; gap: 6px; margin: 8px 0; }
-.access-card input[type="text"], .access-card select { box-sizing: border-box; min-width: 0; width: 100%; padding: 7px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-panel); color: var(--office-text); font: 11px var(--mono); }
+.access-card input[type="text"] { box-sizing: border-box; min-width: 0; width: 100%; padding: 7px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-panel); color: var(--office-text); font: 11px var(--mono); }
 .access-card .access-lookup button { min-height: 30px; padding: 5px 9px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
 .access-change { min-height: 27px; margin: 0 0 6px; padding: 4px 8px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
 .access-card small { display: block; margin: 5px 0; font-size: 10px; }
@@ -196,10 +196,9 @@
 .permission-buttons button:hover:not(:disabled), .send-home-buttons button:hover:not(:disabled) { background: var(--office-accent-bg); }
 .send-home-buttons .send-home-confirm:hover:not(:disabled) { background: var(--office-warning-bg); }
 .access-details { margin-top: 9px; color: var(--office-secondary); font: 10px/1.45 var(--sans); }
-.access-details summary { width: max-content; cursor: pointer; }
+.access-details .ui-disclosure-trigger { width: max-content; }
 .access-details span { display: block; margin-top: 5px; overflow-wrap: anywhere; }
-.access-details label { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
-.access-details input { accent-color: var(--office-accent); }
+.access-details .ui-toggle-row { margin-top: 6px; }
 .permission-buttons button:disabled { opacity: .5; cursor: not-allowed; }
 .worker-avatar { width: 42px; height: 42px; overflow: hidden; }
 .worker-avatar img { width: 100%; height: 100%; image-rendering: pixelated; }
@@ -238,8 +237,9 @@
 .persona-heading img { flex: none; width: 42px; height: 42px; }
 .persona-heading div { min-width: 0; overflow-wrap: anywhere; }
 .persona-heading span, .persona-notes small, .assignment-history li span { display: block; color: var(--office-secondary); }
-.persona-details button { min-height: 30px; padding: 5px 9px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
-.persona-details button:hover:not(:disabled), .persona-details button:focus-visible { background: var(--office-accent-bg); }
+.persona-details button:not(.ui-disclosure-trigger):not(.ui-select-trigger) { min-height: 30px; padding: 5px 9px; border: 1px solid var(--office-border); border-radius: 7px; background: var(--office-muted); color: var(--office-text); font: 650 11px var(--sans); cursor: pointer; }
+.persona-details button:not(.ui-disclosure-trigger):not(.ui-select-trigger):hover:not(:disabled),
+.persona-details button:not(.ui-disclosure-trigger):not(.ui-select-trigger):focus-visible { background: var(--office-accent-bg); }
 .persona-details button:focus-visible, .send-home-dialog input:focus-visible, .send-home-dialog button:focus-visible,
 .persona-form input:focus-visible, .persona-form textarea:focus-visible { outline: 2px solid var(--office-accent); outline-offset: 2px; }
 .persona-details button:disabled { opacity: .55; cursor: not-allowed; }
@@ -254,8 +254,8 @@
 .persona-notes li button { justify-self: start; }
 .assignment-history code { overflow-wrap: anywhere; user-select: text; }
 .assignment-transcript { margin-top: 6px; }
-.assignment-transcript summary { cursor: pointer; color: var(--office-text); font-weight: 650; }
-.assignment-transcript > div { margin-top: 8px; padding: 8px; border: 1px solid var(--office-border); border-radius: 6px; overflow-wrap: anywhere; }
+.live-shell .assignment-transcript .ui-disclosure-trigger { color: var(--office-text); }
+.assignment-transcript .ui-disclosure-panel > div { margin-top: 8px; padding: 8px; border: 1px solid var(--office-border); border-radius: 6px; overflow-wrap: anywhere; }
 .assignment-transcript .message-markdown { white-space: normal; }
 .retention-choices { display: grid; gap: 9px; margin: 15px 0; padding: 12px; border: 1px solid var(--office-border); border-radius: 7px; font-size: 12px; }
 .retention-choices legend { font-weight: 700; }
@@ -265,10 +265,8 @@
 .assignment-outcome code { display: inline; padding: 0 3px; margin: 0; }
 .former-personas-title { margin: 0; padding: 20px var(--panel-inline) 8px; color: var(--office-secondary); font-size: 12px; }
 .former-persona { border-bottom: 1px solid var(--office-border); }
-.former-persona summary { display: flex; align-items: center; gap: 10px; padding: 12px var(--panel-inline); color: var(--office-text); font: 650 12px var(--sans); cursor: pointer; }
-.former-persona summary:hover { background: var(--office-muted); }
-.former-persona summary:focus-visible { outline: 2px solid var(--office-accent); outline-offset: -2px; }
-.former-persona summary img { flex: none; }
-.former-persona summary::after { content: "▾"; margin-left: auto; }
-.former-persona[open] summary::after { transform: rotate(180deg); }
+.former-persona .ui-disclosure-trigger { justify-content: flex-start; gap: 10px; min-height: 60px; padding: 12px var(--panel-inline); border-top: 0; color: var(--office-text); font: 650 12px var(--sans); }
+.former-persona .ui-disclosure-trigger:hover { background: var(--office-muted); }
+.former-persona .ui-disclosure-trigger img { flex: none; }
+.former-persona .ui-disclosure-chevron { margin-left: auto; }
 .former-persona .persona-details { border-top: 1px solid var(--office-border); }
