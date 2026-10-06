@@ -62,14 +62,16 @@ const dGlyph = [
   [8, 11, 3, 1],
 ] as const;
 
+const semicolonGlyph = [[3, 4, 2, 2], [3, 8, 2, 2], [3, 10, 1, 1], [2, 11, 1, 1]] as const;
+
+export const HAPPY_MACHINES_BADGE = { light: "#0d202b", dark: "#eee8dc", radius: 3 } as const;
+
 export const HAPPY_MACHINES_MARK = [
-  { color: "#28322e", rects: dGlyph },
-  { color: "#5a4c78", rects: [[3, 4, 2, 2], [3, 8, 2, 2], [3, 10, 1, 1], [2, 11, 1, 1]] },
+  { color: "#f1e8d6", rects: [...dGlyph, ...semicolonGlyph] },
 ] as const;
 
 export const HAPPY_MACHINES_DARK_MARK = [
-  { ...HAPPY_MACHINES_MARK[0], color: "#f1e8d6" },
-  { ...HAPPY_MACHINES_MARK[1], color: "#ead5f3" },
+  { ...HAPPY_MACHINES_MARK[0], color: "#28322e" },
 ] as const;
 
 export function happyMachinesFavicon(dark: boolean): string {
@@ -77,10 +79,14 @@ export function happyMachinesFavicon(dark: boolean): string {
   const paths = mark.map(({ color, rects }) =>
     `<path fill="${color}" d="${rects.map(([x, y, width, height]) =>
       `M${x} ${y}h${width}v${height}H${x}z`).join("")}"/>`).join("");
-  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">${paths}</svg>`;
+  return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges"><rect width="16" height="16" rx="${HAPPY_MACHINES_BADGE.radius}" fill="${dark ? HAPPY_MACHINES_BADGE.dark : HAPPY_MACHINES_BADGE.light}"/>${paths}</svg>`;
 }
 
 function drawHappyMachinesMark(ctx: CanvasRenderingContext2D, x: number, y: number, scale: number) {
+  ctx.fillStyle = HAPPY_MACHINES_BADGE.dark;
+  ctx.beginPath();
+  ctx.roundRect(x, y, 16 * scale, 16 * scale, HAPPY_MACHINES_BADGE.radius * scale);
+  ctx.fill();
   for (const { color, rects } of HAPPY_MACHINES_DARK_MARK) {
     for (const [left, top, width, height] of rects) {
       pixel(ctx, color, x + left * scale, y + top * scale, width * scale, height * scale);

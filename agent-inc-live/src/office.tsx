@@ -19,7 +19,7 @@ import {
   assignLoungeSpots, routeAroundDividers,
 } from "../../agent-inc/game/live-layout";
 import {
-  HAPPY_MACHINES_DARK_MARK, HAPPY_MACHINES_MARK, HAPPY_MACHINES_WORDMARK, PIXEL_LETTERS,
+  HAPPY_MACHINES_BADGE, HAPPY_MACHINES_DARK_MARK, HAPPY_MACHINES_MARK, HAPPY_MACHINES_WORDMARK, PIXEL_LETTERS,
   agentPortrait, happyMachinesFavicon,
 } from "../../agent-inc/game/sprite-art";
 import { createWorld } from "../../agent-inc/game/world";
@@ -1342,6 +1342,8 @@ function LiveOffice() {
         <div className="identity">
           <span className="brand-icon" aria-hidden="true">
             <svg viewBox="0 0 16 16" shapeRendering="crispEdges" focusable="false">
+              <rect width="16" height="16" rx={HAPPY_MACHINES_BADGE.radius}
+                fill={darkTheme ? HAPPY_MACHINES_BADGE.dark : HAPPY_MACHINES_BADGE.light} />
               {mark.flatMap(({ color, rects }, layer) =>
                 rects.map(([x, y, width, height], index) =>
                   <rect key={`${layer}-${index}`} x={x} y={y} width={width} height={height} fill={color} />))}

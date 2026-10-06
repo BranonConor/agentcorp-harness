@@ -1,12 +1,12 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" shape-rendering="crispEdges">
   <style>
-    .ink { fill: #28322e; }
-    .accent { fill: #5a4c78; }
+    .badge { fill: #0d202b; }
+    .ink { fill: #f1e8d6; }
     @media (prefers-color-scheme: dark) {
-      .accent { fill: #ead5f3; }
-      .ink { fill: #f1e8d6; }
+      .badge { fill: #eee8dc; }
+      .ink { fill: #28322e; }
     }
   </style>
-  <path class="ink" d="M7 4h1v8H7zM8 4h3v1H8zM11 5h1v1H11zM12 6h1v4H12zM11 10h1v1H11zM8 11h3v1H8z"/>
-  <path class="accent" d="M3 4h2v2H3zM3 8h2v2H3zM3 10h1v1H3zM2 11h1v1H2z"/>
+  <rect class="badge" width="16" height="16" rx="3"/>
+  <path class="ink" d="M7 4h1v8H7zM8 4h3v1H8zM11 5h1v1H11zM12 6h1v4H12zM11 10h1v1H11zM8 11h3v1H8zM3 4h2v2H3zM3 8h2v2H3zM3 10h1v1H3zM2 11h1v1H2z"/>
 </svg>
