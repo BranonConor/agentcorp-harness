@@ -7,6 +7,6 @@
       .ink { fill: #f1e8d6; }
     }
   </style>
-  <path class="ink" d="M2 2h1v1H2zM3 3h1v1H3zM4 4h2v1H4zM3 5h1v1H3zM2 6h1v1H2zM9 2h1v1H9zM13 2h1v1H13zM10 3h1v1H10zM12 3h1v1H12zM9 4h5v1H9zM10 5h1v1H10zM12 5h1v1H12zM9 6h1v1H9zM13 6h1v1H13zM5 8h5v1H5zM5 9h1v5H5zM10 9h2v1H10zM11 10h2v3H11zM10 13h2v1H10zM5 14h5v1H5z"/>
-  <path class="accent" d="M4 8h1v7H4zM11 4h1v1H11z"/>
+  <path class="ink" d="M7 4h1v8H7zM8 4h3v1H8zM11 5h1v1H11zM12 6h1v4H12zM11 10h1v1H11zM8 11h3v1H8z"/>
+  <path class="accent" d="M3 4h2v2H3zM3 8h2v2H3zM3 10h1v1H3zM2 11h1v1H2z"/>
 </svg>

@@ -56,21 +56,15 @@ function texture(width: number, height: number, paint: (ctx: CanvasRenderingCont
   return map;
 }
 
-const markStrokes = [
-  [2, 2, 1, 1], [3, 3, 1, 1], [4, 4, 2, 1], [3, 5, 1, 1], [2, 6, 1, 1],
-  [9, 2, 1, 1], [13, 2, 1, 1],
-  [10, 3, 1, 1], [12, 3, 1, 1],
-  [9, 4, 5, 1],
-  [10, 5, 1, 1], [12, 5, 1, 1],
-  [9, 6, 1, 1], [13, 6, 1, 1],
-  [5, 8, 5, 1], [5, 9, 1, 5],
-  [10, 9, 2, 1], [11, 10, 2, 3], [10, 13, 2, 1],
-  [5, 14, 5, 1],
+const dGlyph = [
+  [7, 4, 1, 8], [8, 4, 3, 1],
+  [11, 5, 1, 1], [12, 6, 1, 4], [11, 10, 1, 1],
+  [8, 11, 3, 1],
 ] as const;
 
 export const HAPPY_MACHINES_MARK = [
-  { color: "#28322e", rects: markStrokes },
-  { color: "#5a4c78", rects: [[4, 8, 1, 7], [11, 4, 1, 1]] },
+  { color: "#28322e", rects: dGlyph },
+  { color: "#5a4c78", rects: [[3, 4, 2, 2], [3, 8, 2, 2], [3, 10, 1, 1], [2, 11, 1, 1]] },
 ] as const;
 
 export const HAPPY_MACHINES_DARK_MARK = [

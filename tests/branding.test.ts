@@ -59,7 +59,7 @@ test("future sign text accepts only bounded locally rendered ASCII glyphs", () =
   }
 });
 
-test("literal >, * and D glyphs read at 16, 24 and 64 CSS pixels on either theme", () => {
+test("centered single-line ;D glyph reads at 16, 24 and 64 CSS pixels on either theme", () => {
   assert.deepEqual(HAPPY_MACHINES_MARK.map(layer => layer.color), ["#28322e", "#5a4c78"]);
   assert.deepEqual(HAPPY_MACHINES_DARK_MARK.map(layer => layer.color), ["#f1e8d6", "#ead5f3"]);
   const luminance = (hex: string) => {
@@ -82,48 +82,40 @@ test("literal >, * and D glyphs read at 16, 24 and 64 CSS pixels on either theme
       const bitmap = (x: number, y: number, width: number, height: number) =>
         Array.from({ length: height }, (_, row) =>
           Array.from({ length: width }, (_, column) => image.data[y + row][x + column] ? "1" : "0").join(""));
-      assert.deepEqual(bitmap(2, 2, 4, 5), ["1000", "0100", "0011", "0100", "1000"], "literal > grid");
-      assert.deepEqual(bitmap(9, 2, 5, 5), ["10001", "01010", "11111", "01010", "10001"], "literal * grid");
-      assert.deepEqual(bitmap(4, 8, 9, 7),
-        ["111111000", "110000110", "110000011", "110000011", "110000011", "110000110", "111111000"],
-        "literal uppercase D grid");
+      assert.deepEqual(bitmap(2, 4, 3, 8),
+        ["011", "011", "000", "000", "011", "011", "010", "100"], "semicolon dot and comma grid");
+      assert.deepEqual(bitmap(7, 4, 6, 8),
+        ["111100", "100010", "100001", "100001", "100001", "100001", "100010", "111100"],
+        "uppercase D with transparent counter");
       const displayedPixel = (x: number, y: number) =>
         image.data[Math.floor(y * 16 / size)][Math.floor(x * 16 / size)] || background;
       const center = (coordinate: number) => Math.floor((coordinate + 0.5) * size / 16);
       const sample = (x: number, y: number) => displayedPixel(center(x), center(y));
       const [ink, accent] = mark.map(layer => layer.color);
-      assert.equal(sample(2, 2), ink, "upper arm of > eye");
-      assert.equal(sample(3, 3), ink, "sloping upper arm of > eye");
-      assert.equal(sample(5, 4), ink, "right-facing bracket tip");
-      assert.equal(sample(3, 5), ink, "sloping lower arm of > eye");
-      assert.equal(sample(2, 6), ink, "lower arm of > eye");
-      assert.equal(sample(5, 2), background, "no joined eye bar");
-      assert.equal(sample(9, 2), ink, "asterisk upper-left diagonal");
-      assert.equal(sample(13, 2), ink, "asterisk upper-right diagonal");
-      assert.equal(sample(10, 3), ink, "asterisk diagonal");
-      assert.equal(sample(12, 3), ink, "opposing asterisk diagonal");
-      assert.equal(sample(9, 4), ink, "asterisk horizontal stroke");
-      assert.equal(sample(11, 4), accent, "asterisk center accent");
-      assert.equal(sample(13, 4), ink, "asterisk opposite horizontal tip");
-      assert.equal(sample(9, 6), ink, "asterisk lower-left diagonal");
-      assert.equal(sample(13, 6), ink, "asterisk lower-right diagonal");
-      assert.equal(sample(11, 2), background, "asterisk is not a solid plus");
-      assert.equal(sample(4, 8), accent, "purple vertical D stem");
-      assert.equal(sample(5, 10), ink, "D stem has ink alongside purple");
-      assert.equal(sample(8, 8), ink, "D top is straight");
-      assert.equal(sample(12, 11), ink, "D bowl curves at right");
-      assert.equal(sample(8, 14), ink, "D bottom is straight");
-      for (const y of [9, 10, 11, 12, 13]) {
-        assert.equal(sample(8, y), background, `D counter row ${y} is transparent`);
+      assert.equal(sample(3, 4), accent, "semicolon upper dot");
+      assert.equal(sample(4, 5), accent, "semicolon upper dot has width");
+      assert.equal(sample(3, 8), accent, "semicolon lower comma");
+      assert.equal(sample(3, 10), accent, "comma descender");
+      assert.equal(sample(2, 11), accent, "comma curves left");
+      assert.equal(sample(3, 6), background, "gap separates semicolon marks");
+      assert.equal(sample(3, 7), background, "gap remains open");
+      assert.equal(sample(7, 4), ink, "D top-left joins vertical stem");
+      assert.equal(sample(10, 4), ink, "D upper bar");
+      assert.equal(sample(12, 8), ink, "D right bowl");
+      assert.equal(sample(7, 11), ink, "D stem reaches lower bar");
+      assert.equal(sample(10, 11), ink, "D lower bar");
+      for (const y of [5, 6, 7, 8, 9, 10]) {
+        assert.equal(sample(9, y), background, `D counter row ${y} is transparent`);
       }
-      assert.equal(sample(8, 7), background, "glyph rows stay separate");
+      assert.equal(sample(5, 8), background, "semicolon and D stay separated on one line");
+      assert.equal(sample(6, 8), background, "two-column glyph gap");
+      assert.equal(sample(8, 2), background, "nothing is stacked above the text");
       assert.equal(sample(0, 8), background, "transparent left margin");
       assert.equal(sample(15, 8), background, "transparent right margin");
       assert.equal(sample(8, 0), background, "transparent top margin");
       assert.equal(sample(8, 15), background, "transparent bottom margin");
-      assert.equal(image.data[1][8], "", "no painted square behind the eyes");
-      assert.equal(image.data[6][8], "", "no painted square between eyes and mouth");
-      assert.ok(image.data.flat().filter(Boolean).length <= 55, "mark contains only punctuation strokes");
+      assert.equal(image.data[1][8], "", "no painted square behind the text");
+      assert.ok(image.data.flat().filter(Boolean).length <= 32, "mark contains only two glyphs");
     }
   }
 });
@@ -142,7 +134,7 @@ test("HQ sign draws the shared sprite at 2x without changing its text", () => {
   assert.equal(sign.isClipped(), false);
 });
 
-test("favicon matches the shared punctuation glyphs pixel for pixel", () => {
+test("favicon matches the shared ;D pixel glyphs", () => {
   const svg = readFileSync(new URL("../public/favicon.svg", import.meta.url), "utf8");
   assert.match(svg, /viewBox="0 0 16 16" shape-rendering="crispEdges"/);
   const paths = [...svg.matchAll(/<path class="([^"]+)" d="([^"]+)"\/>/g)];
