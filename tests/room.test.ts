@@ -788,7 +788,41 @@ test("archived sprite identity stays fixed and a conflicting restore is refused 
   await recovered.close();
 });
 
-test("archive frees its desk without deleting session, keeps history on restart, and restore resumes it", async () => {
+test("desk moves and swaps persist without interrupting sessions or changing idle timers", async () => {
+  const store = new MemoryStore();
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, store, "/dedicated");
+  const a = await createReady(room, 3);
+  const b = await createReady(room, 4);
+  const session = adapter.sessions.get(a.sessionId)!;
+  const idleSince = a.idleSince;
+  const workspace = a.workspace;
+  await room.moveDesk(a.id, 7, 3, null);
+  assert.equal(a.deskIndex, 7);
+  assert.equal(a.idleSince, idleSince);
+  await room.send(a.id, "Keep working");
+  await room.moveDesk(a.id, 4, 7, b.id);
+  assert.equal(a.deskIndex, 4);
+  assert.equal(b.deskIndex, 7);
+  assert.equal(a.sessionId, session.sessionId);
+  assert.equal(a.workspace, workspace);
+  assert.equal(session.disconnects, 0);
+  assert.equal(a.phase, "thinking");
+  await assert.rejects(room.moveDesk(a.id, 3, 7, null), /desk changed/i);
+  await assert.rejects(room.moveDesk(a.id, 3, 4, b.id), /occupancy changed/i);
+  await assert.rejects(room.moveDesk(a.id, 7, 4, null), /occupancy changed/i);
+  await assert.rejects(room.moveDesk(a.id, 4, 4, null), /already assigned/);
+  await assert.rejects(room.moveDesk(a.id, 16, 4, null), /Invalid desk/);
+  session.emit(event("session.idle"));
+  assert.equal(a.deskIndex, 4);
+  await room.close();
+  const recovered = await RoomController.open(adapter, store, "/dedicated");
+  assert.deepEqual(recovered.state.agents.map(item => item.deskIndex), [4, 7]);
+  assert.equal(recovered.state.agents[0].sessionId, a.sessionId);
+  await recovered.close();
+});
+
+test("archive frees its desk without deleting session, keeps history on restart, and restore requires an empty selected desk", async () => {
   const store = new MemoryStore();
   const adapter = new MockAdapter();
   const room = await RoomController.open(adapter, store, "/dedicated");
@@ -812,14 +846,30 @@ test("archive frees its desk without deleting session, keeps history on restart,
   await recovered.connect();
   assert.equal(recovered.state.agents.find(agent => agent.id === original.id)?.archived, true);
   assert.equal(adapter.resumed.includes(original.sessionId), false);
-  await recovered.restore(original.id);
+  await assert.rejects(recovered.restore(original.id), /Former desk is occupied/);
+  assert.equal(adapter.resumed.includes(original.sessionId), false);
+  await assert.rejects(recovered.restore(original.id, 3), /Selected desk is occupied/);
+  await recovered.restore(original.id, 0);
   const restored = recovered.state.agents.find(agent => agent.id === original.id)!;
   assert.equal(restored.archived, false);
   assert.equal(restored.deskIndex, 0);
   assert.equal(restored.workspace, originalWorkspace);
   assert.deepEqual(restored.messages.map(message => message.content), ["Keep my work", "Kept"]);
   assert.deepEqual(adapter.resumed, [newcomer.sessionId, original.sessionId]);
+  await assert.rejects(recovered.restore(original.id), /already in the office/);
   await recovered.close();
+});
+
+test("restore keeps its former desk when free and refuses stale or invalid targets", async () => {
+  const adapter = new MockAdapter();
+  const room = await RoomController.open(adapter, new MemoryStore(), "/dedicated");
+  const agent = await createReady(room, 9);
+  await room.archive(agent.id);
+  await assert.rejects(room.restore(agent.id, 16), /Invalid desk/);
+  await room.restore(agent.id);
+  assert.equal(agent.deskIndex, 9);
+  assert.equal(agent.lastDeskIndex, 9);
+  await room.close();
 });
 
 test("restore refuses a full office without resuming or changing an archived record", async () => {

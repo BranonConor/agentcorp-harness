@@ -272,6 +272,10 @@ function LiveOffice() {
   const [actionError, setActionError] = useState("");
   const [searchCapability, setSearchCapability] = useState("Checking web search availability…");
   const [menuAgentId, setMenuAgentId] = useState<string | null>(null);
+  const [deskChoice, setDeskChoice] = useState<{ kind: "create" } |
+    { kind: "move"; agentId: string; deskIndex: number } | { kind: "restore"; agentId: string } | null>(null);
+  const [deskTarget, setDeskTarget] = useState<{ index: number; occupantId: string | null } | null>(null);
+  const [deskBusy, setDeskBusy] = useState(false);
   const [chatOptionsOpen, setChatOptionsOpen] = useState(false);
   const [editingRepoHint, setEditingRepoHint] = useState(false);
   const [confirmAgentId, setConfirmAgentId] = useState<string | null>(null);
@@ -328,6 +332,8 @@ function LiveOffice() {
   const hoverLabelRef = useRef<HTMLDivElement>(null);
   const confirmCheckboxRef = useRef<HTMLInputElement>(null);
   const confirmTriggerRef = useRef<HTMLButtonElement>(null);
+  const deskTriggerRef = useRef<HTMLElement | null>(null);
+  const deskDialogRef = useRef<HTMLDivElement>(null);
   const chatScroll = useRef<HTMLDivElement>(null);
   const followTail = useRef(true);
   const seenReviews = useRef(new Set<string>());
@@ -397,7 +403,7 @@ function LiveOffice() {
       return false;
     }
   };
-  const createAgent = async (deskIndex: number) => {
+  const createAgent = async (deskIndex: number): Promise<boolean> => {
     const previousIds = new Set(roomRef.current?.agents.map(agent => agent.id) ?? []);
     try {
       setActionError("");
@@ -406,8 +412,50 @@ function LiveOffice() {
       const created = next.agents.find(agent => !previousIds.has(agent.id));
       if (!created) throw new Error("Agent created, but the new agent was not found in the office response.");
       selectActor(created.sessionId);
+      return true;
     } catch (error) {
       setActionError(error instanceof Error ? error.message : String(error));
+      return false;
+    }
+  };
+  const openDeskChoice = (choice: NonNullable<typeof deskChoice>, trigger: HTMLElement) => {
+    deskTriggerRef.current = trigger.closest("[data-agent-menu]")?.querySelector<HTMLElement>(".agent-menu-toggle") ?? trigger;
+    setPanelOpen(true);
+    setDeskTarget(null);
+    setActionError("");
+    setMenuAgentId(null);
+    setDeskChoice(choice);
+  };
+  const closeDeskChoice = (restoreFocus = true) => {
+    setDeskChoice(null);
+    setDeskTarget(null);
+    if (restoreFocus) window.setTimeout(() => deskTriggerRef.current?.focus(), 0);
+  };
+  const chooseDesk = async (index: number, occupantId: string | null) => {
+    if (!deskChoice || deskBusy) return;
+    const agent = deskChoice.kind === "create" ? undefined :
+      roomRef.current?.agents.find(item => item.id === deskChoice.agentId);
+    if (deskChoice.kind !== "create" && !agent) {
+      setActionError("Agent no longer exists. Reopen the seating plan.");
+      return;
+    }
+    if (deskChoice.kind === "move" && occupantId && (!deskTarget || deskTarget.index !== index)) {
+      setDeskTarget({ index, occupantId });
+      return;
+    }
+    setDeskBusy(true);
+    try {
+      setActionError("");
+      if (deskChoice.kind === "create") {
+        if (await createAgent(index)) closeDeskChoice(false);
+      } else if (deskChoice.kind === "restore") {
+        if (await act("restore", { agentId: agent!.id, deskIndex: index })) closeDeskChoice();
+      } else if (await act("move-desk", { agentId: agent!.id, deskIndex: index,
+        expectedDeskIndex: deskChoice.deskIndex, expectedOccupantId: occupantId })) {
+        closeDeskChoice();
+      }
+    } finally {
+      setDeskBusy(false);
     }
   };
   const meetingAction = async (path: string, body: Record<string, unknown>): Promise<SdkRoom | null> => {
@@ -533,6 +581,7 @@ function LiveOffice() {
   };
 
   useEffect(() => {
+    if (deskChoice) return;
     const focusTimer = window.setTimeout(() => {
       if (panelOpen) {
         if (selected || !document.activeElement?.closest("#system-panel")) activityClose.current?.focus();
@@ -542,14 +591,16 @@ function LiveOffice() {
       }
     }, 50);
     return () => window.clearTimeout(focusTimer);
-  }, [panelOpen, selected]);
+  }, [panelOpen, selected, deskChoice]);
 
   useEffect(() => {
     if (!panelOpen) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        if (confirmAgentId) {
+        if (deskChoice) {
+          if (!deskBusy) closeDeskChoice();
+        } else if (confirmAgentId) {
           if (!confirmSubmitting) closeConfirmation();
         } else if (assignmentAgentId && !assignmentSubmitting) {
           setAssignmentAgentId(null);
@@ -566,7 +617,11 @@ function LiveOffice() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [panelOpen, tab, selected, settingsOpen, profileEditingId, menuAgentId, chatOptionsOpen, confirmAgentId, confirmSubmitting, assignmentAgentId, assignmentSubmitting]);
+  }, [panelOpen, tab, selected, settingsOpen, profileEditingId, menuAgentId, chatOptionsOpen, confirmAgentId, confirmSubmitting, assignmentAgentId, assignmentSubmitting, deskChoice, deskBusy]);
+
+  useEffect(() => {
+    if (deskChoice) deskDialogRef.current?.querySelector<HTMLButtonElement>("button:not(:disabled)")?.focus();
+  }, [deskChoice]);
 
   useLayoutEffect(() => {
     if (!panelOpen || selected) return;
@@ -1227,10 +1282,6 @@ function LiveOffice() {
       setTab("agents");
     }
   };
-  const restoreAgent = async (agent: SdkAgent) => {
-    setMenuAgentId(null);
-    await act("restore", { agentId: agent.id });
-  };
   const confirmSendHome = async () => {
     if (!confirmAgent || confirmIdentity.trim() !== confirmName && confirmIdentity.trim() !== confirmAgent.id ||
       confirmSubmitting) return;
@@ -1372,9 +1423,9 @@ function LiveOffice() {
         </div>
         <div className="top-stats" aria-hidden={panelOpen} inert={panelOpen}>
           <button type="button" className="add-agent-button" disabled={!connected || firstEmptyDesk === undefined}
-            aria-label={officeFull ? `Office full (${MAX_AGENTS} desks)` : "Add agent"}
-            title={officeFull ? `All ${MAX_AGENTS} office desks are occupied` : "Create an independent SDK agent"}
-            onClick={() => firstEmptyDesk !== undefined && void createAgent(firstEmptyDesk)}>
+            aria-label={officeFull ? `Office full (${MAX_AGENTS} desks)` : "Add agent: choose a desk"}
+            title={officeFull ? `All ${MAX_AGENTS} office desks are occupied` : "Choose a desk for the new agent"}
+            onClick={event => openDeskChoice({ kind: "create" }, event.currentTarget)}>
             {officeFull ? <>Office full <span className="desk-capacity">({MAX_AGENTS} desks)</span></> : "+ Add agent"}
           </button>
           <button ref={activityToggle} type="button" className="system-toggle" aria-expanded={panelOpen} aria-controls="system-panel"
@@ -1837,7 +1888,7 @@ function LiveOffice() {
                   <strong>Your office is ready for its first agent.</strong>
                   <p>Create an agent to start a conversation or assign work.</p>
                   <Button type="button" disabled={!connected || firstEmptyDesk === undefined}
-                    onClick={() => firstEmptyDesk !== undefined && void createAgent(firstEmptyDesk)}>+ Add agent</Button>
+                    onClick={event => openDeskChoice({ kind: "create" }, event.currentTarget)}>+ Add agent · choose desk</Button>
                 </div>}
                 {[...(sdkRoom?.agents ?? [])].sort((a, b) =>
                   Number(a.archived) - Number(b.archived) || b.updatedAt - a.updatedAt ||
@@ -1857,7 +1908,7 @@ function LiveOffice() {
                           <SafeMarkdown content={last.content} preview />
                         </> : agent.archived ? "No messages in this assignment" : greetingForPersona(agentArt(sdkRoom, agent))}</span>
                         <small>{agent.archived ? `Archived · former desk ${(agent.lastDeskIndex ?? 0) + 1}` :
-                          `Desk ${agent.deskIndex! + 1} · ${agent.activity}`}</small>
+                          `Home desk ${agent.deskIndex! + 1} · ${agent.activity}`}</small>
                         {agent.repository && <small>{agent.repository.worktree ? "Worktree" : "Research"}: {agent.repository.name} · {agent.repository.scope === "task" ? "this task" : "this session"}</small>}
                         {agent.accessRequest && <small>Repository access request awaiting you</small>}
                       </span>
@@ -1882,10 +1933,14 @@ function LiveOffice() {
                         {agent.archived ?
                           <button role="menuitem" type="button" disabled={officeFull}
                             title={officeFull ? "Office full: archive another agent to free a desk" : "Return this agent to an empty desk"}
-                            onClick={() => void restoreAgent(agent)}>Restore to office</button> :
+                            onClick={event => openDeskChoice({ kind: "restore", agentId: agent.id }, event.currentTarget)}>Restore to office…</button> :
+                          <>
+                          <button role="menuitem" type="button"
+                            onClick={event => openDeskChoice({ kind: "move", agentId: agent.id,
+                              deskIndex: agent.deskIndex! }, event.currentTarget)}>Move desk…</button>
                           <button role="menuitem" type="button" disabled={lifecycleBusy(agent)}
                             title={lifecycleBusy(agent) ? "Finish the turn or decide the permission first" : "Free the desk but keep the conversation"}
-                            onClick={() => void archiveAgent(agent)}>Archive · keep conversation</button>}
+                            onClick={() => void archiveAgent(agent)}>Archive · keep conversation</button></>}
                         <button role="menuitem" type="button" className="agent-menu-danger" disabled={lifecycleBusy(agent)}
                           title={lifecycleBusy(agent) ? "Finish the turn or decide the permission first" : "Choose how to retain the SDK session; working files always remain"}
                           onClick={event => {
@@ -1965,7 +2020,8 @@ function LiveOffice() {
                     "Profile changes are saved for future assignments. Current session context remains as it was."}</p>
                   {selectedAgent.archived && selectedPersona.setupCompleted === false && <p role="status">
                     This agent is archived. Restore it to an open desk before completing setup.
-                    <Button type="button" disabled={officeFull} onClick={() => void restoreAgent(selectedAgent)}>
+                    <Button type="button" disabled={officeFull}
+                      onClick={event => openDeskChoice({ kind: "restore", agentId: selectedAgent.id }, event.currentTarget)}>
                       Restore to office
                     </Button>
                   </p>}
@@ -2008,6 +2064,18 @@ function LiveOffice() {
                       {!!selectedPersona.profile.specialties.length &&
                         <p><strong>Specialties:</strong> {selectedPersona.profile.specialties.join(", ")}</p>}
                     </> : <p>Profile is not available for this agent yet.</p>}
+                    <p>{selectedAgent.archived ? `Former home desk ${(selectedAgent.lastDeskIndex ?? 0) + 1}` :
+                      `Home desk ${selectedAgent.deskIndex! + 1}`}</p>
+                    {selectedAgent.archived ?
+                      <Button type="button" disabled={officeFull}
+                        onClick={event => openDeskChoice({ kind: "restore", agentId: selectedAgent.id }, event.currentTarget)}>
+                        Restore to an empty desk…
+                      </Button> :
+                      <Button type="button"
+                        onClick={event => openDeskChoice({ kind: "move", agentId: selectedAgent.id,
+                          deskIndex: selectedAgent.deskIndex! }, event.currentTarget)}>
+                        Move desk…
+                      </Button>}
                     </div>
                     <Disclosure.Root className="agent-settings-more panel-section">
                       <Disclosure.Trigger>More options · notes, career, projects & assignments</Disclosure.Trigger>
@@ -2334,6 +2402,65 @@ function LiveOffice() {
             <button type="button" className="send-home-confirm"
               disabled={confirmSubmitting || (confirmIdentity.trim() !== confirmName && confirmIdentity.trim() !== confirmAgent.id)}
               onClick={() => void confirmSendHome()}>{confirmSubmitting ? "Firing…" : "Fire agent"}</button>
+          </div>
+        </div>
+      </div>}
+      {deskChoice && <div className="send-home-backdrop">
+        <div ref={deskDialogRef} className="send-home-dialog desk-choice-dialog" role="dialog" aria-modal="true"
+          aria-labelledby="desk-choice-heading" aria-describedby="desk-choice-description"
+          onKeyDown={event => {
+            if (event.key !== "Tab") return;
+            const focusable = Array.from(event.currentTarget.querySelectorAll<HTMLButtonElement>("button:not(:disabled)"));
+            const first = focusable[0];
+            const last = focusable.at(-1);
+            if (event.shiftKey && document.activeElement === first) {
+              event.preventDefault();
+              last?.focus();
+            } else if (!event.shiftKey && document.activeElement === last) {
+              event.preventDefault();
+              first?.focus();
+            }
+          }}>
+          <h2 id="desk-choice-heading">{deskChoice.kind === "create" ? "Choose a desk for the new agent" :
+            deskChoice.kind === "restore" ? `Restore ${agentName(sdkRoom, sdkRoom?.agents.find(item => item.id === deskChoice.agentId))}` :
+              `Move ${agentName(sdkRoom, sdkRoom?.agents.find(item => item.id === deskChoice.agentId))}`}</h2>
+          <p id="desk-choice-description">{deskChoice.kind === "move"
+            ? "Choose an empty desk to move, or an occupied desk to swap home desks. Conversations and work keep running."
+            : deskChoice.kind === "restore"
+              ? "Choose an empty desk. The former desk is marked when available; occupied desks cannot be restored into."
+              : "Pick an empty desk. Nearby desks make a handy visual group; there are no team permissions."}</p>
+          <div className="desk-choice-grid" aria-label="Office desks">
+            {Array.from({ length: MAX_AGENTS }, (_, index) => {
+              const occupant = activeAgents.find(item => item.deskIndex === index);
+              const self = deskChoice.kind !== "create" && occupant?.id === deskChoice.agentId;
+              const former = deskChoice.kind === "restore" &&
+                sdkRoom?.agents.find(item => item.id === deskChoice.agentId)?.lastDeskIndex === index;
+              return <button type="button" key={index}
+                disabled={deskBusy || !!self || (deskChoice.kind !== "move" && !!occupant)}
+                aria-label={`Desk ${index + 1}: ${self ? "current desk" : occupant ?
+                  `occupied by ${agentName(sdkRoom, occupant)}` : "empty"}${former ? ", former desk" : ""}`}
+                onClick={() => {
+                  setDeskTarget(null);
+                  if (deskChoice.kind === "move" && occupant) setDeskTarget({ index, occupantId: occupant.id });
+                  else void chooseDesk(index, null);
+                }}>
+                <strong>{index + 1}</strong>
+                <span>{self ? "Current" : occupant ? agentName(sdkRoom, occupant) : former ? "Former · empty" : "Empty"}</span>
+              </button>;
+            })}
+          </div>
+          {deskTarget && deskChoice.kind === "move" && <div className="desk-swap-preview" role="status">
+            <p>Swap {agentName(sdkRoom, sdkRoom?.agents.find(item => item.id === deskChoice.agentId))}
+              {" "}at desk {deskChoice.deskIndex + 1}
+              {" "}with {agentName(sdkRoom, activeAgents.find(item => item.id === deskTarget.occupantId))}
+              {" "}at desk {deskTarget.index + 1}?</p>
+            <button type="button" disabled={deskBusy} onClick={() => setDeskTarget(null)}>Cancel swap</button>
+            <button type="button" disabled={deskBusy || activeAgents.find(item => item.deskIndex === deskTarget.index)?.id !== deskTarget.occupantId}
+              onClick={() => void chooseDesk(deskTarget.index, deskTarget.occupantId)}>Confirm swap</button>
+          </div>}
+          {actionError && <p className="send-home-error" role="alert">{actionError}</p>}
+          <div className="send-home-buttons">
+            <button type="button" disabled={deskBusy} onClick={() => closeDeskChoice()}>Cancel</button>
           </div>
         </div>
       </div>}

@@ -12,6 +12,16 @@ Closing setup keeps the agent for later. Click its sprite or open
 Agents work at their desks and visit the lounge after two uninterrupted idle
 minutes. Their chat, portrait, and assignment are independent of other agents.
 
+The header's **+ Add agent** opens a 16-desk chooser; **+** above an empty
+desk hires there directly. In **Manage agents → Agents**, open an agent's
+**⋮ → Move desk…** (or use **Agent settings → Move desk…**) to choose an empty desk or preview and confirm a swap with
+the named occupant. A home desk stays assigned through chat, idle breaks,
+and reloads; moving or swapping doesn't stop either SDK session or task.
+Arrange nearby desks for a visual grouping (it does not grant shared access).
+Archiving frees the seat. On restore, choose an empty desk: the former desk is
+marked if available, and an occupied former desk is never silently replaced
+or reassigned. A full office must free a seat first.
+
 **Edit agent** updates its persona for the *next* assignment, not the current
 conversation. **New assignment** makes a fresh SDK session while retaining
 the old transcript and worktree. **Archive** frees the desk and pauses the

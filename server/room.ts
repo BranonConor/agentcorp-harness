@@ -566,6 +566,25 @@ export class RoomController {
     return Array.from({ length: MAX_AGENTS }, (_, index) => index).find(index => !occupied.has(index)) ?? null;
   }
 
+  async moveDesk(agentId: string, deskIndex: number, expectedDeskIndex: number, expectedOccupantId: string | null): Promise<void> {
+    if (!Number.isInteger(deskIndex) || deskIndex < 0 || deskIndex >= MAX_AGENTS) throw new Error("Invalid desk.");
+    if (!Number.isInteger(expectedDeskIndex) || expectedDeskIndex < 0 || expectedDeskIndex >= MAX_AGENTS) throw new Error("Invalid current desk.");
+    if (expectedOccupantId !== null && typeof expectedOccupantId !== "string") throw new Error("Invalid desk occupant.");
+    const agent = this.agent(agentId);
+    if (agent.archived) throw new Error("Restore this agent before moving its desk.");
+    if (agent.deskIndex !== expectedDeskIndex) throw new Error("Agent's desk changed. Review the seating plan and try again.");
+    if (agent.deskIndex === deskIndex) throw new Error("This agent is already assigned to that desk.");
+    if (this.lifecycle.has(agentId)) throw new Error("Wait for this agent's archive or restore to finish.");
+    if (this.creating.has(deskIndex)) throw new Error("This desk is being assigned. Choose another desk.");
+    const occupant = this.state.agents.find(item => !item.archived && item.deskIndex === deskIndex);
+    if ((occupant?.id ?? null) !== expectedOccupantId) throw new Error("Desk occupancy changed. Review the seating plan and try again.");
+    if (occupant && this.lifecycle.has(occupant.id)) throw new Error("Wait for the other agent's archive or restore to finish.");
+    const oldDesk = agent.deskIndex!;
+    agent.deskIndex = deskIndex;
+    if (occupant) occupant.deskIndex = oldDesk;
+    await this.publish();
+  }
+
   async create(deskIndex: number): Promise<Agent> {
     if (!Number.isInteger(deskIndex) || deskIndex < 0 || deskIndex >= MAX_AGENTS) throw new Error("Invalid desk.");
     if (this.state.agents.filter(agent => !agent.archived).length + this.creating.size >= MAX_AGENTS) throw new Error("All office desks are occupied.");
@@ -1151,23 +1170,29 @@ export class RoomController {
     }
   }
 
-  async restore(agentId: string): Promise<void> {
+  async restore(agentId: string, deskIndex?: number): Promise<void> {
     const agent = this.agent(agentId);
     if (!agent.archived) throw new Error("This agent is already in the office.");
     this.availableForLifecycle(agent);
-    if (this.availableDesk(agent.lastDeskIndex) === null) throw new Error("Office full (16 desks). Archive an agent before restoring this one.");
+    if (deskIndex !== undefined && (!Number.isInteger(deskIndex) || deskIndex < 0 || deskIndex >= MAX_AGENTS)) {
+      throw new Error("Invalid desk.");
+    }
+    const target = deskIndex ?? agent.lastDeskIndex;
+    if (target === undefined || this.availableDesk(target) !== target) {
+      if (this.availableDesk() === null) throw new Error("Office full (16 desks). Archive an agent before restoring this one.");
+      throw new Error(`${deskIndex === undefined ? "Former" : "Selected"} desk is occupied. Choose an empty desk to restore this agent.`);
+    }
     if (this.state.agents.some(other => !other.archived && other.persona === agent.persona)) {
       throw new Error("This agent's sprite persona is in use by another office agent. Archive that agent before restoring; identity was not changed.");
     }
     this.lifecycle.add(agentId);
     try {
       const session = await this.resumeAgent(agent);
-      const deskIndex = this.availableDesk(agent.lastDeskIndex);
-      if (deskIndex === null) {
+      if (this.availableDesk(target) !== target) {
         await session.disconnect();
-        throw new Error("Office full (16 desks). Archive an agent before restoring this one.");
+        throw new Error("Selected desk is no longer empty. Choose another desk.");
       }
-      agent.deskIndex = deskIndex;
+      agent.deskIndex = target;
       agent.archived = false;
       agent.archivedAt = undefined;
       agent.phase = "idle";

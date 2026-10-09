@@ -9,6 +9,129 @@ const chrome = process.platform === "darwin"
   ? "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
   : chromium.executablePath();
 
+async function checkDeskChooser() {
+    const bundle = await build({
+      entryPoints: ["agent-inc-live/src/office.tsx"], bundle: true, write: false,
+      platform: "browser", format: "iife", loader: { ".css": "empty" },
+      define: { "process.env.NODE_ENV": '"production"' },
+    });
+    const now = Date.now();
+    const agent = (id: string, deskIndex: number | null, archived = false) => ({
+      id, personaId: id, assignmentId: id, sessionId: id, deskIndex, lastDeskIndex: archived ? 2 : undefined,
+      archived, workspace: "/tmp/fixture", workspaceKind: "scratch",
+      createdAt: now, updatedAt: now, idleSince: now, phase: "idle", activity: "Ready", messages: [],
+    });
+    const fixture = {
+      schemaVersion: 6, revision: 1, workspace: "/tmp/fixture", connected: true, error: null,
+      agents: [agent("a", 0), agent("b", 1), agent("c", null, true)],
+      personas: ["a", "b", "c"].map((id, index) => ({
+        id, name: ["Avery", "Blair", "Casey"][index], artId: index, createdAt: now, updatedAt: now,
+        setupCompleted: true, profile: { instructions: "", workingStyle: "", specialties: [],
+          title: "", rank: "" }, memories: [],
+      })),
+      assignments: [], progression: [], projects: [], meetings: [], worktrees: [],
+    };
+    const requests: string[] = [];
+    const browser = await chromium.launch({ executablePath: chrome, headless: true });
+    try {
+      const context = await browser.newContext({ viewport: { width: 320, height: 700 } });
+      const page = await context.newPage();
+      const errors: string[] = [];
+      page.on("pageerror", error => errors.push(error.message));
+      await page.addInitScript({ content: `window.EventSource = class {
+        onmessage = null; addEventListener() {} close() {}
+      };` });
+      await page.route("http://office.test/**", route => {
+        const path = new URL(route.request().url()).pathname;
+        if (path === "/") return route.fulfill({
+          contentType: "text/html", body: '<link rel="icon" href="data:,"><div id="root"></div><script src="/office.js"></script>',
+        });
+        if (path === "/office.js") return route.fulfill({
+          contentType: "text/javascript", body: bundle.outputFiles[0].text,
+        });
+        if (path === "/api/state") return route.fulfill({ json: fixture });
+        if (path === "/api/search-capability") return route.fulfill({
+          json: { available: false, reason: "Search off" },
+        });
+        const body = route.request().postDataJSON() as { agentId: string; deskIndex: number; expectedDeskIndex: number;
+          expectedOccupantId: string | null };
+        requests.push(`${path}:${JSON.stringify(body)}`);
+        if (path === "/api/move-desk") {
+          const moving = fixture.agents.find(item => item.id === body.agentId)!;
+          assert.equal(moving.deskIndex, body.expectedDeskIndex);
+          const occupied = fixture.agents.find(item => !item.archived && item.deskIndex === body.deskIndex);
+          assert.equal(occupied?.id ?? null, body.expectedOccupantId);
+          if (occupied) occupied.deskIndex = moving.deskIndex;
+          moving.deskIndex = body.deskIndex;
+        } else if (path === "/api/restore") {
+          const restoring = fixture.agents.find(item => item.id === body.agentId)!;
+          assert.equal(fixture.agents.some(item => !item.archived && item.deskIndex === body.deskIndex), false);
+          restoring.deskIndex = body.deskIndex;
+          restoring.archived = false;
+        } else if (path === "/api/create") {
+          fixture.agents.push(agent("d", body.deskIndex));
+          fixture.personas.push({ ...fixture.personas[0], id: "d", name: "Drew", artId: 3 });
+        } else return route.fulfill({ status: 404, body: path });
+        fixture.revision++;
+        return route.fulfill({ json: fixture });
+      });
+      await page.goto("http://office.test/");
+      await page.addStyleTag({ content: ["agent-inc/app/styles.css", "agent-inc-live/live.css",
+        "agent-inc-live/sdk-chat.css", "agent-inc-live/overview.css", "agent-inc-live/controls.css"]
+        .map(file => readFileSync(file, "utf8")).join("\n") });
+      await page.waitForTimeout(300);
+      assert.ok(await page.getByRole("button", { name: /Manage agents/ }).count(),
+        `Office failed to render: ${errors.join("; ")}; ${await page.locator("body").innerHTML()}`);
+      await page.getByRole("button", { name: /Manage agents/ }).click();
+      await page.getByRole("button", { name: "Agents", exact: true }).click();
+      await page.getByRole("button", { name: "Actions for Avery" }).click();
+      await page.getByRole("menuitem", { name: "Move desk…" }).click();
+      const chooser = page.getByRole("dialog", { name: "Move Avery" });
+      await chooser.waitFor();
+      assert.ok(await chooser.evaluate(element => element.getBoundingClientRect().right <= innerWidth &&
+        element.getBoundingClientRect().left >= 0), "Desk chooser fits the mobile viewport");
+      assert.equal(await chooser.getByRole("button", { name: "Desk 1: current desk" }).isDisabled(), true);
+      await page.keyboard.press("Escape");
+      await chooser.waitFor({ state: "hidden" });
+      await page.waitForFunction(() => document.activeElement?.getAttribute("aria-label") === "Actions for Avery");
+      assert.equal(await page.evaluate(() => document.activeElement?.getAttribute("aria-label")), "Actions for Avery");
+      await page.keyboard.press("Enter");
+      await page.getByRole("menuitem", { name: "Move desk…" }).click();
+      await chooser.getByRole("button", { name: "Desk 2: occupied by Blair" }).focus();
+      await page.keyboard.press("Enter");
+      await chooser.getByRole("button", { name: "Cancel swap" }).click();
+      assert.equal(requests.length, 0);
+      await chooser.getByRole("button", { name: "Desk 2: occupied by Blair" }).focus();
+      await page.keyboard.press("Enter");
+      await chooser.getByRole("button", { name: "Confirm swap" }).focus();
+      await page.keyboard.press("Enter");
+      await chooser.waitFor({ state: "hidden" });
+      assert.equal(fixture.agents[0].deskIndex, 1);
+      assert.equal(fixture.agents[1].deskIndex, 0);
+      await page.getByRole("button", { name: "Actions for Casey" }).click();
+      await page.getByRole("menuitem", { name: "Restore to office…" }).click();
+      const restoring = page.getByRole("dialog", { name: "Restore Casey" });
+      await restoring.getByRole("button", { name: "Desk 3: empty, former desk" }).click();
+      await restoring.waitFor({ state: "hidden" });
+      assert.equal(fixture.agents[2].deskIndex, 2);
+      await page.getByRole("button", { name: "Close Manage" }).click();
+      await page.getByRole("button", { name: "Add agent: choose a desk" }).click();
+      const creating = page.getByRole("dialog", { name: "Choose a desk for the new agent" });
+      await creating.getByRole("button", { name: "Desk 4: empty" }).click();
+      await creating.waitFor({ state: "hidden" });
+      assert.equal(fixture.agents[3].deskIndex, 3);
+      assert.deepEqual(requests.map(item => item.split(":")[0]), ["/api/move-desk", "/api/restore", "/api/create"]);
+      assert.deepEqual(errors, []);
+      await context.close();
+    } finally {
+      await browser.close();
+    }
+}
+
+test("mobile keyboard desk chooser selects seats, confirms swaps, and restores explicitly", {
+  skip: !existsSync(chrome) && "A local Chromium installation is required",
+}, checkDeskChooser);
+
 test("Store drilldown, purchase, agent portraits and overlay copy remain usable", {
   skip: !existsSync(chrome) && "A local Chromium installation is required",
 }, async () => {
@@ -271,6 +394,8 @@ test("Store drilldown, purchase, agent portraits and overlay copy remain usable"
       await page.getByRole("button", { name: "Options for Avery" }).click();
       await page.getByRole("button", { name: "Agent settings & more options" }).click();
       assert.equal(await page.getByRole("region", { name: "Avery settings" }).count(), 1);
+      await page.getByRole("region", { name: "Avery settings" }).getByRole("button", { name: "Move desk…" }).click();
+      await page.getByRole("dialog", { name: "Move Avery" }).getByRole("button", { name: "Cancel" }).click();
       assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth));
       if (screenshotDir && width <= 390) await page.screenshot({ path: `${screenshotDir}/agent-settings-dark-${width}.png` });
       Object.assign(fixture.agents[0], { review: {

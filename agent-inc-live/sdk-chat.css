@@ -91,6 +91,16 @@
 .agent-action-menu button:hover:not(:disabled), .agent-action-menu button:focus-visible { background: var(--office-accent-bg); }
 .agent-action-menu button:disabled { opacity: .55; cursor: not-allowed; }
 .agent-action-menu .agent-menu-danger { color: var(--office-warning); }
+.desk-choice-dialog { max-width: min(540px, calc(100vw - 32px)); max-height: min(85vh, 720px); overflow-y: auto; }
+.desk-choice-grid { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 7px; margin: 14px 0; }
+.desk-choice-grid button { display: grid; gap: 4px; min-height: 65px; padding: 6px; border: 1px solid var(--office-border);
+  border-radius: 6px; background: var(--office-muted); color: var(--office-text); text-align: left; cursor: pointer; }
+.desk-choice-grid button span { overflow: hidden; text-overflow: ellipsis; font-size: 11px; }
+.desk-choice-grid button:disabled { opacity: .55; cursor: not-allowed; }
+.desk-choice-grid button:focus-visible, .desk-choice-dialog button:focus-visible {
+  outline: 2px solid var(--office-accent); outline-offset: 2px; }
+.desk-swap-preview { padding: 10px; border: 1px solid var(--office-border); border-radius: 6px; }
+.desk-swap-preview button { margin-right: 8px; }
 .agent-action-menu small { display: block; padding: 4px 10px 8px; color: var(--office-secondary); font-size: 10px; line-height: 1.4; }
 .agent-menu-workspace { margin: 5px 4px 0; padding: 8px 6px 3px; border-top: 1px solid var(--office-border); }
 .agent-menu-workspace span { display: block; color: var(--office-secondary); font-size: 10px; }

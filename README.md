@@ -12,7 +12,7 @@ It does not connect to agents already running in the Copilot app or CLI.
 
 | In the office | What you can do |
 | --- | --- |
-| **Desks & chats** | Hire up to 16 agents, chat with each one, and archive or restore them without losing their conversations. |
+| **Desks & chats** | Hire up to 16 agents, choose their home desks, move or swap seats, and archive or restore without losing conversations. |
 | **Projects & assignments** | Share verified GitHub repos for reading, or explicitly approve a separate edit worktree for one task. Start a fresh assignment without erasing the old one. |
 | **Meetings & reviews** | Hand selected agents an agenda and excerpts, approving each turn yourself. Record decisions and follow-ups. |
 | **A little progress** | Confirm outcomes or verified merged PRs to earn career XP and office credits; spend credits on decor. |

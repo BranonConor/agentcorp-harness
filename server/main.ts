@@ -143,10 +143,23 @@ const server = createServer(async (request, response) => {
         await room.archive(body.agentId);
         return json(response, 200, room.state);
       }
+      if (url.pathname === "/api/move-desk" && request.method === "POST") {
+        const body = await payload(request);
+        if (typeof body.agentId !== "string" || !Number.isInteger(body.deskIndex) ||
+          !Number.isInteger(body.expectedDeskIndex) ||
+          !(body.expectedOccupantId === null || typeof body.expectedOccupantId === "string")) {
+          throw new Error("Choose an agent, its current desk, target desk, and its current occupant (or empty).");
+        }
+        await room.moveDesk(body.agentId, body.deskIndex as number, body.expectedDeskIndex as number,
+          body.expectedOccupantId as string | null);
+        return json(response, 200, room.state);
+      }
       if (url.pathname === "/api/restore" && request.method === "POST") {
         const body = await payload(request);
-        if (typeof body.agentId !== "string") throw new Error("Choose an agent to restore.");
-        await room.restore(body.agentId);
+        if (typeof body.agentId !== "string" || body.deskIndex !== undefined && !Number.isInteger(body.deskIndex)) {
+          throw new Error("Choose an agent and an optional desk to restore.");
+        }
+        await room.restore(body.agentId, body.deskIndex as number | undefined);
         return json(response, 200, room.state);
       }
       if (url.pathname === "/api/send-home" && request.method === "POST") {
